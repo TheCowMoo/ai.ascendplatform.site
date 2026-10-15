@@ -1,5 +1,5 @@
 """
-Chatbot Manager — Flask backend (multi-bot RAG platform).
+CMGrowthAI — Flask backend (business AI platform).
 
 A multi-bot AI chatbot platform:
   * Admin panel (served from /admin) to create and manage multiple chatbots.
@@ -33,17 +33,54 @@ try:
 except ImportError:
     pass
 
-from db import get_connection, init_db, new_bot_id
+from db import get_connection, init_db, new_bot_id, IntegrityError, now_str, days_ago
+import meta as meta_api
+import llm
+import jobs
+import profile as profile_mod
+import agents as agent_roster
+import settings
+import tools as tool_registry
+import actions
+import provisioner
+import servers as servers_service
+import sites as sites_service
+from tools import policy as tool_policy
+from tools import ssh as ssh_tool
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__, static_folder=None)
 CORS(app)
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
-MODEL = os.environ.get("MODEL", "deepseek-chat").strip()
-MAX_KB_CHARS = int(os.environ.get("MAX_KB_CHARS", "30000"))
+# These are read per call rather than captured at import, so a change made in the
+# Settings tab applies to the next request without restarting the app.
+def deepseek_config():
+    """``(api_key, base_url, model)`` for the plain-SDK chat path."""
+    return (
+        settings.get("DEEPSEEK_API_KEY"),
+        settings.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
+        settings.get("MODEL") or "deepseek-chat",
+    )
+
+
+def max_kb_chars():
+    return settings.get_int("MAX_KB_CHARS", 30000)
+
+
+# Product name (shown in the admin UI and used in outbound copy).
+def brand():
+    return settings.get("BRAND_NAME") or "CMGrowthAI"
+
+# Meta (Messenger / Instagram / WhatsApp) webhook integration.
+# A per-channel app secret / verify token (set in the admin panel) overrides
+# these globals; set them here if all your channels share one Meta app.
+def meta_app_secret():
+    return settings.get("META_APP_SECRET")
+
+
+def meta_verify_token():
+    return settings.get("META_VERIFY_TOKEN")
 
 
 def _load_or_create_secret():
@@ -62,7 +99,22 @@ def _load_or_create_secret():
 
 app.secret_key = _load_or_create_secret()
 
-client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL) if DEEPSEEK_API_KEY else None
+# The DeepSeek client is built on demand and then re-used, so rotating the key in
+# the Settings tab takes effect on the next message. Only one client is kept.
+_client_cache = {}
+
+
+def get_client():
+    """The DeepSeek client for the widget/Meta chat path, or None when unset."""
+    api_key, base_url, _model = deepseek_config()
+    if not api_key:
+        return None
+    cached = _client_cache.get((api_key, base_url))
+    if cached is None:
+        cached = OpenAI(api_key=api_key, base_url=base_url)
+        _client_cache.clear()
+        _client_cache[(api_key, base_url)] = cached
+    return cached
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are {assistant_name}, a helpful support assistant for {name}. "
@@ -92,6 +144,8 @@ def bot_to_dict(row, message_count=None):
         "system_prompt": row["system_prompt"] or "",
         "knowledge_base": row["knowledge_base"] or "",
         "webhook_url": row["webhook_url"] or "",
+        "profile_id": row["profile_id"],
+        "use_profile_kb": bool(row["use_profile_kb"]),
         "owner_id": row["owner_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -99,6 +153,23 @@ def bot_to_dict(row, message_count=None):
     if message_count is not None:
         d["message_count"] = message_count
     return d
+
+
+def profile_out(row):
+    """Serialise a Business Profile row, parsing its JSON columns for the client."""
+    if not row:
+        return None
+    out = as_dict(row)
+    for key in ("services", "faq"):
+        try:
+            out[key] = json.loads(row[key] or "[]")
+        except Exception:
+            out[key] = []
+    try:
+        out["social"] = json.loads(row["social"] or "{}")
+    except Exception:
+        out["social"] = {}
+    return out
 
 
 def load_legacy_knowledge_base():
@@ -248,6 +319,16 @@ def seed_initial_data():
     except Exception as exc:  # pragma: no cover - defensive only
         app.logger.error("Seed error (ignored): %s", exc)
 
+    # Seed a Business Profile for the first account (uses its own connection).
+    try:
+        with get_connection() as conn:
+            admin = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        if admin and not profile_mod.get_profile(admin["id"]):
+            profile_mod.seed_sample_profile(admin["id"])
+            app.logger.info("Seeded Business Profile for user %s", admin["id"])
+    except Exception as exc:  # pragma: no cover - defensive only
+        app.logger.error("Profile seed error (ignored): %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -354,21 +435,25 @@ def create_bot():
     if not name:
         return jsonify({"error": "Name is required"}), 400
     bot_id = new_bot_id()
+    owner_profile = profile_mod.ensure_profile(session["user_id"]) or {}
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO bots (id, name, assistant_name, brand_color, logo_url, welcome_message, quick_replies, system_prompt, knowledge_base, webhook_url, owner_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO bots (id, name, assistant_name, brand_color, logo_url, welcome_message, quick_replies, system_prompt, knowledge_base, webhook_url, profile_id, use_profile_kb, owner_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 bot_id,
                 name,
                 (data.get("assistant_name") or "").strip() or "Assistant",
-                (data.get("brand_color") or "#4f46e5").strip(),
+                # Blank brand colour means "inherit from the Business Profile".
+                (data.get("brand_color") or "").strip(),
                 (data.get("logo_url") or "").strip(),
                 (data.get("welcome_message") or "").strip(),
                 json.dumps(data.get("quick_replies") or []),
                 (data.get("system_prompt") or "").strip(),
                 data.get("knowledge_base") or "",
                 (data.get("webhook_url") or "").strip(),
+                owner_profile.get("id"),
+                1 if data.get("use_profile_kb", True) else 0,
                 session.get("user_id"),
             ),
         )
@@ -395,7 +480,7 @@ def update_bot(bot_id):
         if not existing:
             return jsonify({"error": "Not found"}), 404
         conn.execute(
-            "UPDATE bots SET name=?, assistant_name=?, brand_color=?, logo_url=?, welcome_message=?, quick_replies=?, system_prompt=?, knowledge_base=?, webhook_url=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE bots SET name=?, assistant_name=?, brand_color=?, logo_url=?, welcome_message=?, quick_replies=?, system_prompt=?, knowledge_base=?, webhook_url=?, updated_at=? WHERE id=?",
             (
                 (data.get("name") or existing["name"]).strip(),
                 (data.get("assistant_name") or existing["assistant_name"]).strip(),
@@ -406,6 +491,7 @@ def update_bot(bot_id):
                 (data.get("system_prompt") or existing["system_prompt"]).strip(),
                 data.get("knowledge_base", existing["knowledge_base"]),
                 (data.get("webhook_url") or existing["webhook_url"] or "").strip(),
+                now_str(),
                 bot_id,
             ),
         )
@@ -418,7 +504,120 @@ def update_bot(bot_id):
 def delete_bot(bot_id):
     with get_connection() as conn:
         conn.execute("DELETE FROM messages WHERE bot_id = ?", (bot_id,))
+        conn.execute("DELETE FROM channels WHERE bot_id = ?", (bot_id,))
         conn.execute("DELETE FROM bots WHERE id = ?", (bot_id,))
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Channels (Meta: Messenger / Instagram / WhatsApp)
+# ---------------------------------------------------------------------------
+CHANNEL_PLATFORMS = ("messenger", "instagram", "whatsapp")
+
+
+def channel_to_dict(row, mask=True):
+    """Serialise a channel row. Tokens/secrets are hidden unless mask=False."""
+    d = {
+        "id": row["id"],
+        "bot_id": row["bot_id"],
+        "platform": row["platform"],
+        "external_id": row["external_id"],
+        "enabled": bool(row["enabled"]),
+        "verify_token": row["verify_token"] or "",
+        "has_token": bool(row["access_token"]),
+        "has_app_secret": bool(row["app_secret"]),
+        "created_at": row["created_at"],
+    }
+    if not mask:
+        d["access_token"] = row["access_token"] or ""
+        d["app_secret"] = row["app_secret"] or ""
+    return d
+
+
+@app.route("/api/bots/<bot_id>/channels", methods=["GET"])
+@login_required
+def list_channels(bot_id):
+    with get_connection() as conn:
+        if not conn.execute("SELECT id FROM bots WHERE id = ?", (bot_id,)).fetchone():
+            return jsonify({"error": "Not found"}), 404
+        rows = conn.execute("SELECT * FROM channels WHERE bot_id = ? ORDER BY created_at", (bot_id,)).fetchall()
+    return jsonify({"channels": [channel_to_dict(r) for r in rows]})
+
+
+@app.route("/api/bots/<bot_id>/channels", methods=["POST"])
+@login_required
+def create_channel(bot_id):
+    data = request.get_json(silent=True) or {}
+    platform = (data.get("platform") or "").strip().lower()
+    external_id = (data.get("external_id") or "").strip()
+    if platform not in CHANNEL_PLATFORMS:
+        return jsonify({"error": "Invalid platform"}), 400
+    if not external_id:
+        return jsonify({"error": "Page/Instagram/Phone ID is required"}), 400
+    verify_token = (data.get("verify_token") or "").strip() or secrets.token_urlsafe(16)
+    with get_connection() as conn:
+        if not conn.execute("SELECT id FROM bots WHERE id = ?", (bot_id,)).fetchone():
+            return jsonify({"error": "Not found"}), 404
+        try:
+            cur = conn.execute(
+                "INSERT INTO channels (bot_id, platform, external_id, access_token, app_secret, verify_token) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    bot_id,
+                    platform,
+                    external_id,
+                    (data.get("access_token") or "").strip(),
+                    (data.get("app_secret") or "").strip(),
+                    verify_token,
+                ),
+            )
+        except IntegrityError:
+            return jsonify({"error": "That platform + ID is already linked"}), 409
+        row = conn.execute("SELECT * FROM channels WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify({"channel": channel_to_dict(row)}), 201
+
+
+@app.route("/api/bots/<bot_id>/channels/<int:channel_id>", methods=["PUT"])
+@login_required
+def update_channel(bot_id, channel_id):
+    data = request.get_json(silent=True) or {}
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM channels WHERE id = ? AND bot_id = ?", (channel_id, bot_id)
+        ).fetchone()
+        if not existing:
+            return jsonify({"error": "Not found"}), 404
+        platform = (data.get("platform") or existing["platform"]).strip().lower()
+        if platform not in CHANNEL_PLATFORMS:
+            return jsonify({"error": "Invalid platform"}), 400
+        # Blank token/secret fields keep their stored value (so the UI can mask them).
+        access_token = (data.get("access_token") or "").strip() or existing["access_token"]
+        app_secret = (data.get("app_secret") or "").strip() or existing["app_secret"]
+        try:
+            conn.execute(
+                "UPDATE channels SET platform=?, external_id=?, access_token=?, app_secret=?, verify_token=?, enabled=? "
+                "WHERE id=?",
+                (
+                    platform,
+                    (data.get("external_id") or existing["external_id"]).strip(),
+                    access_token,
+                    app_secret,
+                    (data.get("verify_token") or existing["verify_token"]).strip(),
+                    1 if data.get("enabled", bool(existing["enabled"])) else 0,
+                    channel_id,
+                ),
+            )
+        except IntegrityError:
+            return jsonify({"error": "That platform + ID is already linked"}), 409
+        row = conn.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
+    return jsonify({"channel": channel_to_dict(row)})
+
+
+@app.route("/api/bots/<bot_id>/channels/<int:channel_id>", methods=["DELETE"])
+@login_required
+def delete_channel(bot_id, channel_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM channels WHERE id = ? AND bot_id = ?", (channel_id, bot_id))
     return jsonify({"ok": True})
 
 
@@ -434,12 +633,16 @@ def bot_stats(bot_id):
             return jsonify({"error": "Not found"}), 404
         total_messages = conn.execute("SELECT COUNT(*) FROM messages WHERE bot_id = ?", (bot_id,)).fetchone()[0]
         total_conversations = conn.execute("SELECT COUNT(DISTINCT conversation_id) FROM messages WHERE bot_id = ?", (bot_id,)).fetchone()[0]
+        # Portable (SQLite + PostgreSQL): timestamps are TEXT in 'YYYY-MM-DD HH:MM:SS',
+        # compared lexicographically and grouped by their date prefix.
         per_day = conn.execute(
-            "SELECT date(created_at) AS d, COUNT(*) AS c FROM messages WHERE bot_id = ? AND created_at >= datetime('now', '-14 days') GROUP BY d ORDER BY d",
-            (bot_id,),
+            "SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS c FROM messages "
+            "WHERE bot_id = ? AND created_at >= ? GROUP BY substr(created_at, 1, 10) ORDER BY d",
+            (bot_id, days_ago(14)),
         ).fetchall()
         top = conn.execute(
-            "SELECT content, COUNT(*) AS c FROM messages WHERE bot_id = ? AND role = 'user' GROUP BY lower(trim(content)) ORDER BY c DESC LIMIT 10",
+            "SELECT MIN(content) AS content, COUNT(*) AS c FROM messages "
+            "WHERE bot_id = ? AND role = 'user' GROUP BY lower(trim(content)) ORDER BY c DESC LIMIT 10",
             (bot_id,),
         ).fetchall()
     return jsonify({
@@ -523,20 +726,104 @@ def bot_public(bot_id):
         row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
     if not row:
         return jsonify({"error": "Not found"}), 404
+    # Branding falls back to the owner's Business Profile so the widget
+    # inherits the business identity without per-bot configuration.
+    prof = profile_mod.get_profile(row["owner_id"]) if row["owner_id"] else None
+    fallback_color = (prof or {}).get("brand_color") or "#4f46e5"
     return jsonify({
         "id": row["id"],
         "name": row["name"],
         "assistant_name": row["assistant_name"],
-        "brand_color": row["brand_color"],
-        "logo_url": row["logo_url"] or "",
+        "brand_color": (row["brand_color"] or "").strip() or fallback_color,
+        "logo_url": (row["logo_url"] or "") or ((prof or {}).get("logo_url") or ""),
         "welcome_message": row["welcome_message"] or "",
         "quick_replies": json.loads(row["quick_replies"] or "[]"),
     })
 
 
+def load_history(bot_id, conversation_id, limit=10):
+    """Rebuild recent turns from the messages table.
+
+    Meta channels don't send client-side history with each message, so we
+    reconstruct it from what we've already stored for the conversation.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT role, content FROM messages WHERE bot_id = ? AND conversation_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (bot_id, conversation_id, limit),
+        ).fetchall()
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+
+def generate_reply(bot, user_message, history, conversation_id):
+    """Run the RAG chat pipeline for one user turn (shared by all channels).
+
+    Persists the exchange, fires the optional outbound webhook, and returns
+    ``(reply, conversation_id, webhook_payload)``. Raises on model errors.
+    """
+    context = (bot["knowledge_base"] or "").strip()
+
+    # Business Profile knowledge base — inherited by default (bots can opt out).
+    business = None
+    if bot.get("use_profile_kb", True) and bot.get("owner_id"):
+        business = profile_mod.get_profile(bot["owner_id"])
+        profile_kb = profile_mod.build_knowledge(business)
+        if profile_kb:
+            context = (profile_kb + "\n\n" + context).strip()
+
+    limit = max_kb_chars()
+    if len(context) > limit:
+        context = context[:limit]
+
+    if bot["system_prompt"]:
+        system_content = bot["system_prompt"] + "\n\nKnowledge Base:\n" + context
+    else:
+        system_content = DEFAULT_SYSTEM_PROMPT.format(
+            assistant_name=bot["assistant_name"] or "Assistant",
+            name=bot["name"],
+            context=context or "No additional context provided.",
+        )
+        tone = ((business or {}).get("tone_of_voice") or "").strip()
+        if tone:
+            system_content += "\n\nBrand voice: " + tone
+
+    if bot.get("webhook_url"):
+        system_content += WEBHOOK_HINT
+
+    messages = [{"role": "system", "content": system_content}]
+    for msg in (history or [])[-10:]:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in ("user", "assistant") and isinstance(content, str):
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    _api_key, _base_url, model_name = deepseek_config()
+    chat_client = get_client()
+    if chat_client is None:
+        raise RuntimeError("DeepSeek API key is not configured")
+    resp = chat_client.chat.completions.create(
+        model=model_name, messages=messages, temperature=0.2, max_tokens=800
+    )
+    webhook_payload, reply = _extract_webhook_payload(resp.choices[0].message.content)
+    if not reply:
+        reply = "Got it — thanks!"
+
+    with get_connection() as conn:
+        conn.execute("INSERT INTO messages (bot_id, conversation_id, role, content) VALUES (?, ?, ?, ?)", (bot["id"], conversation_id, "user", user_message))
+        conn.execute("INSERT INTO messages (bot_id, conversation_id, role, content) VALUES (?, ?, ?, ?)", (bot["id"], conversation_id, "assistant", reply))
+
+    # Webhook: forward the AI-constructed payload (emitted as WEBHOOK_PAYLOAD in its reply).
+    if webhook_payload is not None and bot.get("webhook_url"):
+        _send_webhook_async(bot["webhook_url"], webhook_payload)
+
+    return reply, conversation_id, webhook_payload
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    if client is None:
+    if get_client() is None:
         return jsonify({"reply": "Server is not configured with a DeepSeek API key."}), 500
     data = request.get_json(silent=True) or {}
     bot_id = data.get("bot_id")
@@ -553,49 +840,490 @@ def chat():
         return jsonify({"reply": "Chatbot not found."}), 404
 
     bot = bot_to_dict(row)
-    context = (bot["knowledge_base"] or "").strip()
-    if len(context) > MAX_KB_CHARS:
-        context = context[:MAX_KB_CHARS]
-
-    if bot["system_prompt"]:
-        system_content = bot["system_prompt"] + "\n\nKnowledge Base:\n" + context
-    else:
-        system_content = DEFAULT_SYSTEM_PROMPT.format(
-            assistant_name=bot["assistant_name"] or "Assistant",
-            name=bot["name"],
-            context=context or "No additional context provided.",
-        )
-
-    if bot.get("webhook_url"):
-        system_content += WEBHOOK_HINT
-
-    messages = [{"role": "system", "content": system_content}]
-    for msg in history[-10:]:
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in ("user", "assistant") and isinstance(content, str):
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message})
-
-    webhook_payload = None
     try:
-        resp = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.2, max_tokens=800)
-        webhook_payload, reply = _extract_webhook_payload(resp.choices[0].message.content)
-        if not reply:
-            reply = "Got it — thanks!"
+        reply, conversation_id, _payload = generate_reply(bot, user_message, history, conversation_id)
     except Exception as exc:
         app.logger.error("DeepSeek API error: %s", exc)
         return jsonify({"reply": f"Error connecting to AI: {exc}"}), 500
 
-    with get_connection() as conn:
-        conn.execute("INSERT INTO messages (bot_id, conversation_id, role, content) VALUES (?, ?, ?, ?)", (bot_id, conversation_id, "user", user_message))
-        conn.execute("INSERT INTO messages (bot_id, conversation_id, role, content) VALUES (?, ?, ?, ?)", (bot_id, conversation_id, "assistant", reply))
-
-    # Webhook: forward the AI-constructed payload (emitted as WEBHOOK_PAYLOAD in its reply).
-    if webhook_payload is not None and bot.get("webhook_url"):
-        _send_webhook_async(bot["webhook_url"], webhook_payload)
-
     return jsonify({"reply": reply, "conversation_id": conversation_id})
+
+
+# ---------------------------------------------------------------------------
+# Meta webhooks (Messenger / Instagram / WhatsApp)
+# ---------------------------------------------------------------------------
+def _find_channel(platform, external_id):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM channels WHERE platform = ? AND external_id = ? AND enabled = 1",
+            (platform, external_id),
+        ).fetchone()
+    return as_dict(row) if row else None
+
+
+def _find_channel_by_verify_token(token):
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM channels WHERE verify_token = ? LIMIT 1", (token,)).fetchone()
+    return as_dict(row) if row else None
+
+
+def _process_meta_event(channel, event):
+    """Background worker: build a reply for one inbound message and send it back."""
+    with get_connection() as conn:
+        bot_row = conn.execute("SELECT * FROM bots WHERE id = ?", (channel["bot_id"],)).fetchone()
+    if not bot_row:
+        app.logger.warning("Meta event for unknown bot %s", channel["bot_id"])
+        return
+    if get_client() is None:
+        app.logger.error("Meta event dropped: DeepSeek API key is not configured")
+        return
+
+    bot = bot_to_dict(bot_row)
+    conversation_id = "meta:%s:%s:%s" % (event["platform"], event["external_id"], event["sender_id"])
+    history = load_history(bot["id"], conversation_id, limit=10)
+    try:
+        reply, _cid, _payload = generate_reply(bot, event["text"], history, conversation_id)
+    except Exception as exc:
+        app.logger.error("Meta reply generation failed: %s", exc)
+        return
+    try:
+        status, body = meta_api.send_reply(channel, event["sender_id"], reply)
+        if status >= 400:
+            app.logger.error("Meta send failed (%s): %s", status, body)
+    except Exception as exc:
+        app.logger.error("Meta send error: %s", exc)
+
+
+@app.route("/webhooks/meta", methods=["GET"])
+def meta_verify():
+    """Meta webhook verification handshake (returns hub.challenge on success)."""
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token") or ""
+    challenge = request.args.get("hub.challenge", "")
+    channel = _find_channel_by_verify_token(token) if token else None
+    if mode == "subscribe" and token and (token == meta_verify_token() or channel is not None):
+        return app.response_class(challenge, mimetype="text/plain")
+    return jsonify({"error": "Verification failed"}), 403
+
+
+@app.route("/webhooks/meta", methods=["POST"])
+def meta_webhook():
+    raw = request.get_data()
+    payload = request.get_json(silent=True) or {}
+    events = meta_api.parse_events(payload)
+
+    # Nothing actionable (e.g. delivery/read receipts) — acknowledge quietly.
+    if not events:
+        return app.response_class("EVENT_RECEIVED", mimetype="text/plain")
+
+    # Prefer the global app secret; otherwise fall back to the linked channel's.
+    secret = meta_app_secret()
+    if not secret:
+        first = _find_channel(events[0]["platform"], events[0]["external_id"])
+        if first:
+            secret = first.get("app_secret") or ""
+    if not secret:
+        app.logger.error("Meta webhook rejected: no app secret configured")
+        return jsonify({"error": "App secret not configured"}), 403
+    if not meta_api.verify_signature(raw, request.headers.get("X-Hub-Signature-256", ""), secret):
+        app.logger.warning("Meta webhook signature verification failed")
+        return jsonify({"error": "Invalid signature"}), 403
+
+    for event in events:
+        channel = _find_channel(event["platform"], event["external_id"])
+        if not channel:
+            app.logger.info("Meta event for unlinked channel %s/%s", event["platform"], event["external_id"])
+            continue
+        mid = event.get("mid")
+        if mid:
+            with get_connection() as conn:
+                cur = conn.execute("INSERT OR IGNORE INTO meta_events (mid) VALUES (?)", (mid,))
+            if cur.rowcount == 0:
+                continue  # already handled (Meta redelivery)
+        threading.Thread(target=_process_meta_event, args=(channel, event), daemon=True).start()
+
+    return app.response_class("EVENT_RECEIVED", mimetype="text/plain")
+
+
+# ---------------------------------------------------------------------------
+# Business Profile (the AI's knowledge base + brand identity)
+# ---------------------------------------------------------------------------
+@app.route("/api/profile", methods=["GET"])
+@login_required
+def get_business_profile():
+    prof = profile_mod.ensure_profile(session["user_id"])
+    return jsonify({"profile": profile_out(prof)})
+
+
+@app.route("/api/profile", methods=["PUT"])
+@login_required
+def update_business_profile():
+    data = request.get_json(silent=True) or {}
+    prof = profile_mod.update_profile(session["user_id"], data)
+    return jsonify({"profile": profile_out(prof)})
+
+
+@app.route("/api/profile/knowledge", methods=["GET"])
+@login_required
+def business_profile_knowledge():
+    """The exact text the AI receives as its knowledge base (for preview)."""
+    prof = profile_mod.get_profile(session["user_id"])
+    text = profile_mod.build_knowledge(prof)
+    return jsonify({"knowledge": text, "chars": len(text)})
+
+
+@app.route("/api/profile/seed-sample", methods=["POST"])
+@login_required
+def business_profile_seed():
+    prof = profile_mod.seed_sample_profile(session["user_id"])
+    return jsonify({"profile": profile_out(prof)})
+
+
+# ---------------------------------------------------------------------------
+# Settings (operator-managed configuration)
+#
+# Admin-only, because these are global rather than per-user and several are
+# secrets. GET never returns a secret value: only whether it is set, where the
+# effective value came from, and a short tail so keys can be told apart.
+# ---------------------------------------------------------------------------
+@app.route("/api/settings", methods=["GET"])
+@admin_required
+def get_settings():
+    return jsonify({
+        "groups": settings.all_for_ui(),
+        "history": settings.history(25),
+        "dry_run": actions.is_dry_run(),
+    })
+
+
+@app.route("/api/settings", methods=["PUT"])
+@admin_required
+def update_settings():
+    """Save a batch. A blank secret means "leave the stored value alone"."""
+    data = request.get_json(silent=True) or {}
+    values = data.get("values") or {}
+    clear = data.get("clear") or []
+    if not isinstance(values, dict) or not isinstance(clear, (list, tuple)):
+        return jsonify({"error": "values must be an object and clear a list"}), 400
+
+    actor = session.get("email") or str(session.get("user_id") or "admin")
+    try:
+        changed = settings.update_many(values, clear, actor)
+    except settings.SettingsError as exc:
+        return jsonify({"error": str(exc)}), 400
+    app.logger.info(
+        "Settings updated by %s: %s", actor, ", ".join(changed) or "(nothing changed)"
+    )
+    return jsonify({"changed": changed, "groups": settings.all_for_ui()})
+
+
+@app.route("/api/settings/test/<group_id>", methods=["POST"])
+@admin_required
+def test_settings_group(group_id):
+    """Run a group's live check - e.g. a real Pexels search with the saved key."""
+    return jsonify(settings.test(group_id))
+
+
+# ---------------------------------------------------------------------------
+# Agents (designatable roster)
+# ---------------------------------------------------------------------------
+@app.route("/api/agents", methods=["GET"])
+@login_required
+def list_agents():
+    return jsonify({
+        "agents": agent_roster.list_agents(),
+        "tools": tool_registry.describe(),
+        "providers": llm.list_providers(),
+        "router": {
+            "provider": (os.environ.get("AGENT_ROUTER_PROVIDER") or "deepseek").strip(),
+            "model": (os.environ.get("AGENT_ROUTER_MODEL") or "").strip(),
+        },
+        "max_messages": int(os.environ.get("AGENT_MAX_MESSAGES", "20")),
+    })
+
+
+@app.route("/api/agents", methods=["POST"])
+@login_required
+def create_agent():
+    data = request.get_json(silent=True) or {}
+    if not (data.get("name") or "").strip():
+        return jsonify({"error": "Name is required"}), 400
+    return jsonify({"agent": agent_roster.create_agent(data)}), 201
+
+
+@app.route("/api/agents/<int:agent_id>", methods=["PUT"])
+@login_required
+def update_agent(agent_id):
+    updated = agent_roster.update_agent(agent_id, request.get_json(silent=True) or {})
+    if not updated:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"agent": updated})
+
+
+@app.route("/api/agents/<int:agent_id>", methods=["DELETE"])
+@login_required
+def delete_agent(agent_id):
+    if not agent_roster.get_agent(agent_id):
+        return jsonify({"error": "Not found"}), 404
+    agent_roster.delete_agent(agent_id)
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Servers (SSH targets the Operator may use)
+# ---------------------------------------------------------------------------
+@app.route("/api/ssh-hosts", methods=["GET"])
+@login_required
+def list_ssh_hosts():
+    return jsonify({"hosts": servers_service.list_hosts(), "dry_run": actions.is_dry_run()})
+
+
+@app.route("/api/ssh-hosts", methods=["POST"])
+@login_required
+def create_ssh_host():
+    data = request.get_json(silent=True) or {}
+    if not (data.get("host") or "").strip():
+        return jsonify({"error": "host is required"}), 400
+    return jsonify({"host": servers_service.create_host(data)}), 201
+
+
+@app.route("/api/ssh-hosts/<int:host_id>", methods=["PUT"])
+@login_required
+def update_ssh_host(host_id):
+    updated = servers_service.update_host(host_id, request.get_json(silent=True) or {})
+    if not updated:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"host": updated})
+
+
+@app.route("/api/ssh-hosts/<int:host_id>", methods=["DELETE"])
+@login_required
+def delete_ssh_host(host_id):
+    if not servers_service.get_host(host_id):
+        return jsonify({"error": "Not found"}), 404
+    servers_service.delete_host(host_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ssh-hosts/<int:host_id>/test", methods=["POST"])
+@admin_required
+def test_ssh_host(host_id):
+    """Connect and run a read-only probe. Never mutates anything."""
+    host = servers_service.get_host(host_id)
+    if not host:
+        return jsonify({"error": "Not found"}), 404
+    target = "%s@%s:%s" % (host["username"], host["host"], host["port"])
+    if actions.is_dry_run():
+        return jsonify({
+            "ok": False, "dry_run": True, "target": target,
+            "output": "dry-run: set ALLOW_LIVE_ACTIONS=1 to probe a real server",
+        })
+    try:
+        result = ssh_tool.check(host)
+    except Exception as exc:
+        result = {"ok": False, "target": target, "output": "%s: %s" % (type(exc).__name__, exc)}
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Sites (hosting)
+# ---------------------------------------------------------------------------
+@app.route("/api/sites", methods=["GET"])
+@login_required
+def list_sites():
+    targets = [{"value": "local", "label": "This server (local)"}]
+    for host in servers_service.list_hosts():
+        if host["enabled"]:
+            targets.append({
+                "value": str(host["id"]),
+                "label": "%s (%s@%s)" % (host["label"], host["username"], host["host"]),
+            })
+    return jsonify({
+        "sites": sites_service.list_sites(),
+        "targets": targets,
+        "dry_run": actions.is_dry_run(),
+        "server_ip": provisioner.SERVER_IP,
+    })
+
+
+@app.route("/api/sites", methods=["POST"])
+@login_required
+def create_site():
+    data = request.get_json(silent=True) or {}
+    domain = (data.get("domain") or "").strip().lower()
+    if not tool_policy.check_domain(domain).allowed:
+        return jsonify({"error": "That is not a valid domain name"}), 400
+    if sites_service.get_site_by_domain(domain):
+        return jsonify({"error": "That domain is already configured"}), 409
+    return jsonify({"site": sites_service.create_site(data, owner_id=session["user_id"])}), 201
+
+
+@app.route("/api/sites/<int:site_id>", methods=["GET"])
+@login_required
+def get_site(site_id):
+    site = sites_service.get_site(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"site": site})
+
+
+@app.route("/api/sites/<int:site_id>", methods=["PUT"])
+@login_required
+def update_site(site_id):
+    updated = sites_service.update_site(site_id, request.get_json(silent=True) or {})
+    if not updated:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"site": updated})
+
+
+@app.route("/api/sites/<int:site_id>", methods=["DELETE"])
+@login_required
+def delete_site(site_id):
+    if not sites_service.get_site(site_id):
+        return jsonify({"error": "Not found"}), 404
+    sites_service.delete_site(site_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sites/<int:site_id>/dns", methods=["GET"])
+@login_required
+def site_dns(site_id):
+    """The exact DNS records to create, plus what the domain resolves to now."""
+    site = sites_service.get_site(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({
+        "site": site,
+        "records": provisioner.dns_records(site["domain"]),
+        "check": provisioner.check_dns(site["domain"]),
+        "server_ip": provisioner.SERVER_IP,
+    })
+
+
+@app.route("/api/sites/<int:site_id>/check", methods=["POST"])
+@login_required
+def check_site(site_id):
+    """Re-check DNS. Read-only, so it needs no approval."""
+    site = sites_service.get_site(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    info = provisioner.check_dns(site["domain"])
+    updated = sites_service.update_site(site_id, {
+        "dns_last_ip": ", ".join(info["resolved"])[:200],
+        "dns_last_check": now_str(),
+        "status": "dns_ok" if (info["ok"] and site["status"] != "live") else site["status"],
+    })
+    return jsonify({"site": updated, "check": info})
+
+
+@app.route("/api/sites/<int:site_id>/provision", methods=["POST"])
+@login_required
+def provision_site(site_id):
+    """Queue provisioning as a job, so its transcript and approvals stream live."""
+    site = sites_service.get_site(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    job_id = jobs.create_job(
+        "Provision %s" % site["domain"], site["domain"],
+        session.get("user_id"), "selector", "site_provision",
+    )
+    jobs.submit(job_id)
+    return jsonify({"job": jobs.get_job(job_id), "site": site}), 201
+
+
+# ---------------------------------------------------------------------------
+# Approvals (the action gate in live mode)
+# ---------------------------------------------------------------------------
+@app.route("/api/approvals", methods=["GET"])
+@login_required
+def list_approvals():
+    status = request.args.get("status") or None
+    return jsonify({"approvals": actions.list_approvals(status), "dry_run": actions.is_dry_run()})
+
+
+@app.route("/api/approvals/<int:approval_id>/<decision>", methods=["POST"])
+@login_required
+def decide_approval(approval_id, decision):
+    if decision not in ("approve", "deny"):
+        return jsonify({"error": "decision must be approve or deny"}), 400
+    if not actions.get_approval(approval_id):
+        return jsonify({"error": "Not found"}), 404
+    row = actions.decide_approval(
+        approval_id,
+        "approved" if decision == "approve" else "denied",
+        decided_by=session.get("name") or session.get("email") or "operator",
+    )
+    return jsonify({"approval": row})
+
+
+# ---------------------------------------------------------------------------
+# Agent jobs (background AutoGen runs)
+# ---------------------------------------------------------------------------
+@app.route("/api/jobs", methods=["GET"])
+@login_required
+def list_jobs():
+    return jsonify({"jobs": jobs.list_jobs()})
+
+
+@app.route("/api/jobs", methods=["POST"])
+@login_required
+def create_job():
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+    title = (data.get("title") or "").strip() or prompt[:60]
+    task_name = (data.get("task") or jobs.DEFAULT_TASK).strip()
+    if task_name not in jobs.TASKS:
+        return jsonify({"error": "Unknown task: %s" % task_name}), 400
+    team_mode = (data.get("team_mode") or "selector").strip()
+    job_id = jobs.create_job(title, prompt, session.get("user_id"), team_mode, task_name)
+    jobs.submit(job_id)
+    return jsonify({"job": jobs.get_job(job_id)}), 201
+
+
+@app.route("/api/jobs/<int:job_id>", methods=["GET"])
+@login_required
+def get_job(job_id):
+    job = jobs.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"job": job, "artifacts": jobs.list_artifacts(job_id)})
+
+
+@app.route("/api/jobs/<int:job_id>/events", methods=["GET"])
+@login_required
+def job_events(job_id):
+    job = jobs.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    after = request.args.get("after", type=int) or 0
+    return jsonify({
+        "job": job,
+        "events": jobs.get_events(job_id, after),
+        "artifacts": jobs.list_artifacts(job_id),
+    })
+
+
+@app.route("/api/jobs/<int:job_id>/cancel", methods=["POST"])
+@login_required
+def cancel_job(job_id):
+    if not jobs.get_job(job_id):
+        return jsonify({"error": "Not found"}), 404
+    jobs.cancel_job(job_id)
+    return jsonify({"job": jobs.get_job(job_id)})
+
+
+# ---------------------------------------------------------------------------
+# Providers (agent model routing)
+# ---------------------------------------------------------------------------
+@app.route("/api/providers", methods=["GET"])
+def providers():
+    return jsonify({
+        "providers": llm.list_providers(),
+        "configured": llm.configured_providers(),
+        "default": llm.DEFAULT_PROVIDER,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -606,12 +1334,22 @@ def health():
     with get_connection() as conn:
         bot_count = conn.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
+        agent_count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
+        job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     return jsonify({
         "status": "ok",
-        "model": MODEL,
-        "api_key_configured": bool(DEEPSEEK_API_KEY),
+        "model": deepseek_config()[2],
+        "api_key_configured": bool(deepseek_config()[0]),
+        "providers_configured": llm.configured_providers(),
+        "brand": brand(),
         "bots": bot_count,
         "users": user_count,
+        "channels": channel_count,
+        "agents": agent_count,
+        "jobs": job_count,
+        "job_backend": jobs.JOB_BACKEND,
+        "database": "postgresql" if os.environ.get("DATABASE_URL", "").startswith("postgres") else "sqlite",
     })
 
 
@@ -657,6 +1395,13 @@ def demo():
 # ---------------------------------------------------------------------------
 init_db()
 seed_initial_data()
+
+# Seed the default agent roster (no-op once agents exist).
+agent_roster.ensure_roster()
+
+# Start the in-process job runner (idempotent). With JOB_BACKEND=redis the
+# app enqueues onto the arq worker instead; the runner stays idle.
+jobs.get_runner().start()
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")

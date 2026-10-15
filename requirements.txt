@@ -3,3 +3,17 @@ flask-cors>=4.0
 openai>=1.30
 python-dotenv>=1.0
 gunicorn>=21.2
+fastapi>=0.115
+uvicorn[standard]>=0.30
+a2wsgi>=1.10
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.2
+arq>=0.26
+redis>=5.0
+
+# --- Agent platform (AutoGen multi-agent) ---
+autogen-agentchat>=0.7.5
+autogen-ext[anthropic,openai]>=0.7.5
+paramiko>=5.0
+google-genai>=2.0

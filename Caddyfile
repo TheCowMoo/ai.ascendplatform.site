@@ -1,0 +1,44 @@
+# Caddyfile for CMBGrowthAI
+#
+# Caddy obtains and renews TLS certificates automatically — there is no certbot,
+# no nginx and no control panel to install. Point the domain's A/AAAA record at
+# this server (ports 80 + 443 open) and HTTPS is provisioned on first request.
+#
+# ADMIN_DOMAIN comes from .env (defaults to localhost for local testing, which
+# uses Caddy's internal CA).
+
+{
+	# The admin API lets the app reload Caddy after writing a site config.
+	# Reachable only on the compose network; never published to the host.
+	admin 0.0.0.0:2019
+}
+
+{$ADMIN_DOMAIN:localhost} {
+	encode zstd gzip
+	log {
+		output file /data/logs/admin.log
+	}
+
+	# The app (FastAPI + Flask over ASGI) on the compose network.
+	reverse_proxy app:8000 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Hosted customer sites (Sites tab).
+#
+# The provisioner writes one file per domain into /etc/caddy/sites and reloads
+# Caddy through its admin API. Each block gets its own certificate automatically
+# as soon as the domain's DNS points here - no certbot, no per-site config in
+# this file.
+#
+# Example of what gets generated:
+#   example.com, www.example.com {
+#     encode zstd gzip
+#     root * /srv/sites/example.com/public_html
+#     file_server
+#   }
+# ---------------------------------------------------------------------------
+import /etc/caddy/sites/*.caddy

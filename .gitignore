@@ -12,6 +12,10 @@ venv/
 
 # Runtime data (SQLite DB lives here)
 data/
+artifacts/
+sites/
+sites-conf/
+*.log
 
 # OS / editor
 .DS_Store

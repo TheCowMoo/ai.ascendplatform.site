@@ -1,0 +1,44 @@
+# LiteLLM gateway configuration (stage S4).
+#
+# Start it with:   docker compose --profile gateway up -d litellm
+# then set in .env: LLM_GATEWAY_URL=http://litellm:4000
+#                   LLM_GATEWAY_KEY=sk-cmgrowthai
+#
+# Every provider becomes one OpenAI-compatible endpoint, so the app needs a
+# single client. Provider keys live here rather than in the app, and you get
+# spend tracking, retries and fallbacks for free.
+#
+# Model ids are `provider/model`, which is exactly what llm.py sends when the
+# gateway is enabled (e.g. "anthropic/claude-sonnet-4-5").
+
+model_list:
+  - model_name: anthropic/claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: deepseek/deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: gemini/gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini/gemini-2.5-flash-image
+    litellm_params:
+      model: gemini/gemini-2.5-flash-image
+      api_key: os.environ/GEMINI_API_KEY
+
+litellm_settings:
+  # Providers reject each other's extra params; let the gateway drop them.
+  drop_params: true
+  num_retries: 2
+  # Fall back to DeepSeek if Claude is unavailable or rate limited:
+  # fallbacks: [{"anthropic/claude-sonnet-4-5": ["deepseek/deepseek-chat"]}]
+
+general_settings:
+  # Clients authenticate to the gateway with this key.
+  master_key: os.environ/LLM_GATEWAY_KEY

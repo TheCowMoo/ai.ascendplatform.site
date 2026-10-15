@@ -1,50 +1,6 @@
-# Custom reverse proxy for the Chatbot Manager (Flask on 127.0.0.1:5000).
+# DEPRECATED (stage S2) — CMBGrowthAI no longer uses HestiaCP or nginx.
 #
-# Auto-included by HestiaCP's default nginx template inside the server {} block:
-#   include .../conf/web/<domain>/nginx.conf_*;        (HTTP)
+# The reverse proxy is now Caddy, configured in ../Caddyfile, with automatic
+# TLS (no certbot). See ../docker-compose.yml for the full stack.
 #
-# Only "location" blocks are allowed here (no "server"/"listen" lines).
-
-location /api/ {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection 'upgrade';
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_cache_bypass $http_upgrade;
-    proxy_read_timeout 120s;
-    proxy_send_timeout 120s;
-    client_max_body_size 10m;
-}
-
-location /admin/ {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-
-location = /admin {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_set_header Host $host;
-}
-
-location = / {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_set_header Host $host;
-}
-
-location = /widget.js {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_set_header Host $host;
-}
-
-location = /demo {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_set_header Host $host;
-}
+# Kept only as a reference for the previous Hestia-based deployment.
