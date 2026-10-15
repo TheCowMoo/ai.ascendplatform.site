@@ -101,13 +101,22 @@ litellm-config.yaml                           # optional LiteLLM gateway models
 python -m venv venv
 venv\Scripts\activate              # Windows   (Linux/macOS: source venv/bin/activate)
 pip install -r requirements.txt
-copy .env.example .env             # Windows   (Linux/macOS: cp .env.example .env)
-
-# edit .env: set DEEPSEEK_API_KEY, ADMIN_EMAIL, ADMIN_PASSWORD
 
 # Run the full app (FastAPI + Flask). This is also the production entry point.
 uvicorn asgi:app --reload          # http://127.0.0.1:8000/admin/  (API docs: /api/docs)
 ```
+
+No `.env` is needed. Everything except the first-run bootstrap below is set in the
+admin **Settings** tab, which stores values in the database and overrides `.env`
+(and applies without a restart).
+
+`.env` remains the right place for the two things that cannot come from the database:
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` — used once, to seed the first admin account
+  (defaults `admin@example.com` / `admin123`).
+- `SECRET_KEY` — otherwise generated into `.secret_key` on first run.
+
+Add `DEEPSEEK_API_KEY` (plus `PEXELS_API_KEY`, `GEMINI_API_KEY`, SMTP, …) in the
+Settings tab and press **Test** to confirm each one.
 
 > `python app.py` still works for quick Flask-only work, but it does **not** serve
 > the routes that have moved to FastAPI (currently the SSE job stream and
@@ -123,6 +132,9 @@ Migrations (needed for PostgreSQL; SQLite is created automatically):
 ```bash
 python -m alembic upgrade head
 ```
+
+The app itself never runs this — it calls `db.init_db()`. The container does, which
+is why `tests/test_migrations.py` runs the whole chain against an empty database.
 
 ---
 
