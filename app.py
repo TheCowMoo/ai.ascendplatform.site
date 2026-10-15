@@ -1,5 +1,5 @@
 """
-CMGrowthAI — Flask backend (business AI platform).
+AscendPlatform — Flask backend (business AI platform).
 
 A multi-bot AI chatbot platform:
   * Admin panel (served from /admin) to create and manage multiple chatbots.
@@ -70,7 +70,7 @@ def max_kb_chars():
 
 # Product name (shown in the admin UI and used in outbound copy).
 def brand():
-    return settings.get("BRAND_NAME") or "CMGrowthAI"
+    return settings.get("BRAND_NAME") or "AscendPlatform"
 
 # Meta (Messenger / Instagram / WhatsApp) webhook integration.
 # A per-channel app secret / verify token (set in the admin panel) overrides

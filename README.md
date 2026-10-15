@@ -131,7 +131,7 @@ python -m alembic upgrade head
 | Key | Purpose |
 |-----|---------|
 | `DATABASE_URL` | `sqlite:///data/app.db` (dev) or `postgresql+psycopg://...` (production) |
-| `BRAND_NAME` | Product name shown in the UI (default `CMGrowthAI`) |
+| `BRAND_NAME` | Product name shown in the UI (default `AscendPlatform`) |
 | `ADMIN_DOMAIN` | Public hostname Caddy serves and issues a TLS certificate for |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials used by docker compose |
 | `REDIS_URL` | Redis connection (used when `JOB_BACKEND=redis`) |
@@ -182,32 +182,33 @@ and certbot — nothing else to install, and no control panel required.
 ### One-command install
 
 ```bash
-cd /opt
-sudo git clone https://github.com/YOUR_USER/cmgrowthai.git
-cd cmgrowthai
-sudo ADMIN_DOMAIN=ai.example.com bash deploy/install.sh
+sudo git clone https://github.com/TheCowMoo/ai.ascendplatform.site.git /opt/ascendplatform
+cd /opt/ascendplatform
+sudo ADMIN_DOMAIN=ai.ascendplatform.site bash deploy/install.sh
 ```
 
-The installer installs Docker, copies the stack to `/opt/cmgrowthai`, prompts for
-your keys, generates the Postgres password and session secret, then runs
-`docker compose up -d --build`.
+The installer installs Docker, copies the stack to `/opt/ascendplatform` (skipped
+when you cloned straight there), prompts for your keys, generates the Postgres
+password and session secret, then runs `docker compose up -d --build`.
 
 Non-interactively:
 
 ```bash
-sudo ADMIN_DOMAIN=ai.example.com \
+sudo ADMIN_DOMAIN=ai.ascendplatform.site \
      ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=secret \
      DEEPSEEK_API_KEY=sk-xxx \
      bash deploy/install.sh
 ```
 
 ### What the installer does
-1. Installs Docker Engine + the compose plugin (if missing).
-2. Copies the app, `Dockerfile`, `docker-compose.yml` and `Caddyfile` to `/opt/cmgrowthai`.
-3. Writes `/opt/cmgrowthai/.env` (domain, Postgres credentials, API keys, admin login).
+1. Installs Docker Engine + the compose plugin (if missing), plus `rsync`.
+2. Copies the whole tree to `/opt/ascendplatform`, and creates `artifacts/`, `sites/`
+   and `sites-conf/` owned by uid `10001` — the user the container runs as, so the
+   app can actually write the images and Caddy vhosts it generates.
+3. Writes `/opt/ascendplatform/.env` (domain, Postgres credentials, API keys, admin login).
 4. `docker compose up -d --build` → starts Caddy, the app, PostgreSQL and Redis.
 
-At startup the app container runs `python -m alembic upgrade head` before gunicorn,
+At startup the app container runs `python -m alembic upgrade head` before uvicorn,
 so the database schema is created/migrated automatically.
 
 ### Verify

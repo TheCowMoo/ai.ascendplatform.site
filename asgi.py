@@ -32,7 +32,7 @@ import llm
 flask_app = flask_module.app
 
 app = FastAPI(
-    title="CMGrowthAI",
+    title="AscendPlatform",
     version="0.4.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",

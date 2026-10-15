@@ -164,7 +164,7 @@ def test_every_request_identifies_the_app():
             else:
                 raise AssertionError("%s should have raised" % label)
             agent = seen[-1].get_header("User-agent")
-            assert agent and "CMGrowthAI" in agent, (label, agent)
+            assert agent and "AscendPlatform" in agent, (label, agent)
             print("  %-9s User-Agent: %s" % (label, agent))
     finally:
         urllib.request.urlopen = original

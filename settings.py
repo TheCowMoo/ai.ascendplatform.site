@@ -149,7 +149,7 @@ SPEC = [
         "icon": "🎛️",
         "blurb": "Presentation and platform limits.",
         "fields": [
-            _f("BRAND_NAME", "Product name", default="CMGrowthAI"),
+            _f("BRAND_NAME", "Product name", default="AscendPlatform"),
             _f("MAX_KB_CHARS", "Knowledge-base cap (characters)", kind="int",
                default="30000"),
             _f("GRAPH_API_VERSION", "Meta Graph API version", default="v21.0"),

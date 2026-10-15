@@ -60,7 +60,7 @@ def max_bytes():
 # Cloudflare fronts Pexels and answers the default "Python-urllib/x.y" agent with
 # error 1010 (HTTP 403), which is indistinguishable from a rejected API key.
 # Identify the app instead - curl- and requests-style agents are accepted too.
-USER_AGENT = "CMGrowthAI/1.0 (+pexels)"
+USER_AGENT = "AscendPlatform/1.0 (+pexels)"
 
 # Only these hosts may be downloaded from (blocks SSRF via a model-supplied URL).
 ALLOWED_IMAGE_HOSTS = ("images.pexels.com",)

@@ -78,7 +78,7 @@ DEFAULT_PROVIDER = "deepseek"
 # providers directly (the default).
 # ---------------------------------------------------------------------------
 LLM_GATEWAY_URL = _env("LLM_GATEWAY_URL").rstrip("/")
-LLM_GATEWAY_KEY = _env("LLM_GATEWAY_KEY", "sk-cmgrowthai")
+LLM_GATEWAY_KEY = _env("LLM_GATEWAY_KEY", "sk-ascendplatform")
 
 
 def gateway_enabled():

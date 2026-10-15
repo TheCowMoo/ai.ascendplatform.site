@@ -21,7 +21,7 @@ from sqlalchemy.schema import CreateTable  # noqa: E402
 
 import db  # noqa: E402
 
-PG_URL = "postgresql+psycopg://cmgrowthai:secret@localhost:5432/cmgrowthai"
+PG_URL = "postgresql+psycopg://ascendplatform:secret@localhost:5432/ascendplatform"
 
 
 def test_bind():

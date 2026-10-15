@@ -746,15 +746,15 @@ deny  file:///etc/passwd
 **A real bug, found by testing against the live API.** The first live search
 returned `HTTP Error 403`, which reads exactly like a rejected key. The key was
 fine: Cloudflare fronts Pexels and answers the default `Python-urllib/3.x`
-User-Agent with **error 1010**. With an honest `CMGrowthAI/1.0 (+pexels)` agent the
+User-Agent with **error 1010**. With an honest `AscendPlatform/1.0 (+pexels)` agent the
 same key returns 200:
 
 | Request | User-Agent | Result |
 |---------|-----------|--------|
 | `api.pexels.com/v1/search` | default urllib | **403** (error 1010) |
-| `api.pexels.com/v1/search` | `CMGrowthAI/1.0` | **200** |
+| `api.pexels.com/v1/search` | `AscendPlatform/1.0` | **200** |
 | `images.pexels.com/...` | default urllib | **403** (error 1010) |
-| `images.pexels.com/...` | `CMGrowthAI/1.0` | **200** |
+| `images.pexels.com/...` | `AscendPlatform/1.0` | **200** |
 
 Both call sites now set the header, a 401/403 is reported as *"check the API key —
 and note Cloudflare blocks generic urllib user agents"* rather than a bare status

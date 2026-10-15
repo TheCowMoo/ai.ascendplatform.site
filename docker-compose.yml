@@ -1,4 +1,4 @@
-# CMBGrowthAI — production stack (Ubuntu VPS, no Hestia, no certbot).
+# AscendPlatform — production stack (Ubuntu VPS, no Hestia, no certbot).
 #
 #   cp .env.example .env    # then set POSTGRES_PASSWORD, ADMIN_DOMAIN, keys
 #   docker compose up -d --build
@@ -9,13 +9,13 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-cmgrowthai}
-      POSTGRES_USER: ${POSTGRES_USER:-cmgrowthai}
+      POSTGRES_DB: ${POSTGRES_DB:-ascendplatform}
+      POSTGRES_USER: ${POSTGRES_USER:-ascendplatform}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cmgrowthai} -d ${POSTGRES_DB:-cmgrowthai}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ascendplatform} -d ${POSTGRES_DB:-ascendplatform}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -30,7 +30,7 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cmgrowthai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cmgrowthai}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ascendplatform}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ascendplatform}
       REDIS_URL: redis://redis:6379/0
       JOB_BACKEND: ${JOB_BACKEND:-redis}
       HOST: 0.0.0.0
@@ -61,7 +61,7 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cmgrowthai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cmgrowthai}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ascendplatform}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ascendplatform}
       REDIS_URL: redis://redis:6379/0
       JOB_BACKEND: redis
     depends_on:
@@ -103,7 +103,7 @@ services:
     profiles: ["gateway"]
     env_file: .env
     environment:
-      LLM_GATEWAY_KEY: ${LLM_GATEWAY_KEY:-sk-cmgrowthai}
+      LLM_GATEWAY_KEY: ${LLM_GATEWAY_KEY:-sk-ascendplatform}
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]

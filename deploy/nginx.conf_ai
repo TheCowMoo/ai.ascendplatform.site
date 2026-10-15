@@ -1,6 +1,0 @@
-# DEPRECATED (stage S2) — CMBGrowthAI no longer uses HestiaCP or nginx.
-#
-# The reverse proxy is now Caddy, configured in ../Caddyfile, with automatic
-# TLS (no certbot). See ../docker-compose.yml for the full stack.
-#
-# Kept only as a reference for the previous Hestia-based deployment.

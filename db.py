@@ -4,7 +4,7 @@ Database layer for CMBGrowthAI.
 One ``DATABASE_URL`` selects the backend:
 
     DATABASE_URL=sqlite:///data/app.db                               (dev / small)
-    DATABASE_URL=postgresql+psycopg://user:pass@host:5432/cmgrowthai (production)
+    DATABASE_URL=postgresql+psycopg://user:pass@host:5432/ascendplatform (production)
 
 Queries keep the app's existing style — ``conn.execute(sql, params)`` with ``?``
 placeholders — and this module adapts them to SQLAlchemy, so the rest of the

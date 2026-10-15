@@ -2,7 +2,7 @@
 #
 # Start it with:   docker compose --profile gateway up -d litellm
 # then set in .env: LLM_GATEWAY_URL=http://litellm:4000
-#                   LLM_GATEWAY_KEY=sk-cmgrowthai
+#                   LLM_GATEWAY_KEY=sk-ascendplatform
 #
 # Every provider becomes one OpenAI-compatible endpoint, so the app needs a
 # single client. Provider keys live here rather than in the app, and you get

@@ -12,7 +12,9 @@
     cleanups = [];
   }
 
-  var BRAND = 'CMGrowthAI';
+  // Overridden from /api/health at boot, so BRAND_NAME in the Settings tab is the
+  // single source of truth and a rename needs no code change.
+  var BRAND = 'AscendPlatform';
 
   // Left-sidebar navigation. `ready: false` tabs render a "coming soon" panel.
   var NAV = [
@@ -1858,7 +1860,7 @@
     var port = el('input'); port.type = 'number'; port.value = host.port || 22;
     var username = el('input'); username.value = host.username || 'deploy'; username.placeholder = 'deploy';
     var keyPath = el('input'); keyPath.value = host.private_key_path || '';
-    keyPath.placeholder = '/opt/cmgrowthai/.ssh/id_deploy';
+    keyPath.placeholder = '/opt/ascendplatform/.ssh/id_deploy';
     var fingerprint = el('input'); fingerprint.value = host.host_key_fingerprint || '';
     fingerprint.placeholder = 'SHA256:... (from ssh-keyscan | ssh-keygen -lf -)';
     var sitesRoot = el('input'); sitesRoot.value = host.sites_root || host.allowed_root || '';
@@ -2186,7 +2188,13 @@
 
   window.addEventListener('hashchange', render);
 
-  api('GET', '/api/auth/me').then(function (d) {
+  api('GET', '/api/health').then(function (d) {
+    // The product name comes from the server (BRAND_NAME), so renaming is a
+    // Settings-tab change rather than a code edit.
+    if (d && d.brand) BRAND = d.brand;
+  }).catch(function () { /* keep the compiled-in default */ }).then(function () {
+    return api('GET', '/api/auth/me');
+  }).then(function (d) {
     state.user = d.user;
     render();
   }).catch(function () {

@@ -34,7 +34,7 @@ def main():
     health = client.get("/api/health")
     assert health.status_code == 200, health.text
     print("health via mount:", {k: health.json()[k] for k in ("status", "brand", "job_backend")})
-    assert health.json()["brand"] == "CMGrowthAI"
+    assert health.json()["brand"] == "AscendPlatform"
     assert health.json()["job_backend"] == "local"
 
     # FastAPI's own OpenAPI surface is reachable and precedes the mount.
