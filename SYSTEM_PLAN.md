@@ -375,7 +375,7 @@ precedence over the environment — no restart required.
 | S3 | DONE | Redis + arq worker (`worker.py`, compose `worker` service, graceful in-process fallback); SSE job streaming (`/api/jobs/<id>/stream`); AutoGen `agent_team` + designatable roster (`agents.py`, `agents` table, `#/agents`, `tools/` registry). New tests: `smoke_agents.py`, `smoke_sse.py`, `smoke_backend_fallback.py`. |
 | S4 | DONE | ASGI entry point (`asgi.py`: FastAPI + `a2wsgi` mount of Flask, shared signed-session bridge); SSE stream and `/api/providers` migrated to async FastAPI; LiteLLM gateway support in `llm.py` (+ optional compose `litellm` service and `litellm-config.yaml`); uvicorn replaces gunicorn. New tests: `smoke_asgi.py`, `smoke_llm_gateway.py`. |
 | S5 | DONE | **Sites** (`sites.py`, `provisioner.py`, `#/sites`, DNS hints, Caddy vhosts + auto-TLS, local/SSH targets); **Servers** (`servers.py`, `tools/ssh.py` with host-key pinning, `#/servers`); **policy engine** (`tools/policy.py`) + **approval gate** (`actions.py`) + `#/jobs` approvals panel; agent tools `provision_site` / `write_site_content` / `check_site_dns` / `list_sites` / `generate_image` (Gemini) / `send_email`. Safe by default: dry-run until `ALLOW_LIVE_ACTIONS=1`. New tests: `test_policy.py`, `smoke_provisioner.py`, `smoke_sites.py`. |
-| S6 | DONE | **Pexels** stock photography (`tools/pexels.py`: `search_photos` + `fetch_photo`, SSRF-locked to `images.pexels.com` over HTTPS, downloads approval-gated and path-confined, granted to Image Artist + Operator); **Settings tab** (§22): `settings` + `settings_events` tables, `settings.py` catalogue resolving panel → environment → default, `/api/settings` + `PUT` + `/test/<group>`, `#/settings` UI, and late-binding so a saved value applies with **no restart**. Fixed a real bug found against the live API: Pexels sits behind Cloudflare, which answers the default `Python-urllib` User-Agent with error 1010 (HTTP 403) — indistinguishable from a rejected key. Also fixed `worker.py` never loading `.env`. New tests: `smoke_pexels.py`, `smoke_settings.py`. All 14 suites green. |
+| S6 | DONE | **Pexels** stock photography (`tools/pexels.py`: `search_photos` + `fetch_photo`, SSRF-locked to `images.pexels.com` over HTTPS, downloads approval-gated and path-confined, granted to Image Artist + Operator); **Settings tab** (§22): `settings` + `settings_events` tables, `settings.py` catalogue resolving panel → environment → default, `/api/settings` + `PUT` + `/test/<group>`, `#/settings` UI, and late-binding so a saved value applies with **no restart**. Fixed a real bug found against the live API: Pexels sits behind Cloudflare, which answers the default `Python-urllib` User-Agent with error 1010 (HTTP 403) — indistinguishable from a rejected key. Also fixed `worker.py` never loading `.env`. New tests: `smoke_pexels.py`, `smoke_settings.py`, `test_migrations.py`. All 15 suites green. |
 
 ### Files added/changed so far
 - S0/S1 added: `llm.py`, `jobs.py`, `profile.py`, `tests/smoke_jobs.py`,
@@ -851,6 +851,60 @@ to run on a machine that has real keys stored.
 **Not verified here:** a real SMTP connection (no mail server on this machine), and
 the Settings tab's rendering in a browser — the API it drives is covered by the suite
 and by a live HTTP check against the running server.
+
+---
+
+## 23. Fresh-deploy bug — the migration baseline created every table
+
+Found on the first real deployment, when the `app` container crash-looped:
+
+```
+alembic Running upgrade  -> 0001_initial, initial schema
+alembic Running upgrade 0001_initial -> 0002_agents, agents roster
+psycopg.errors.DuplicateTable: relation "agents" already exists
+```
+
+**Cause.** `alembic/versions/0001_initial_schema.py` called
+`metadata.create_all(bind=...)`. That does not mean "the schema as of revision
+0001" — it means every table in `db.metadata` *at the moment the migration runs*.
+So the baseline created all 15 tables, and each later revision then tried to create
+its own table again: 0002 (`agents`), 0003 (`ssh_hosts`, `sites`, `action_approvals`)
+and 0004 (`settings`, `settings_events`) all raised `DuplicateTable` on a fresh
+database. Four revisions were latently broken.
+
+**Why it reached production.** Nothing exercised alembic at all. The app calls
+`db.init_db()` → `metadata.create_all()` at import — correct for local SQLite — and
+every suite tested that path. The only place `alembic upgrade head` runs is the
+container command in `docker-compose.yml`, which had never executed before.
+
+**Fix.** Revision 0001 now names its tables explicitly, the same style 0003/0004
+already used, so every table belongs to exactly one revision:
+
+| Revision | Tables |
+|----------|--------|
+| `0001_initial` | users, bots, messages, channels, meta_events, jobs, job_events, job_artifacts, business_profiles |
+| `0002_agents` | agents |
+| `0003_sites_ssh` | ssh_hosts, sites, action_approvals |
+| `0004_settings` | settings, settings_events |
+
+9 + 1 + 3 + 2 = 15 = `db.metadata`, with no overlap and nothing missing. Its
+`downgrade()` also stopped calling `drop_all()`, which would have dropped *other*
+revisions' tables.
+
+**Regression test.** `tests/test_migrations.py` points `DATABASE_URL` at a throwaway
+SQLite file, runs the real `alembic upgrade head` in a subprocess, asserts exit 0 and
+that the resulting tables equal `db.metadata`, then runs `downgrade base` and asserts
+nothing is left. It reproduced the failure before the fix, and it is the only test
+covering the migration path.
+
+**Recovering a database left at 0001.** Drop and recreate
+(`docker compose down -v && docker compose up -d --build`) — safe when there is no
+data yet — or mark it current with `alembic stamp head`, which is valid precisely
+because 0001's `create_all` had already produced the head schema.
+
+**Still open.** The Postgres path is otherwise only exercised in production: the
+suites run against SQLite. A CI smoke run of `docker compose up` against the real
+Postgres service would close the remaining gap.
 
 
 
