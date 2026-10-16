@@ -376,7 +376,8 @@ precedence over the environment — no restart required.
 | S4 | DONE | ASGI entry point (`asgi.py`: FastAPI + `a2wsgi` mount of Flask, shared signed-session bridge); SSE stream and `/api/providers` migrated to async FastAPI; LiteLLM gateway support in `llm.py` (+ optional compose `litellm` service and `litellm-config.yaml`); uvicorn replaces gunicorn. New tests: `smoke_asgi.py`, `smoke_llm_gateway.py`. |
 | S5 | DONE | **Sites** (`sites.py`, `provisioner.py`, `#/sites`, DNS hints, Caddy vhosts + auto-TLS, local/SSH targets); **Servers** (`servers.py`, `tools/ssh.py` with host-key pinning, `#/servers`); **policy engine** (`tools/policy.py`) + **approval gate** (`actions.py`) + `#/jobs` approvals panel; agent tools `provision_site` / `write_site_content` / `check_site_dns` / `list_sites` / `generate_image` (Gemini) / `send_email`. Safe by default: dry-run until `ALLOW_LIVE_ACTIONS=1`. New tests: `test_policy.py`, `smoke_provisioner.py`, `smoke_sites.py`. |
 | S6 | DONE | **Pexels** stock photography (`tools/pexels.py`: `search_photos` + `fetch_photo`, SSRF-locked to `images.pexels.com` over HTTPS, downloads approval-gated and path-confined, granted to Image Artist + Operator); **Settings tab** (§22): `settings` + `settings_events` tables, `settings.py` catalogue resolving panel → environment → default, `/api/settings` + `PUT` + `/test/<group>`, `#/settings` UI, and late-binding so a saved value applies with **no restart**. Fixed a real bug found against the live API: Pexels sits behind Cloudflare, which answers the default `Python-urllib` User-Agent with error 1010 (HTTP 403) — indistinguishable from a rejected key. Also fixed `worker.py` never loading `.env`. New tests: `smoke_pexels.py`, `smoke_settings.py`, `test_migrations.py`. All 15 suites green. |
-| S7a | DONE | **Multi-tenant clients** (§24): `orgs` table + `org_id` on users/bots/sites/jobs/business_profiles; three roles (`owner` / `client_admin` / `member`) with `admin` kept as a migration alias; `current_org()` read only from the signed session; migration `0005_tenancy` (first ALTER + backfill revision — `test_migrations.py` now upgrades a populated 0004); `db._prepare()` classifies DDL correctly, fixing a latent `ResourceClosedError` in `_ensure_columns`. Closed 8 cross-tenant leaks across sites, bots, jobs, the SSE stream, approvals, users, servers and the agent roster; cross-tenant reads answer 404 rather than 403. New test `smoke_tenancy.py` (two clients, attacks on every surface, plus the no-org login). All 16 suites green. |
+| S7a | DONE | **Multi-tenant clients** (§24): `orgs` table + `org_id` on users/bots/sites/jobs/business_profiles; three roles (`owner` / `client_admin` / `member`) with `admin` kept as a migration alias; `current_org()` read only from the signed session; migration `0005_tenancy` (first ALTER + backfill revision; `test_migrations.py` still only covers an empty database — see §24); `db._prepare()` classifies DDL correctly, fixing a latent `ResourceClosedError` in `_ensure_columns`. Closed 8 cross-tenant leaks across sites, bots, jobs, the SSE stream, approvals, users, servers and the agent roster; cross-tenant reads answer 404 rather than 403. New test `smoke_tenancy.py` (two clients, attacks on every surface, plus the no-org login). All 16 suites green. |
+| S7b | DONE | **Per-client profiles, settings and passwords** (§24 part 2): Business Profile keyed on `org_id` with the platform's own brand at org 0; `settings` fields gain a `platform`/`client` **scope** with client overrides in the new `client_settings` table, resolved client → panel → env → default and omitted from a client's panel entirely (`settings.get(..., org_id=)`, `all_for_ui(org_id)`); `tools/mail.py` sends through the job's client's SMTP; `POST /api/auth/password` + `POST /api/users/<id>/password`; migration `0006_client_scope`, which also drops the legacy `UNIQUE(owner_id)` that only *upgraded* databases carried (`db._drop_legacy_owner_unique`, table rebuild on SQLite). All 16 suites green. |
 
 ### Files added/changed so far
 - S0/S1 added: `llm.py`, `jobs.py`, `profile.py`, `tests/smoke_jobs.py`,
@@ -945,9 +946,14 @@ working. That is not hypothetical — a local dev SQLite file is built by
   logged-in user list every client's domains.
 
 `0005_tenancy` is the first revision that `ALTER`s and backfills rather than only
-creating, so `tests/test_migrations.py` now also upgrades a **populated** 0004
-database, not just an empty one. `db._ensure_columns()` gained the same columns for the
-SQLite dev path.
+creating, and `0006_client_scope` the first that removes a constraint. Neither is
+covered from a *populated* database: `tests/test_migrations.py` only runs
+empty → head → base, so a migration that mangles existing rows would pass it. (The
+`UNIQUE(owner_id)` divergence two sections down is the shape of bug that gap hides —
+and it survived the suite for exactly that reason.) Upgrading a 0004 database with
+rows in it is the obvious next test to add.
+
+`db._ensure_columns()` gained the same columns for the SQLite dev path.
 
 ### The leaks this closed
 
@@ -995,20 +1001,67 @@ pre-tenancy login becomes — seeing nothing at all. It creates and removes its 
 users and rows, so it is re-runnable and safe against a live database. **All 16 suites
 green.**
 
-### Still to do (S7, part 2)
+### Part 2 — per-client profiles, settings and passwords
 
-- `settings.org_id` plus a `scope` on the catalogue fields, so platform keys (LLM,
-  Pexels) stay operator-only while client keys (`BRAND_NAME`, SMTP) can be per client.
-  Until then `settings` is stored unscoped and the panel is owner-only.
-- Business Profile per **org**: `profile_mod.ensure_profile()` still keys on
-  `session["user_id"]`, so two staff at one client get two profiles. Isolation holds
-  (you can only reach your own), but the brand should belong to the client.
+- **The Business Profile is per org** (`profile.get_profile` keys on `org_id`). The
+  platform's own brand lives at **org 0** — a real bucket, not NULL, because a unique
+  index permits any number of NULLs, so NULL could never mean "the one platform
+  profile". Two staff at one client now share a profile; they used to get one each.
+- **Settings have a scope.** Every `settings.SPEC` field is `platform` (model keys,
+  Pexels, the SSH limits — the operator's alone) or `client` (the SMTP group). Client
+  overrides live in a new `client_settings` table keyed by `(org_id, key)`, and
+  `settings.get(key, org_id=…)` resolves client → panel → environment → default. A
+  client still *uses* the platform's `DEEPSEEK_API_KEY`; they cannot read it, and
+  `all_for_ui(org_id)` omits platform groups entirely so the key *names* never reach
+  their page either. `tools/mail.py` now resolves a job's client, so a send goes
+  through that client's SMTP where they have configured one.
+- **Passwords.** `POST /api/auth/password` changes your own and requires the current
+  one, so a stolen session cannot lock you out. `POST /api/users/<id>/password` lets
+  a client admin reset their own team's — refused for another client's user, and
+  refused for a platform operator.
+
+Migration `0006_client_scope` adds `client_settings` and moves the platform profile
+to org 0. It is deliberately **additive**: `settings` keeps its key-name primary key,
+because scoping it per client would mean re-keying a table that holds live credentials
+on every deployment.
+
+#### Four more traps, all caught by tests rather than by reasoning
+
+1. **An upgraded database kept `UNIQUE(owner_id)` on `business_profiles`**; a fresh one
+   does not, because 0001 builds the table from the current metadata where the key is
+   the org. On the upgraded dev database `POST /api/bots` returned
+   `500 UNIQUE constraint failed: business_profiles.owner_id`, because the profile
+   lookup resolved to a second INSERT. PostgreSQL names that constraint and can drop
+   it; SQLite does not, so `db._drop_legacy_owner_unique()` rebuilds the table there.
+   Same class of bug as §23 — the migrated and fresh paths had quietly diverged.
+2. **A field-level default silently overrode the group's scope.** `_f()` gave every
+   field `scope: PLATFORM`, so the `email` group's `CLIENT` scope never applied and no
+   client could save their own SMTP. The field default now means "inherit".
+3. **`ensure_profile(None)` created orphan rows.** A login attached to no client could
+   insert a NULL-org profile, which a later client could be handed. It now returns None.
+4. **`org_id=0` is falsy.** Same family as `if org_id:` in §24: `if not owner_id` in
+   the old `get_profile` would have treated the platform's own org as "no profile".
+
+`tests/smoke_tenancy.py` grew the matching checks: profiles per client (two logins at
+one client share a profile; the platform's is untouched), password change and reset
+including the cross-client and operator refusals, per-client settings (A's SMTP
+resolves for A — not for B, not for the platform — and its audit trail is A's alone),
+a client being refused a platform key both on read and on write, and the mailer
+resolving a job's client. **All 16 suites green.**
+
+### Still to do (S7, part 3)
+
 - `/platform/` (operator console) split from `/app/` (client workspace), and the nav
-  regrouped into Websites, Blogs, Funnels, Emails, Library.
+  regrouped into Websites, Blogs, Funnels, Emails, Library. The Settings *API* already
+  serves a client's own scope, but the tab is still flagged `adminOnly`, so a client
+  has no screen for their SMTP yet — only the operator can set it, with `?org_id=N`.
 - The client-onboarding console UI over the `orgs` service (`orgs.py` has the API:
-  `create_org` optionally seeds the first `client_admin` in the same call, so a client
-  is never created unreachable).
-- No password-change route exists.
+  `create_org` seeds the first `client_admin` in the same call, so a client is never
+  created unreachable).
+- **`tests/test_migrations.py` should upgrade a populated database**, not just an
+  empty one. Both §23's `DuplicateTable` and this stage's `UNIQUE(owner_id)` were
+  upgraded-vs-fresh divergences, and the suite covers only the fresh path.
+
 
 
 

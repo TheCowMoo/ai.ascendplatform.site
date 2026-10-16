@@ -284,6 +284,10 @@ CLIENT_ADMIN_ROLE = "client_admin"
 MEMBER_ROLE = "member"
 ROLES = (OWNER_ROLE, CLIENT_ADMIN_ROLE, MEMBER_ROLE)
 
+# Enforced when a password is set. The seeded first account uses the shorter default
+# password so a fresh install is reachable; see README.
+MIN_PASSWORD_LEN = 8
+
 # The pre-tenancy name for the platform operator. Migration 0005 renames these rows
 # to `owner`; the alias keeps a database that has not been migrated - and every
 # existing login - working until it is.
@@ -373,6 +377,37 @@ def org_filter(column="org_id"):
     return " AND %s = ?" % column, [current_org() or 0]
 
 
+def _check_new_password(password):
+    """None when a new password is acceptable, otherwise why it is not.
+
+    Length is the only rule, deliberately: composition rules push people towards
+    predictable substitutions, and there is no breach list to check against here.
+    """
+    if len(password or "") < MIN_PASSWORD_LEN:
+        return "The new password must be at least %d characters" % MIN_PASSWORD_LEN
+    return None
+
+
+def profile_org():
+    """The Business Profile this request reads or writes.
+
+    The platform's own brand lives at org 0, so it is never mistaken for a client's.
+    A login with no org gets None: it belongs to no client, so it has no profile.
+    """
+    if is_owner():
+        return profile_mod.PLATFORM_ORG
+    return current_org()
+
+
+def bot_profile_org(bot):
+    """Whose Business Profile a bot inherits: its client's, or the platform's.
+
+    Bots created before tenancy have no org, and those belong to the platform.
+    """
+    org_id = bot.get("org_id") if hasattr(bot, "get") else None
+    return profile_mod.PLATFORM_ORG if org_id is None else org_id
+
+
 def seed_initial_data():
     try:
         with get_connection() as conn:
@@ -405,13 +440,13 @@ def seed_initial_data():
     except Exception as exc:  # pragma: no cover - defensive only
         app.logger.error("Seed error (ignored): %s", exc)
 
-    # Seed a Business Profile for the first account (uses its own connection).
+    # Seed the platform's own Business Profile (org 0) for the first account.
     try:
         with get_connection() as conn:
             admin = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
-        if admin and not profile_mod.get_profile(admin["id"]):
-            profile_mod.seed_sample_profile(admin["id"])
-            app.logger.info("Seeded Business Profile for user %s", admin["id"])
+        if admin and not profile_mod.get_profile(profile_mod.PLATFORM_ORG):
+            profile_mod.seed_sample_profile(profile_mod.PLATFORM_ORG, admin["id"])
+            app.logger.info("Seeded the platform Business Profile (org %s)", profile_mod.PLATFORM_ORG)
     except Exception as exc:  # pragma: no cover - defensive only
         app.logger.error("Profile seed error (ignored): %s", exc)
 
@@ -445,6 +480,64 @@ def login():
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
     session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/password", methods=["POST"])
+@login_required
+def change_password():
+    """Change your own password. The current one is required, so a stolen session
+    alone cannot lock the owner out of their own account."""
+    data = request.get_json(silent=True) or {}
+    current = data.get("current_password") or ""
+    new = data.get("new_password") or ""
+    problem = _check_new_password(new)
+    if problem:
+        return jsonify({"error": problem}), 400
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (session["user_id"],)
+        ).fetchone()
+        if not row or not check_password_hash(row["password_hash"], current):
+            return jsonify({"error": "That is not your current password"}), 403
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (generate_password_hash(new), session["user_id"]),
+        )
+    app.logger.info("Password changed by %s", session.get("email"))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/users/<int:user_id>/password", methods=["POST"])
+@client_admin_required
+def reset_user_password(user_id):
+    """Set someone else's password - a client admin for their own team.
+
+    No current password is asked for: the caller is an admin acting on their own
+    org, and an admin who cannot get in has no way to recover otherwise.
+    """
+    data = request.get_json(silent=True) or {}
+    new = data.get("new_password") or data.get("password") or ""
+    problem = _check_new_password(new)
+    if problem:
+        return jsonify({"error": problem}), 400
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, role, org_id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        # Same rule as deleting a user: confined to your own org, never an operator.
+        if not is_owner() and (row["role"] not in (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
+                               or not can_access_org(row["org_id"])):
+            return jsonify({"error": "Forbidden"}), 403
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (generate_password_hash(new), user_id),
+        )
+    app.logger.info("Password reset for user %s by %s", user_id, session.get("email"))
     return jsonify({"ok": True})
 
 
@@ -572,7 +665,8 @@ def create_bot():
     if not name:
         return jsonify({"error": "Name is required"}), 400
     bot_id = new_bot_id()
-    owner_profile = profile_mod.ensure_profile(session["user_id"]) or {}
+    # The bot inherits its client's profile, not one specific user's.
+    owner_profile = profile_mod.ensure_profile(profile_org(), session.get("user_id")) or {}
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO bots (id, name, assistant_name, brand_color, logo_url, welcome_message, quick_replies, system_prompt, knowledge_base, webhook_url, profile_id, use_profile_kb, owner_id, org_id) "
@@ -872,9 +966,9 @@ def bot_public(bot_id):
         row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
     if not row:
         return jsonify({"error": "Not found"}), 404
-    # Branding falls back to the owner's Business Profile so the widget
-    # inherits the business identity without per-bot configuration.
-    prof = profile_mod.get_profile(row["owner_id"]) if row["owner_id"] else None
+    # Branding falls back to the client's Business Profile, so the widget inherits
+    # the business identity without per-bot configuration.
+    prof = profile_mod.get_profile(bot_profile_org(row))
     fallback_color = (prof or {}).get("brand_color") or "#4f46e5"
     return jsonify({
         "id": row["id"],
@@ -912,8 +1006,8 @@ def generate_reply(bot, user_message, history, conversation_id):
 
     # Business Profile knowledge base — inherited by default (bots can opt out).
     business = None
-    if bot.get("use_profile_kb", True) and bot.get("owner_id"):
-        business = profile_mod.get_profile(bot["owner_id"])
+    if bot.get("use_profile_kb", True):
+        business = profile_mod.get_profile(bot_profile_org(bot))
         profile_kb = profile_mod.build_knowledge(business)
         if profile_kb:
             context = (profile_kb + "\n\n" + context).strip()
@@ -1093,19 +1187,38 @@ def meta_webhook():
 
 # ---------------------------------------------------------------------------
 # Business Profile (the AI's knowledge base + brand identity)
+#
+# One profile per client: the brand belongs to the business, so every login at a
+# client shares it. The platform's own profile is org 0.
 # ---------------------------------------------------------------------------
+def _profile_scope_or_403():
+    """The org to act on, or a 403 response for a login attached to no client."""
+    org = profile_org()
+    if org is None:
+        return None, (jsonify({
+            "error": "This login is not attached to a client, so it has no profile",
+        }), 403)
+    return org, None
+
+
 @app.route("/api/profile", methods=["GET"])
 @login_required
 def get_business_profile():
-    prof = profile_mod.ensure_profile(session["user_id"])
+    org, error = _profile_scope_or_403()
+    if error:
+        return error
+    prof = profile_mod.ensure_profile(org, session.get("user_id"))
     return jsonify({"profile": profile_out(prof)})
 
 
 @app.route("/api/profile", methods=["PUT"])
-@login_required
+@client_admin_required
 def update_business_profile():
+    org, error = _profile_scope_or_403()
+    if error:
+        return error
     data = request.get_json(silent=True) or {}
-    prof = profile_mod.update_profile(session["user_id"], data)
+    prof = profile_mod.update_profile(org, data, session.get("user_id"))
     return jsonify({"profile": profile_out(prof)})
 
 
@@ -1113,61 +1226,114 @@ def update_business_profile():
 @login_required
 def business_profile_knowledge():
     """The exact text the AI receives as its knowledge base (for preview)."""
-    prof = profile_mod.get_profile(session["user_id"])
+    org, error = _profile_scope_or_403()
+    if error:
+        return error
+    prof = profile_mod.get_profile(org)
     text = profile_mod.build_knowledge(prof)
     return jsonify({"knowledge": text, "chars": len(text)})
 
 
 @app.route("/api/profile/seed-sample", methods=["POST"])
-@login_required
+@client_admin_required
 def business_profile_seed():
-    prof = profile_mod.seed_sample_profile(session["user_id"])
+    org, error = _profile_scope_or_403()
+    if error:
+        return error
+    prof = profile_mod.seed_sample_profile(org, session.get("user_id"))
     return jsonify({"profile": profile_out(prof)})
 
 
 # ---------------------------------------------------------------------------
 # Settings (operator-managed configuration)
 #
-# Admin-only, because these are global rather than per-user and several are
-# secrets. GET never returns a secret value: only whether it is set, where the
-# effective value came from, and a short tail so keys can be told apart.
+# Two scopes. Platform fields (model keys, Pexels, the SSH limits) configure the
+# deployment, so only the operator sees them. Client fields (SMTP) belong to one
+# client and resolve per org, so a client admin configures their own mail.
+#
+# GET never returns a secret value: only whether it is set, where the effective
+# value came from, and a short tail so keys can be told apart.
 # ---------------------------------------------------------------------------
+def settings_org(data=None):
+    """The client bucket this settings request works in, or None for the platform.
+
+    A client is always pinned to their own org - never read from request input. The
+    operator defaults to the platform scope and may name a client with ``?org_id=N``
+    (or in the body) to set that client up during onboarding.
+    """
+    if not is_owner():
+        return current_org()
+    raw = request.args.get("org_id")
+    if not raw and data:
+        raw = data.get("org_id")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _settings_scope_or_403(data=None):
+    """``(org, error)``. An unattached client login has no settings to show."""
+    org = settings_org(data)
+    if org is None and not is_owner():
+        return None, (jsonify({"error": "This login is not attached to a client"}), 403)
+    return org, None
+
+
 @app.route("/api/settings", methods=["GET"])
-@owner_required
+@client_admin_required
 def get_settings():
-    return jsonify({
-        "groups": settings.all_for_ui(),
-        "history": settings.history(25),
+    org, error = _settings_scope_or_403()
+    if error:
+        return error
+    payload = {
+        "groups": settings.all_for_ui(org),
+        "history": settings.history(25, org),
+        "scoped_to": org,
         "dry_run": actions.is_dry_run(),
-    })
+    }
+    if is_owner():
+        # The console needs the client list to edit a client's own settings.
+        payload["orgs"] = orgs_service.list_orgs()
+    return jsonify(payload)
 
 
 @app.route("/api/settings", methods=["PUT"])
-@owner_required
+@client_admin_required
 def update_settings():
     """Save a batch. A blank secret means "leave the stored value alone"."""
     data = request.get_json(silent=True) or {}
+    org, error = _settings_scope_or_403(data)
+    if error:
+        return error
     values = data.get("values") or {}
     clear = data.get("clear") or []
     if not isinstance(values, dict) or not isinstance(clear, (list, tuple)):
         return jsonify({"error": "values must be an object and clear a list"}), 400
 
     actor = session.get("email") or str(session.get("user_id") or "admin")
+    if org is not None:
+        actor = "%s (for client %s)" % (actor, org)
     try:
-        changed = settings.update_many(values, clear, actor)
+        changed = settings.update_many(values, clear, actor, org)
     except settings.SettingsError as exc:
         return jsonify({"error": str(exc)}), 400
     app.logger.info(
         "Settings updated by %s: %s", actor, ", ".join(changed) or "(nothing changed)"
     )
-    return jsonify({"changed": changed, "groups": settings.all_for_ui()})
+    return jsonify({"changed": changed, "groups": settings.all_for_ui(org)})
 
 
 @app.route("/api/settings/test/<group_id>", methods=["POST"])
-@owner_required
+@client_admin_required
 def test_settings_group(group_id):
     """Run a group's live check - e.g. a real Pexels search with the saved key."""
-    return jsonify(settings.test(group_id))
+    org, error = _settings_scope_or_403(request.get_json(silent=True) or {})
+    if error:
+        return error
+    return jsonify(settings.test(group_id, org))
 
 
 # ---------------------------------------------------------------------------

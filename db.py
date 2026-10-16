@@ -83,6 +83,13 @@ def _created_at():
 
 metadata = MetaData()
 
+# The platform's own bucket for things that are unique per *org* but also belong to
+# the platform itself: its Business Profile, and (in profile.py/settings.py) the
+# operator's own client-scoped values. Not NULL, because a unique index permits any
+# number of NULLs - NULL could not mean "the one platform row", it would silently
+# allow duplicates. Org ids start at 1, so 0 is otherwise unused.
+PLATFORM_ORG = 0
+
 # Tenants: one row per client. The platform operator is not an org, and the
 # ``owner`` role bypasses org scoping entirely.
 #
@@ -363,6 +370,26 @@ settings_events = Table(
 
 Index("idx_settings_events_key", settings_events.c.key)
 
+# Per-client overrides for the settings whose scope is "client" - today the SMTP
+# credentials a client sends mail with. Platform-scoped settings (model keys,
+# Pexels, the SSH limits) stay in ``settings`` above, because they belong to the
+# deployment rather than to any one client.
+#
+# A separate table rather than an ``org_id`` column on ``settings``: that table's
+# primary key *is* the key name, so scoping it per client means re-keying it to
+# (org_id, key), which rebuilds a table holding live credentials on every existing
+# deployment. Additive is the safer shape for that migration.
+client_settings = Table(
+    "client_settings",
+    metadata,
+    Column("org_id", Integer, primary_key=True),
+    Column("key", Text, primary_key=True),
+    Column("value", Text, nullable=False, server_default=_literal("")),
+    Column("is_secret", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    Column("updated_by", Text, nullable=False, server_default=_literal("")),
+)
+
 
 # ---------------------------------------------------------------------------
 # Connection / result adapters
@@ -524,6 +551,75 @@ def get_connection():
     return Connection(engine.connect())
 
 
+def _sqlite_unique_on(table, column):
+    """The name of a SQLite UNIQUE constraint covering exactly ``column``, or None.
+
+    ``PRAGMA index_list`` reports constraints created by ``Column(unique=True)`` with
+    ``origin='u'``; those are the auto-indexes that carry no name of their own, which
+    is why dropping one needs a table rebuild rather than a DROP CONSTRAINT.
+    """
+    try:
+        indexes = engine.connect().exec_driver_sql(
+            "PRAGMA index_list('%s')" % table
+        ).fetchall()
+    except Exception:
+        return None
+    for index in indexes:
+        if not index[2] or str(index[3]) != "u":
+            continue
+        try:
+            cols = engine.connect().exec_driver_sql(
+                "PRAGMA index_info('%s')" % index[1]
+            ).fetchall()
+        except Exception:
+            continue
+        if [str(row[2]) for row in cols] == [column]:
+            return str(index[1])
+    return None
+
+
+def _drop_legacy_owner_unique(conn):
+    """Remove business_profiles' legacy UNIQUE(owner_id), which now breaks profiles.
+
+    Profiles are keyed by org, so one user no longer owns exactly one profile - and
+    ``owner_id`` is an audit field that is 0 for a row created before anyone has
+    logged in. A database created by an older release carries this constraint *inside
+    the column definition*, and the two dialects cannot drop it the same way:
+    PostgreSQL gives it a name, SQLite does not. A fresh database has it neither way,
+    because 0001 builds the table from the current metadata, so this is a no-op there.
+
+    ``conn`` is a raw SQLAlchemy connection so both callers can pass what they have:
+    ``_ensure_columns`` (the dev SQLite path) and migration 0006 via ``op.get_bind()``.
+
+    Found the hard way: `POST /api/bots` returned 500 with
+    ``UNIQUE constraint failed: business_profiles.owner_id`` on any upgraded dev
+    database, because the profile lookup resolved to a second INSERT.
+    """
+    if IS_POSTGRES:
+        conn.execute(sa.text(
+            "ALTER TABLE business_profiles "
+            "DROP CONSTRAINT IF EXISTS business_profiles_owner_id_key"
+        ))
+        return
+
+    if not _sqlite_unique_on("business_profiles", "owner_id"):
+        return
+
+    # SQLite cannot drop a constraint, so the table is rebuilt: the documented
+    # procedure, minus the steps this schema does not need (no foreign keys, no
+    # triggers, no views). The old table is renamed first so its rows can be copied
+    # into the fresh one, which metadata declares with the constraints we do want.
+    table = metadata.tables["business_profiles"]
+    conn.execute(sa.text("ALTER TABLE business_profiles RENAME TO business_profiles_legacy"))
+    table.create(bind=conn)
+    columns = ", ".join(c.name for c in table.columns)
+    conn.execute(sa.text(
+        "INSERT INTO business_profiles (%s) SELECT %s FROM business_profiles_legacy"
+        % (columns, columns)
+    ))
+    conn.execute(sa.text("DROP TABLE business_profiles_legacy"))
+
+
 # Additive column additions for databases created by an earlier version. The
 # container runs `alembic upgrade head`, but a dev SQLite file that predates a
 # revision never sees those migrations, so the same additions are declared here.
@@ -558,15 +654,39 @@ def _ensure_columns():
             if column not in present:
                 conn.execute("ALTER TABLE %s ADD COLUMN %s" % (table, ddl))
 
-        # A Business Profile is unique per *org*. SQLite cannot add a constraint in
-        # place, so the tenant key gets an index instead - and multiple NULLs are
-        # allowed, which is exactly what pre-tenancy rows have.
+        # A Business Profile is unique per *org*, and the creating user is no longer
+        # the key (see _drop_legacy_owner_unique for why an upgraded database needs
+        # that constraint removed first).
         if "business_profiles" in tables:
+            try:
+                _drop_legacy_owner_unique(conn._conn)
+            except Exception:
+                pass
             try:
                 conn.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_business_profiles_org "
                     "ON business_profiles (org_id)"
                 )
+            except Exception:
+                pass
+            # Migration 0006 puts the platform's own Business Profile at org 0; mirror
+            # it here so a dev SQLite file behaves like a migrated one. Without this
+            # the app finds no profile for org 0 and creates a second row.
+            try:
+                conn.execute(
+                    "UPDATE business_profiles SET org_id = %d "
+                    "WHERE org_id IS NULL AND id = ("
+                    "  SELECT MIN(id) FROM business_profiles WHERE org_id IS NULL)"
+                    % PLATFORM_ORG
+                )
+            except Exception:
+                pass
+
+        # Client-scoped settings overrides (migration 0006). create_all() makes the
+        # table on a fresh database; this covers one created before it existed.
+        if "client_settings" not in tables:
+            try:
+                metadata.tables["client_settings"].create(bind=engine)
             except Exception:
                 pass
 

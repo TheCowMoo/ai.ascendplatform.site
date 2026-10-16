@@ -10,7 +10,7 @@ the model actually sees is predictable and reviewable in the admin UI.
 import json
 import os
 
-from db import get_connection, now_str
+from db import get_connection, now_str, PLATFORM_ORG
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SAMPLE_PATH = os.path.join(BASE_DIR, "knowledge", "cheryl_ai_knowledgebase.txt")
@@ -40,36 +40,52 @@ def _as_dict(row):
     return {k: row[k] for k in row.keys()}
 
 
-def get_profile(owner_id):
-    """Return the Business Profile row for a user, or None."""
-    if not owner_id:
+def get_profile(org_id):
+    """Return the Business Profile for a client, or None.
+
+    Keyed on the **org**, not the user who created it: the brand belongs to the
+    business, so two staff at one client share one profile. Note ``is None`` - org 0
+    is the platform's own profile, and ``if not org_id`` would treat it as absent.
+    """
+    if org_id is None:
         return None
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT * FROM business_profiles WHERE owner_id = ?", (owner_id,)
+            "SELECT * FROM business_profiles WHERE org_id = ?", (org_id,)
         ).fetchone()
     return _as_dict(row) if row else None
 
 
-def ensure_profile(owner_id):
-    """Get the user's profile, creating an empty one on first access."""
-    existing = get_profile(owner_id)
+def ensure_profile(org_id, owner_id=None):
+    """Get the org's profile, creating an empty one on first access.
+
+    ``org_id`` None means the login belongs to no client: there is no profile to
+    create, and returning None keeps an unattached account from littering NULL-org
+    rows that a later client could be handed.
+    """
+    if org_id is None:
+        return None
+    existing = get_profile(org_id)
     if existing:
         return existing
-    cols = ["owner_id"] + list(DEFAULTS.keys())
-    values = [owner_id] + [DEFAULTS[k] for k in DEFAULTS]
+    # owner_id records the creator. The column is NOT NULL, and the platform profile
+    # is seeded at boot before anyone has logged in, so 0 stands for "no user".
+    cols = ["org_id", "owner_id"] + list(DEFAULTS.keys())
+    values = [org_id, owner_id if owner_id is not None else 0]
+    values += [DEFAULTS[k] for k in DEFAULTS]
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO business_profiles (%s) VALUES (%s)"
             % (", ".join(cols), ", ".join("?" for _ in cols)),
             values,
         )
-    return get_profile(owner_id)
+    return get_profile(org_id)
 
 
-def update_profile(owner_id, data):
+def update_profile(org_id, data, owner_id=None):
     """Update the editable fields. Returns the updated profile."""
-    ensure_profile(owner_id)
+    if ensure_profile(org_id, owner_id) is None:
+        return None
     sets, values = [], []
     for field in TEXT_FIELDS:
         if field in data:
@@ -87,16 +103,16 @@ def update_profile(owner_id, data):
             sets.append("%s = ?" % field)
             values.append(json.dumps(value))
     if not sets:
-        return get_profile(owner_id)
+        return get_profile(org_id)
     sets.append("updated_at = ?")
     values.append(now_str())
-    values.append(owner_id)
+    values.append(org_id)
     with get_connection() as conn:
         conn.execute(
-            "UPDATE business_profiles SET %s WHERE owner_id = ?" % ", ".join(sets),
+            "UPDATE business_profiles SET %s WHERE org_id = ?" % ", ".join(sets),
             values,
         )
-    return get_profile(owner_id)
+    return get_profile(org_id)
 
 
 def _json_list(raw):
@@ -233,7 +249,7 @@ def sample_knowledge_text():
     return ""
 
 
-def seed_sample_profile(owner_id):
+def seed_sample_profile(org_id, owner_id=None):
     """Populate a profile from the bundled sample document."""
     text = sample_knowledge_text()
     data = {
@@ -246,4 +262,4 @@ def seed_sample_profile(owner_id):
     if text:
         data["description"] = text[:8000]
         data["extra_notes"] = text[:2000]
-    return update_profile(owner_id, data)
+    return update_profile(org_id, data, owner_id)

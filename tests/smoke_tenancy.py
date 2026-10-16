@@ -38,6 +38,10 @@ DOMAINS = ("alpha.tenancy.test",)
 NO_ORG_EMAIL = "no-org@tenancy.test"
 NO_ORG_PASSWORD = "no-org-pass-1234"
 
+# A second login at client A, to prove the brand is shared rather than per user.
+STAFF_EMAIL = "staff@tenancy.test"
+STAFF_PASSWORD = "staff-pass-1234"
+
 
 def login(email, password):
     client = appmod.app.test_client()
@@ -87,8 +91,11 @@ def cleanup():
             )
             conn.execute("DELETE FROM jobs WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM users WHERE org_id = ?", (org_id,))
+            conn.execute("DELETE FROM client_settings WHERE org_id = ?", (org_id,))
+            conn.execute("DELETE FROM business_profiles WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM orgs WHERE id = ?", (org_id,))
         conn.execute("DELETE FROM users WHERE email = ?", (NO_ORG_EMAIL,))
+        conn.execute("DELETE FROM users WHERE email = ?", (STAFF_EMAIL,))
 def setup_clients():
     """Create both clients, each with its own admin login."""
     alpha = orgs_service.create_org(ALPHA)
@@ -280,13 +287,181 @@ def test_user_without_an_org_sees_nothing(site, bot_id, job_id):
     print("  and every client row is 404 when asked for by id")
 
 
+def test_profiles_are_per_client(alpha, beta):
+    """The brand belongs to the client, so its staff share one profile."""
+    a = login(ALPHA["email"], ALPHA["password"])
+    b = login(BETA["email"], BETA["password"])
+
+    saved = a.put("/api/profile", json={"name": "Alpha Co", "brand_color": "#123456"})
+    assert saved.status_code == 200, saved.get_data(as_text=True)
+    prof = saved.get_json()["profile"]
+    assert prof["org_id"] == alpha["id"], prof
+    print("A saved its profile: %r (org %s)" % (prof["name"], prof["org_id"]))
+
+    # B's profile is its own - not A's, and not the platform's.
+    b_prof = b.get("/api/profile").get_json()["profile"]
+    assert b_prof["org_id"] == beta["id"], b_prof
+    assert b_prof["name"] != "Alpha Co", b_prof
+    print("B's profile is its own: %r (org %s)" % (b_prof["name"], b_prof["org_id"]))
+
+    # The platform's brand is org 0, and A's edit left it alone.
+    owner = owner_login().get("/api/profile").get_json()["profile"]
+    assert owner["org_id"] == 0, owner
+    print("the platform's profile is org 0: %r (untouched)" % owner["name"])
+
+    # A second login at A shares the profile rather than getting its own - the
+    # behaviour this replaced created one profile per user.
+    created = owner_login().post("/api/users", json={
+        "email": STAFF_EMAIL, "name": "Alpha Staff", "password": STAFF_PASSWORD,
+        "role": "member", "org_id": alpha["id"],
+    })
+    assert created.status_code == 201, created.get_data(as_text=True)
+    staff_id = created.get_json()["user"]["id"]
+    staff_prof = login(STAFF_EMAIL, STAFF_PASSWORD).get("/api/profile").get_json()["profile"]
+    assert staff_prof["org_id"] == alpha["id"], staff_prof
+    assert staff_prof["name"] == "Alpha Co", staff_prof
+    print("a second login at A sees the same profile: %r" % staff_prof["name"])
+    return staff_id
+
+
+def test_passwords(alpha, staff_id):
+    """Your own password needs the current one; an admin resets their own team's."""
+    staff = login(STAFF_EMAIL, STAFF_PASSWORD)
+
+    wrong = staff.post("/api/auth/password", json={
+        "current_password": "not-it", "new_password": "a-long-enough-one",
+    })
+    assert wrong.status_code == 403, wrong.status_code
+    short = staff.post("/api/auth/password", json={
+        "current_password": STAFF_PASSWORD, "new_password": "short",
+    })
+    assert short.status_code == 400, short.status_code
+    print("  a wrong current password -> 403, a too-short new one -> 400")
+
+    changed = staff.post("/api/auth/password", json={
+        "current_password": STAFF_PASSWORD, "new_password": "staff-pass-9876",
+    })
+    assert changed.status_code == 200, changed.get_data(as_text=True)
+    login(STAFF_EMAIL, "staff-pass-9876")
+    print("  the member changed it and signed in with the new one")
+
+    stale = appmod.app.test_client().post("/api/auth/login", json={
+        "email": STAFF_EMAIL, "password": STAFF_PASSWORD,
+    })
+    assert stale.status_code == 401, stale.status_code
+    print("  the old password is refused -> 401")
+
+    # A client admin may reset their own team's password...
+    a = login(ALPHA["email"], ALPHA["password"])
+    reset = a.post("/api/users/%d/password" % staff_id, json={"new_password": "reset-by-alpha-1"})
+    assert reset.status_code == 200, reset.get_data(as_text=True)
+    login(STAFF_EMAIL, "reset-by-alpha-1")
+    print("  A's admin reset its own member's password -> 200")
+
+    # ...but neither another client's user nor a platform operator.
+    b_id = login(BETA["email"], BETA["password"]).get("/api/auth/me").get_json()["user"]["id"]
+    blocked = a.post("/api/users/%d/password" % b_id, json={"new_password": "hijacked-pass-1"})
+    assert blocked.status_code == 403, blocked.status_code
+    owner_id = owner_login().get("/api/auth/me").get_json()["user"]["id"]
+    blocked = a.post("/api/users/%d/password" % owner_id, json={"new_password": "hijacked-pass-1"})
+    assert blocked.status_code == 403, blocked.status_code
+    print("  blocked resetting another client's user and the owner -> 403")
+
+
+def test_settings_are_scoped(alpha, beta):
+    """A client configures their own SMTP and can never see the platform's keys."""
+    import settings as settings_mod
+
+    a = login(ALPHA["email"], ALPHA["password"])
+    b = login(BETA["email"], BETA["password"])
+
+    saved = a.put("/api/settings", json={"values": {
+        "SMTP_HOST": "smtp.alpha.test", "SMTP_FROM": "hi@alpha.test",
+    }})
+    assert saved.status_code == 200, saved.get_data(as_text=True)
+    assert "SMTP_HOST" in saved.get_json()["changed"], saved.get_json()
+    print("A saved its own SMTP: %s" % saved.get_json()["changed"])
+
+    # The value is A's alone: not B's, and not the platform's.
+    assert settings_mod.get("SMTP_HOST", org_id=alpha["id"]) == "smtp.alpha.test"
+    assert settings_mod.get("SMTP_HOST", org_id=beta["id"]) != "smtp.alpha.test"
+    assert settings_mod.get("SMTP_HOST") != "smtp.alpha.test", \
+        "a client's value leaked into the platform scope"
+    print("  resolution: A -> %r, B -> %r, platform -> %r" % (
+        settings_mod.get("SMTP_HOST", org_id=alpha["id"]),
+        settings_mod.get("SMTP_HOST", org_id=beta["id"]),
+        settings_mod.get("SMTP_HOST"),
+    ))
+
+    # B's panel must not carry A's value, and one client's history is not another's.
+    b_fields = {f["key"]: f for g in b.get("/api/settings").get_json()["groups"]
+                for f in g["fields"]}
+    assert b_fields["SMTP_HOST"].get("value") != "smtp.alpha.test", b_fields["SMTP_HOST"]
+    a_keys = set(h["key"] for h in a.get("/api/settings").get_json()["history"])
+    b_keys = set(h["key"] for h in b.get("/api/settings").get_json()["history"])
+    assert "SMTP_HOST" in a_keys, a_keys
+    assert "SMTP_HOST" not in b_keys, b_keys
+    print("  audit trail: A sees %s, B sees %s" % (sorted(a_keys), sorted(b_keys)))
+
+    # A may only test client-scoped groups: the platform's Pexels check spends the
+    # operator's key and would confirm to the client that it exists.
+    resp = a.post("/api/settings/test/pexels")
+    assert resp.status_code == 200 and resp.get_json()["ok"] is False, resp.get_json()
+    print("  A cannot test the platform's Pexels group: %s" % resp.get_json()["output"][:44])
+
+    # Leave nothing behind, so a second run starts from an empty SMTP config.
+    cleared = a.put("/api/settings", json={"clear": ["SMTP_HOST", "SMTP_FROM"]})
+    assert cleared.status_code == 200, cleared.get_data(as_text=True)
+    assert settings_mod.get("SMTP_HOST", org_id=alpha["id"]) != "smtp.alpha.test"
+    print("  cleared A's SMTP again: %s" % cleared.get_json()["changed"])
+
+
+def test_a_clients_mail_settings_are_used(alpha, job_id):
+    """The stored SMTP is not just for display: a job sends through its client's."""
+    import tools.mail as mail
+
+    a = login(ALPHA["email"], ALPHA["password"])
+    a.put("/api/settings", json={"values": {"SMTP_HOST": "smtp.alpha.test"}})
+
+    resolved = mail.org_of(job_id)
+    assert resolved == alpha["id"], resolved
+    assert mail.host(resolved) == "smtp.alpha.test", mail.host(resolved)
+    print("the mailer resolves the job's client: org %s -> %s" % (resolved, mail.host(resolved)))
+
+    # A send with no job, or another client's, does not pick up A's server.
+    assert mail.host(mail.org_of(None)) != "smtp.alpha.test"
+    assert mail.host(999999) != "smtp.alpha.test"
+    print("  a send with no job falls back to the platform's SMTP")
+
+    a.put("/api/settings", json={"clear": ["SMTP_HOST"]})
+
+
 def test_owner_only_surfaces_are_shut(alpha):
     """The console surfaces a client must never reach."""
     a = login(ALPHA["email"], ALPHA["password"])
-    for path in ("/api/settings", "/api/ssh-hosts", "/api/agents"):
+    for path in ("/api/ssh-hosts", "/api/agents"):
         resp = a.get(path)
         assert resp.status_code == 403, "GET %s -> %d (expected 403)" % (path, resp.status_code)
         print("  blocked GET    %-18s -> 403" % path)
+
+    # Settings are reachable, but only the client's own scope: a client admin may
+    # configure their SMTP and must never see the platform's key names at all.
+    resp = a.get("/api/settings")
+    assert resp.status_code == 200, resp.status_code
+    groups = resp.get_json()["groups"]
+    assert groups, "a client admin should see their own settings"
+    for group in groups:
+        assert group["scope"] == "client", group["id"]
+    keys = [f["key"] for g in groups for f in g["fields"]]
+    assert keys, keys
+    for platform_key in ("DEEPSEEK_API_KEY", "PEXELS_API_KEY", "GEMINI_API_KEY"):
+        assert platform_key not in keys, "a platform key leaked into a client's panel"
+    print("  a client sees %d group(s), client-scoped only: %s" % (len(groups), keys))
+
+    # ...and cannot write a platform key through the same endpoint.
+    resp = a.put("/api/settings", json={"values": {"DEEPSEEK_API_KEY": "stolen"}})
+    assert resp.status_code == 400, resp.status_code
+    print("  blocked PUT  platform key -> 400 (%s)" % resp.get_json()["error"][:52])
 
     # The hosting fleet's SSH targets must not even appear in a client's payload.
     body = a.get("/api/sites").get_json()
@@ -337,6 +512,14 @@ def main():
         test_approvals_are_isolated(alpha, beta, job_id)
         print("\n--- a login with no org ---")
         test_user_without_an_org_sees_nothing(site, bot_id, job_id)
+        print("\n--- profiles per client ---")
+        staff_id = test_profiles_are_per_client(alpha, beta)
+        print("\n--- passwords ---")
+        test_passwords(alpha, staff_id)
+        print("\n--- client-scoped settings ---")
+        test_settings_are_scoped(alpha, beta)
+        print("\n--- a client's own SMTP, used by a job ---")
+        test_a_clients_mail_settings_are_used(alpha, job_id)
         print("\n--- console surfaces, closed to a client ---")
         test_owner_only_surfaces_are_shut(alpha)
         print("\n--- the platform operator's view ---")
