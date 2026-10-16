@@ -376,6 +376,7 @@ precedence over the environment — no restart required.
 | S4 | DONE | ASGI entry point (`asgi.py`: FastAPI + `a2wsgi` mount of Flask, shared signed-session bridge); SSE stream and `/api/providers` migrated to async FastAPI; LiteLLM gateway support in `llm.py` (+ optional compose `litellm` service and `litellm-config.yaml`); uvicorn replaces gunicorn. New tests: `smoke_asgi.py`, `smoke_llm_gateway.py`. |
 | S5 | DONE | **Sites** (`sites.py`, `provisioner.py`, `#/sites`, DNS hints, Caddy vhosts + auto-TLS, local/SSH targets); **Servers** (`servers.py`, `tools/ssh.py` with host-key pinning, `#/servers`); **policy engine** (`tools/policy.py`) + **approval gate** (`actions.py`) + `#/jobs` approvals panel; agent tools `provision_site` / `write_site_content` / `check_site_dns` / `list_sites` / `generate_image` (Gemini) / `send_email`. Safe by default: dry-run until `ALLOW_LIVE_ACTIONS=1`. New tests: `test_policy.py`, `smoke_provisioner.py`, `smoke_sites.py`. |
 | S6 | DONE | **Pexels** stock photography (`tools/pexels.py`: `search_photos` + `fetch_photo`, SSRF-locked to `images.pexels.com` over HTTPS, downloads approval-gated and path-confined, granted to Image Artist + Operator); **Settings tab** (§22): `settings` + `settings_events` tables, `settings.py` catalogue resolving panel → environment → default, `/api/settings` + `PUT` + `/test/<group>`, `#/settings` UI, and late-binding so a saved value applies with **no restart**. Fixed a real bug found against the live API: Pexels sits behind Cloudflare, which answers the default `Python-urllib` User-Agent with error 1010 (HTTP 403) — indistinguishable from a rejected key. Also fixed `worker.py` never loading `.env`. New tests: `smoke_pexels.py`, `smoke_settings.py`, `test_migrations.py`. All 15 suites green. |
+| S7a | DONE | **Multi-tenant clients** (§24): `orgs` table + `org_id` on users/bots/sites/jobs/business_profiles; three roles (`owner` / `client_admin` / `member`) with `admin` kept as a migration alias; `current_org()` read only from the signed session; migration `0005_tenancy` (first ALTER + backfill revision — `test_migrations.py` now upgrades a populated 0004); `db._prepare()` classifies DDL correctly, fixing a latent `ResourceClosedError` in `_ensure_columns`. Closed 8 cross-tenant leaks across sites, bots, jobs, the SSE stream, approvals, users, servers and the agent roster; cross-tenant reads answer 404 rather than 403. New test `smoke_tenancy.py` (two clients, attacks on every surface, plus the no-org login). All 16 suites green. |
 
 ### Files added/changed so far
 - S0/S1 added: `llm.py`, `jobs.py`, `profile.py`, `tests/smoke_jobs.py`,
@@ -905,6 +906,111 @@ because 0001's `create_all` had already produced the head schema.
 **Still open.** The Postgres path is otherwise only exercised in production: the
 suites run against SQLite. A CI smoke run of `docker compose up` against the real
 Postgres service would close the remaining gap.
+
+---
+
+## 24. Stage S7 (part 1) — multi-tenant clients: orgs, roles, scoped data
+
+**Goal.** Turn a single-tenant install into one deployment that serves many clients,
+with hard boundaries between them.
+
+### The model
+
+An **org** is a paying client. The platform operator is *not* an org.
+
+| Role | Belongs to an org | Sees |
+|------|-------------------|------|
+| `owner` | no | every client's data — the platform console |
+| `client_admin` | yes | only their own org; manages their own team |
+| `member` | yes | only their own org |
+
+`users.org_id` decides everything. It is written only into the signed session at login
+(`app.current_org()`) and **never** read from request input — that is the one value an
+attacker controls.
+
+`admin` remains an accepted spelling of `owner`: migration `0005` renames those rows,
+and the alias (`app.LEGACY_OWNER_ROLE`) keeps a database that has not been migrated
+working. That is not hypothetical — a local dev SQLite file is built by
+`db.create_all()`, never by alembic, so it stays on `admin` until someone migrates it.
+
+### Schema
+
+- New `orgs` table: `name`, `slug` (unique), `plan`, `status`, `notes`.
+- `org_id` added to `users`, `bots`, `sites`, `jobs`, `business_profiles`.
+- `business_profiles`' unique key moved from `owner_id` (one profile per *user*, which
+  breaks the moment a client has two staff) to `org_id` — as a unique *index*, which
+  both SQLite and PostgreSQL accept.
+- Domains stay **globally** unique — two clients cannot both own `acme.com` — while
+  *access* to a site is scoped to its org. Conflating those two ideas is what let every
+  logged-in user list every client's domains.
+
+`0005_tenancy` is the first revision that `ALTER`s and backfills rather than only
+creating, so `tests/test_migrations.py` now also upgrades a **populated** 0004
+database, not just an empty one. `db._ensure_columns()` gained the same columns for the
+SQLite dev path.
+
+### The leaks this closed
+
+| # | Before | After |
+|---|--------|-------|
+| 1 | `GET /api/sites` returned every client's sites, plus the SSH host list and `SERVER_IP`, to any signed-in user | scoped by org; hosts and the deploy-target list are owner-only, while `server_ip` stays for everyone — a client has to point DNS at it |
+| 2 | `GET/PUT/DELETE /api/sites/<id>`, `/dns`, `/check`, `/provision` were `@login_required` only — cross-tenant write by id | ownership checked; another client's row answers **404, not 403**, so ids cannot be probed |
+| 3 | `/api/ssh-hosts` **GET/POST/PUT/DELETE** were `@login_required` — any member could read the fleet's credentials and key paths, or delete the servers | `@owner_required` |
+| 4 | `/api/agents` GET/POST/PUT/DELETE were `@login_required` — any member could edit or delete the agent roster | `@owner_required`: the roster is the product, not client data |
+| 5 | `/api/jobs*` and the FastAPI SSE stream served any client's runs and transcripts | scoped by `jobs.org_id` on both sides |
+| 6 | `/api/approvals` listed **and decided** any client's pending writes — i.e. authorised a write to another client's server | scoped through the job; another client's approval is 404 |
+| 7 | `DELETE /api/users/<id>` let any admin delete **any** user, including the platform owner's account | a client admin is confined to their own org and can never touch an operator |
+| 8 | `/api/bots*` (12 routes) listed every client's bots, conversations and channels | scoped by `bots.org_id`; the widget's public endpoint stays public, by design |
+
+### Three traps worth remembering
+
+- **`None` must never mean "all" for a client.** `list_sites(org_id=None)` and
+  `list_jobs(org_id=None)` mean *no filter* — the owner's view — so passing a client's
+  `None` straight through would hand them everything. `app.list_scope()` returns `None`
+  only for the owner and `0` otherwise, an id no row can have because sequences start
+  at 1.
+- **`if org_id:` is the wrong test.** `0` is falsy, so the "no access" marker skipped
+  the filter and fell through to *no filter* — the owner's view for a client. Both list
+  functions now test `is not None`. `smoke_tenancy.py` caught this.
+- **Positional arguments against `(limit, org_id)`.** `jobs.list_jobs(current_org())`
+  silently passed an org id as the row limit and returned every client's runs. Caught
+  by the same test; the call is now keyword-only in intent and commented.
+
+### A latent bug in the DB layer, exposed
+
+`db._prepare()` classified everything that was not INSERT/UPDATE/DELETE as `"select"`,
+so `ALTER TABLE … ADD COLUMN` went down the row-returning path and `fetchall()` raised
+`ResourceClosedError`. It had never fired, because `_ensure_columns()` only ran its
+`ALTER`s on a database *missing* those columns — and no such database existed, since
+the only columns it knew about shipped in the same release as the code. Adding `org_id`
+made the branch execute for the first time. DDL is now classified as its own kind.
+
+### Tests
+
+`tests/smoke_tenancy.py` — two clients, two logins, and every cross-tenant operation
+attempted *as an attack*: sites, bots, jobs, conversations, channels, approvals and the
+FastAPI SSE transcript each expected to fail; the owner's cross-client view; the
+owner-only surfaces answering 403; and a login with **no** org — which is what every
+pre-tenancy login becomes — seeing nothing at all. It creates and removes its own orgs,
+users and rows, so it is re-runnable and safe against a live database. **All 16 suites
+green.**
+
+### Still to do (S7, part 2)
+
+- `settings.org_id` plus a `scope` on the catalogue fields, so platform keys (LLM,
+  Pexels) stay operator-only while client keys (`BRAND_NAME`, SMTP) can be per client.
+  Until then `settings` is stored unscoped and the panel is owner-only.
+- Business Profile per **org**: `profile_mod.ensure_profile()` still keys on
+  `session["user_id"]`, so two staff at one client get two profiles. Isolation holds
+  (you can only reach your own), but the brand should belong to the client.
+- `/platform/` (operator console) split from `/app/` (client workspace), and the nav
+  regrouped into Websites, Blogs, Funnels, Emails, Library.
+- The client-onboarding console UI over the `orgs` service (`orgs.py` has the API:
+  `create_org` optionally seeds the first `client_admin` in the same call, so a client
+  is never created unreachable).
+- No password-change route exists.
+
+
 
 
 

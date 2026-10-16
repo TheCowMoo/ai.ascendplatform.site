@@ -80,6 +80,14 @@
     return esc(initials(bot.name));
   }
 
+  // True for the platform operator. The API sends is_owner; the role fallback
+  // covers 'admin', the pre-tenancy spelling, so an older database still works.
+  function isOwner(user) {
+    if (!user) return false;
+    if (typeof user.is_owner === 'boolean') return user.is_owner;
+    return user.role === 'admin' || user.role === 'owner';
+  }
+
   // ---------- Shell: sidebar + topbar ----------
   function sidebar(parts) {
     var aside = el('aside', 'sidebar');
@@ -90,7 +98,7 @@
     var nav = el('nav', 'side-nav');
     var active = currentNavId(parts);
     NAV.forEach(function (item) {
-      if (item.adminOnly && state.user.role !== 'admin') return;
+      if (item.adminOnly && !isOwner(state.user)) return;
       var link = el('a', 'side-item' + (item.id === active ? ' active' : ''));
       link.href = item.hash;
       link.innerHTML = '<span class="side-icon">' + item.icon + '</span>' +
@@ -723,7 +731,7 @@
       var tbody = el('tbody');
       users.forEach(function (u) {
         var tr = el('tr');
-        tr.innerHTML = '<td>' + esc(u.name) + '</td><td>' + esc(u.email) + '</td><td><span class="badge ' + (u.role === 'admin' ? 'badge-admin' : 'badge-member') + '">' + esc(u.role) + '</span></td>';
+        tr.innerHTML = '<td>' + esc(u.name) + '</td><td>' + esc(u.email) + '</td><td><span class="badge ' + (u.role === 'member' ? 'badge-member' : 'badge-admin') + '">' + esc(u.role) + '</span></td>';
         var td = el('td');
         if (u.id !== state.user.id) {
           var del = el('button', 'btn btn-danger btn-sm', 'Remove');

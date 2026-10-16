@@ -60,11 +60,14 @@ def _as_dict(row):
     return {k: row[k] for k in row.keys()}
 
 
-def create_job(title, prompt, requester_id=None, team_mode="selector", task_name=DEFAULT_TASK):
+def create_job(title, prompt, requester_id=None, team_mode="selector",
+               task_name=DEFAULT_TASK, org_id=None):
+    """Create a job. ``org_id`` is the tenant that owns it, and scopes who can see it."""
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs (title, prompt, requester_id, team_mode, task) VALUES (?, ?, ?, ?, ?)",
-            (title or "", prompt or "", requester_id, team_mode, task_name),
+            "INSERT INTO jobs (title, prompt, requester_id, team_mode, task, org_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title or "", prompt or "", requester_id, team_mode, task_name, org_id),
         )
         return cur.lastrowid
 
@@ -75,9 +78,21 @@ def get_job(job_id):
     return _as_dict(row) if row else None
 
 
-def list_jobs(limit=50):
+def list_jobs(limit=50, org_id=None):
+    """Recent jobs, newest first. ``org_id`` scopes them to one client's runs.
+
+    ``org_id=None`` is the platform operator's view. Note the ``is not None`` check:
+    0 is the "no access" marker and must filter, not fall through to "no filter".
+    """
+    query = "SELECT * FROM jobs"
+    params = []
+    if org_id is not None:
+        query += " WHERE org_id = ?"
+        params.append(org_id)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [_as_dict(r) for r in rows]
 
 

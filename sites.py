@@ -33,12 +33,19 @@ def site_out(row):
     return out
 
 
-def list_sites(owner_id=None, limit=100):
+def list_sites(org_id=None, limit=100):
+    """Sites for one client, or every site when ``org_id`` is omitted.
+
+    ``org_id=None`` is the platform operator's view. A client must always pass its
+    own org - this parameter used to be ignored by the route, which is why every
+    logged-in user could list every client's domains. Note the ``is not None``: 0 is
+    the "no access" marker and must filter, not fall through to "no filter".
+    """
     query = "SELECT * FROM sites"
     params = []
-    if owner_id:
-        query += " WHERE owner_id = ?"
-        params.append(owner_id)
+    if org_id is not None:
+        query += " WHERE org_id = ?"
+        params.append(org_id)
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
     with get_connection() as conn:
@@ -52,23 +59,36 @@ def get_site(site_id):
     return site_out(row) if row else None
 
 
-def get_site_by_domain(domain):
+def get_site_by_domain(domain, org_id=None):
+    """Look a site up by domain.
+
+    Domains are globally unique, so the unscoped form answers "does anyone own this
+    domain yet" - which is what creating one needs. Pass ``org_id`` for a scoped
+    lookup, which is what a client request must use.
+    """
     value = (domain or "").strip().lower()
     if not value:
         return None
+    query = "SELECT * FROM sites WHERE domain = ?"
+    params = [value]
+    if org_id is not None:
+        query += " AND org_id = ?"
+        params.append(org_id)
     with get_connection() as conn:
-        row = conn.execute("SELECT * FROM sites WHERE domain = ?", (value,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     return site_out(row) if row else None
 
 
-def create_site(data, owner_id=None):
+def create_site(data, owner_id=None, org_id=None):
+    """Create a site. ``owner_id`` is the creator, ``org_id`` is the tenant that owns it."""
     domain = (data.get("domain") or "").strip().lower()
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO sites (owner_id, domain, aliases, docroot, content_html, linked_bot_id, target, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sites (owner_id, org_id, domain, aliases, docroot, content_html, linked_bot_id, target, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 owner_id if owner_id is not None else data.get("owner_id"),
+                org_id if org_id is not None else data.get("org_id"),
                 domain,
                 json.dumps(data.get("aliases") or []),
                 (data.get("docroot") or "").strip(),
@@ -116,12 +136,16 @@ def delete_site(site_id):
     return True
 
 
-def upsert_for_agent(domain, owner_id=None):
+def upsert_for_agent(domain, owner_id=None, org_id=None):
     """Find the site for a domain, creating it if the agent asks for a new one."""
     existing = get_site_by_domain(domain)
     if existing:
         return existing
-    return create_site({"domain": domain, "target": "local", "aliases": []}, owner_id=owner_id)
+    return create_site(
+        {"domain": domain, "target": "local", "aliases": []},
+        owner_id=owner_id,
+        org_id=org_id,
+    )
 
 
 def apply_result(site_id, result):

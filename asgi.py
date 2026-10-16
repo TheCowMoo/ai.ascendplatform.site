@@ -89,6 +89,13 @@ async def job_stream(job_id: int, after: int = 0, session=Depends(require_sessio
     if not jobs.get_job(job_id):
         raise HTTPException(status_code=404, detail="Not found")
 
+    # Scope the transcript to the caller's client. The session bridge gives us the
+    # same signed dict Flask sees, so the tenant check is identical - and it answers
+    # 404 rather than 403 so a client cannot probe which job ids exist.
+    job = jobs.get_job(job_id)
+    if session.get("role") != "owner" and job.get("org_id") != session.get("org_id"):
+        raise HTTPException(status_code=404, detail="Not found")
+
     max_seconds = int(os.environ.get("SSE_MAX_SECONDS", "600"))
 
     async def event_source():

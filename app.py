@@ -40,6 +40,7 @@ import jobs
 import profile as profile_mod
 import agents as agent_roster
 import settings
+import orgs as orgs_service
 import tools as tool_registry
 import actions
 import provisioner
@@ -147,6 +148,7 @@ def bot_to_dict(row, message_count=None):
         "profile_id": row["profile_id"],
         "use_profile_kb": bool(row["use_profile_kb"]),
         "owner_id": row["owner_id"],
+        "org_id": row["org_id"] if "org_id" in row.keys() else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -275,16 +277,100 @@ def login_required(f):
     return wrapper
 
 
-def admin_required(f):
+# Roles. `owner` is the platform operator: they belong to no org and see every
+# client's rows. The other two belong to an org and are scoped to it.
+OWNER_ROLE = "owner"
+CLIENT_ADMIN_ROLE = "client_admin"
+MEMBER_ROLE = "member"
+ROLES = (OWNER_ROLE, CLIENT_ADMIN_ROLE, MEMBER_ROLE)
+
+# The pre-tenancy name for the platform operator. Migration 0005 renames these rows
+# to `owner`; the alias keeps a database that has not been migrated - and every
+# existing login - working until it is.
+LEGACY_OWNER_ROLE = "admin"
+
+
+def current_org():
+    """The tenant for this request, taken from the signed session only.
+
+    Never read the org from request input: it is the one value an attacker controls,
+    and it decides every scoped query.
+    """
+    return session.get("org_id")
+
+
+def is_owner_role(role):
+    """True for the platform operator. 'admin' is the pre-tenancy spelling."""
+    return role in (OWNER_ROLE, LEGACY_OWNER_ROLE)
+
+
+def is_owner():
+    return is_owner_role(session.get("role"))
+
+
+def owner_required(f):
+    """Platform-operator only: clients, servers, the agent roster, platform settings."""
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
             return jsonify({"error": "Unauthorized"}), 401
-        if session.get("role") != "admin":
+        if not is_owner():
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
 
     return wrapper
+
+
+def client_admin_required(f):
+    """A client's own admin - or the platform operator, who can act for anyone."""
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"):
+            return jsonify({"error": "Unauthorized"}), 401
+        if not is_owner() and session.get("role") != CLIENT_ADMIN_ROLE:
+            return jsonify({"error": "Forbidden"}), 403
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+def can_access_org(row_org_id):
+    """True when the caller may touch a row owned by ``row_org_id``.
+
+    The platform owner may touch anything. Everyone else is confined to their own
+    org - and a signed-in user with *no* org (a legacy login, or one created without
+    one) is confined to nothing, so they can never reach the NULL-org rows that
+    predate tenancy. Comparing ``None != None`` would have said "yes" there.
+    """
+    if is_owner():
+        return True
+    return current_org() is not None and row_org_id == current_org()
+
+
+def list_scope():
+    """The org id a list endpoint should filter by.
+
+    ``None`` means "every client", and only the platform owner may ask for that. A
+    signed-in user with no org gets 0, which no row can have (ids start at 1) -
+    passing their ``None`` straight through would hand them the owner's unfiltered
+    view, which is the one value that must never leak.
+    """
+    if is_owner():
+        return None
+    return current_org() or 0
+
+
+def org_filter(column="org_id"):
+    """``(sql_fragment, params)`` restricting a query to the caller's client.
+
+    Empty for the platform owner, who sees across every client. Uses the same
+    0-matches-nothing rule as ``list_scope``.
+    """
+    if is_owner():
+        return "", []
+    return " AND %s = ?" % column, [current_org() or 0]
 
 
 def seed_initial_data():
@@ -296,7 +382,7 @@ def seed_initial_data():
                 password = os.environ.get("ADMIN_PASSWORD", "admin123")
                 name = os.environ.get("ADMIN_NAME", "Admin")
                 conn.execute(
-                    "INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'admin')",
+                    "INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'owner')",
                     (email, name, generate_password_hash(password)),
                 )
                 app.logger.warning("Seeded admin account %r — change the default password!", email)
@@ -345,7 +431,14 @@ def login():
         session["role"] = row["role"]
         session["name"] = row["name"]
         session["email"] = row["email"]
-        return jsonify({"user": {"id": row["id"], "email": row["email"], "name": row["name"], "role": row["role"]}})
+        # The tenant lives in the signed session, never in request input.
+        session["org_id"] = row["org_id"]
+        return jsonify({"user": {
+            "id": row["id"], "email": row["email"], "name": row["name"],
+            "role": row["role"], "org_id": row["org_id"],
+            # Sent with the login too, so the nav is correct without a reload.
+            "is_owner": is_owner_role(row["role"]),
+        }})
     return jsonify({"error": "Invalid email or password"}), 401
 
 
@@ -361,54 +454,83 @@ def me():
     if not uid:
         return jsonify({"user": None})
     with get_connection() as conn:
-        row = conn.execute("SELECT id, email, name, role FROM users WHERE id = ?", (uid,)).fetchone()
+        row = conn.execute(
+            "SELECT id, email, name, role, org_id FROM users WHERE id = ?", (uid,)
+        ).fetchone()
     if not row:
         session.clear()
         return jsonify({"user": None})
-    return jsonify({"user": as_dict(row)})
+    payload = as_dict(row)
+    payload["is_owner"] = is_owner_role(row["role"])
+    payload["org"] = orgs_service.get_org(row["org_id"]) if row["org_id"] else None
+    return jsonify({"user": payload})
 
 
 # ---------------------------------------------------------------------------
-# Users (admin only)
+# Users - a client's own team. The platform owner sees every client.
 # ---------------------------------------------------------------------------
 @app.route("/api/users", methods=["GET"])
-@admin_required
+@client_admin_required
 def list_users():
+    clause, params = org_filter()
     with get_connection() as conn:
-        rows = conn.execute("SELECT id, email, name, role, created_at FROM users ORDER BY created_at").fetchall()
+        rows = conn.execute(
+            "SELECT id, email, name, role, org_id, created_at FROM users "
+            "WHERE 1 = 1" + clause + " ORDER BY created_at",
+            params,
+        ).fetchall()
     return jsonify({"users": [as_dict(r) for r in rows]})
 
 
 @app.route("/api/users", methods=["POST"])
-@admin_required
+@client_admin_required
 def create_user():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     name = (data.get("name") or "").strip() or email
     password = data.get("password") or ""
-    role = data.get("role") or "member"
     if not email or not password:
         return jsonify({"error": "Email and password are required"}), 400
-    if role not in ("admin", "member"):
-        role = "member"
+
+    # A client admin can only create client roles, and only inside their own org.
+    # The platform owner may create another operator (no org) if they omit org_id.
+    allowed = ROLES if is_owner() else (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
+    role = data.get("role") or MEMBER_ROLE
+    if role not in allowed:
+        role = MEMBER_ROLE
+    org_id = data.get("org_id") if is_owner() else current_org()
+
     try:
         with get_connection() as conn:
             cur = conn.execute(
-                "INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, ?)",
-                (email, name, generate_password_hash(password), role),
+                "INSERT INTO users (email, name, password_hash, role, org_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (email, name, generate_password_hash(password), role, org_id),
             )
             uid = cur.lastrowid
-        return jsonify({"user": {"id": uid, "email": email, "name": name, "role": role}}), 201
+        return jsonify({"user": {
+            "id": uid, "email": email, "name": name, "role": role, "org_id": org_id,
+        }}), 201
     except Exception as exc:
-        return jsonify({"error": f"Could not create user (email may already exist): {exc}"}), 400
+        return jsonify({"error": "Could not create user (email may already exist): %s" % exc}), 400
 
 
 @app.route("/api/users/<int:user_id>", methods=["DELETE"])
-@admin_required
+@client_admin_required
 def delete_user(user_id):
     if user_id == session.get("user_id"):
         return jsonify({"error": "You cannot delete your own account"}), 400
     with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, role, org_id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        # A client admin may only remove their own org's staff, and never a platform
+        # operator. Without this a client admin could delete the owner's account.
+        if not is_owner() and (row["role"] not in (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
+                               or not can_access_org(row["org_id"])):
+            return jsonify({"error": "Forbidden"}), 403
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return jsonify({"ok": True})
 
@@ -416,13 +538,28 @@ def delete_user(user_id):
 # ---------------------------------------------------------------------------
 # Bots
 # ---------------------------------------------------------------------------
+def _bot_for_request(bot_id):
+    """Load a bot the caller may act on. 404 for another client's bot, never 403."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
+    if not row:
+        return None
+    bot = bot_to_dict(row)
+    if not can_access_org(bot.get("org_id")):
+        return None
+    return bot
+
+
 @app.route("/api/bots", methods=["GET"])
 @login_required
 def list_bots():
+    clause, params = org_filter("b.org_id")
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT b.*, COUNT(m.id) AS message_count FROM bots b "
-            "LEFT JOIN messages m ON m.bot_id = b.id GROUP BY b.id ORDER BY b.created_at DESC"
+            "LEFT JOIN messages m ON m.bot_id = b.id WHERE 1 = 1" + clause +
+            " GROUP BY b.id ORDER BY b.created_at DESC",
+            params,
         ).fetchall()
     return jsonify({"bots": [bot_to_dict(r, r["message_count"]) for r in rows]})
 
@@ -438,8 +575,8 @@ def create_bot():
     owner_profile = profile_mod.ensure_profile(session["user_id"]) or {}
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO bots (id, name, assistant_name, brand_color, logo_url, welcome_message, quick_replies, system_prompt, knowledge_base, webhook_url, profile_id, use_profile_kb, owner_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO bots (id, name, assistant_name, brand_color, logo_url, welcome_message, quick_replies, system_prompt, knowledge_base, webhook_url, profile_id, use_profile_kb, owner_id, org_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 bot_id,
                 name,
@@ -455,6 +592,7 @@ def create_bot():
                 owner_profile.get("id"),
                 1 if data.get("use_profile_kb", True) else 0,
                 session.get("user_id"),
+                current_org(),
             ),
         )
         row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
@@ -464,16 +602,17 @@ def create_bot():
 @app.route("/api/bots/<bot_id>", methods=["GET"])
 @login_required
 def get_bot(bot_id):
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
-    if not row:
+    bot = _bot_for_request(bot_id)
+    if not bot:
         return jsonify({"error": "Not found"}), 404
-    return jsonify({"bot": bot_to_dict(row)})
+    return jsonify({"bot": bot})
 
 
 @app.route("/api/bots/<bot_id>", methods=["PUT"])
-@login_required
+@client_admin_required
 def update_bot(bot_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     data = request.get_json(silent=True) or {}
     with get_connection() as conn:
         existing = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
@@ -500,8 +639,10 @@ def update_bot(bot_id):
 
 
 @app.route("/api/bots/<bot_id>", methods=["DELETE"])
-@login_required
+@client_admin_required
 def delete_bot(bot_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
         conn.execute("DELETE FROM messages WHERE bot_id = ?", (bot_id,))
         conn.execute("DELETE FROM channels WHERE bot_id = ?", (bot_id,))
@@ -537,9 +678,9 @@ def channel_to_dict(row, mask=True):
 @app.route("/api/bots/<bot_id>/channels", methods=["GET"])
 @login_required
 def list_channels(bot_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
-        if not conn.execute("SELECT id FROM bots WHERE id = ?", (bot_id,)).fetchone():
-            return jsonify({"error": "Not found"}), 404
         rows = conn.execute("SELECT * FROM channels WHERE bot_id = ? ORDER BY created_at", (bot_id,)).fetchall()
     return jsonify({"channels": [channel_to_dict(r) for r in rows]})
 
@@ -555,9 +696,9 @@ def create_channel(bot_id):
     if not external_id:
         return jsonify({"error": "Page/Instagram/Phone ID is required"}), 400
     verify_token = (data.get("verify_token") or "").strip() or secrets.token_urlsafe(16)
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
-        if not conn.execute("SELECT id FROM bots WHERE id = ?", (bot_id,)).fetchone():
-            return jsonify({"error": "Not found"}), 404
         try:
             cur = conn.execute(
                 "INSERT INTO channels (bot_id, platform, external_id, access_token, app_secret, verify_token) "
@@ -578,8 +719,10 @@ def create_channel(bot_id):
 
 
 @app.route("/api/bots/<bot_id>/channels/<int:channel_id>", methods=["PUT"])
-@login_required
+@client_admin_required
 def update_channel(bot_id, channel_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     data = request.get_json(silent=True) or {}
     with get_connection() as conn:
         existing = conn.execute(
@@ -614,8 +757,10 @@ def update_channel(bot_id, channel_id):
 
 
 @app.route("/api/bots/<bot_id>/channels/<int:channel_id>", methods=["DELETE"])
-@login_required
+@client_admin_required
 def delete_channel(bot_id, channel_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
         conn.execute("DELETE FROM channels WHERE id = ? AND bot_id = ?", (channel_id, bot_id))
     return jsonify({"ok": True})
@@ -627,10 +772,9 @@ def delete_channel(bot_id, channel_id):
 @app.route("/api/bots/<bot_id>/stats", methods=["GET"])
 @login_required
 def bot_stats(bot_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
-        row = conn.execute("SELECT id FROM bots WHERE id = ?", (bot_id,)).fetchone()
-        if not row:
-            return jsonify({"error": "Not found"}), 404
         total_messages = conn.execute("SELECT COUNT(*) FROM messages WHERE bot_id = ?", (bot_id,)).fetchone()[0]
         total_conversations = conn.execute("SELECT COUNT(DISTINCT conversation_id) FROM messages WHERE bot_id = ?", (bot_id,)).fetchone()[0]
         # Portable (SQLite + PostgreSQL): timestamps are TEXT in 'YYYY-MM-DD HH:MM:SS',
@@ -659,10 +803,10 @@ def bot_stats(bot_id):
 @app.route("/api/bots/<bot_id>/conversations", methods=["GET"])
 @login_required
 def list_conversations(bot_id):
+    bot = _bot_for_request(bot_id)
+    if not bot:
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
-        bot = conn.execute("SELECT id, name FROM bots WHERE id = ?", (bot_id,)).fetchone()
-        if not bot:
-            return jsonify({"error": "Not found"}), 404
         msgs = conn.execute(
             "SELECT conversation_id, role, content, created_at FROM messages WHERE bot_id = ? ORDER BY created_at ASC",
             (bot_id,),
@@ -707,6 +851,8 @@ def list_conversations(bot_id):
 @app.route("/api/bots/<bot_id>/conversations/<conv_id>", methods=["GET"])
 @login_required
 def get_conversation(bot_id, conv_id):
+    if not _bot_for_request(bot_id):
+        return jsonify({"error": "Not found"}), 404
     with get_connection() as conn:
         msgs = conn.execute(
             "SELECT role, content, created_at FROM messages WHERE bot_id = ? AND conversation_id = ? ORDER BY created_at ASC",
@@ -987,7 +1133,7 @@ def business_profile_seed():
 # effective value came from, and a short tail so keys can be told apart.
 # ---------------------------------------------------------------------------
 @app.route("/api/settings", methods=["GET"])
-@admin_required
+@owner_required
 def get_settings():
     return jsonify({
         "groups": settings.all_for_ui(),
@@ -997,7 +1143,7 @@ def get_settings():
 
 
 @app.route("/api/settings", methods=["PUT"])
-@admin_required
+@owner_required
 def update_settings():
     """Save a batch. A blank secret means "leave the stored value alone"."""
     data = request.get_json(silent=True) or {}
@@ -1018,17 +1164,21 @@ def update_settings():
 
 
 @app.route("/api/settings/test/<group_id>", methods=["POST"])
-@admin_required
+@owner_required
 def test_settings_group(group_id):
     """Run a group's live check - e.g. a real Pexels search with the saved key."""
     return jsonify(settings.test(group_id))
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Agents (designatable roster)
+#
+# Platform-operator only: the roster is the product itself, not client data, so a
+# client edits their own content rather than the team that writes it.
 # ---------------------------------------------------------------------------
 @app.route("/api/agents", methods=["GET"])
-@login_required
+@owner_required
 def list_agents():
     return jsonify({
         "agents": agent_roster.list_agents(),
@@ -1043,7 +1193,7 @@ def list_agents():
 
 
 @app.route("/api/agents", methods=["POST"])
-@login_required
+@owner_required
 def create_agent():
     data = request.get_json(silent=True) or {}
     if not (data.get("name") or "").strip():
@@ -1052,7 +1202,7 @@ def create_agent():
 
 
 @app.route("/api/agents/<int:agent_id>", methods=["PUT"])
-@login_required
+@owner_required
 def update_agent(agent_id):
     updated = agent_roster.update_agent(agent_id, request.get_json(silent=True) or {})
     if not updated:
@@ -1061,7 +1211,7 @@ def update_agent(agent_id):
 
 
 @app.route("/api/agents/<int:agent_id>", methods=["DELETE"])
-@login_required
+@owner_required
 def delete_agent(agent_id):
     if not agent_roster.get_agent(agent_id):
         return jsonify({"error": "Not found"}), 404
@@ -1071,15 +1221,19 @@ def delete_agent(agent_id):
 
 # ---------------------------------------------------------------------------
 # Servers (SSH targets the Operator may use)
+#
+# Platform-operator only. These are the *hosting fleet's* credentials, not client
+# data: every route used to be @login_required, so any signed-in member could list
+# the hosts, read their key paths, or delete them outright.
 # ---------------------------------------------------------------------------
 @app.route("/api/ssh-hosts", methods=["GET"])
-@login_required
+@owner_required
 def list_ssh_hosts():
     return jsonify({"hosts": servers_service.list_hosts(), "dry_run": actions.is_dry_run()})
 
 
 @app.route("/api/ssh-hosts", methods=["POST"])
-@login_required
+@owner_required
 def create_ssh_host():
     data = request.get_json(silent=True) or {}
     if not (data.get("host") or "").strip():
@@ -1088,7 +1242,7 @@ def create_ssh_host():
 
 
 @app.route("/api/ssh-hosts/<int:host_id>", methods=["PUT"])
-@login_required
+@owner_required
 def update_ssh_host(host_id):
     updated = servers_service.update_host(host_id, request.get_json(silent=True) or {})
     if not updated:
@@ -1097,7 +1251,7 @@ def update_ssh_host(host_id):
 
 
 @app.route("/api/ssh-hosts/<int:host_id>", methods=["DELETE"])
-@login_required
+@owner_required
 def delete_ssh_host(host_id):
     if not servers_service.get_host(host_id):
         return jsonify({"error": "Not found"}), 404
@@ -1106,7 +1260,7 @@ def delete_ssh_host(host_id):
 
 
 @app.route("/api/ssh-hosts/<int:host_id>/test", methods=["POST"])
-@admin_required
+@owner_required
 def test_ssh_host(host_id):
     """Connect and run a read-only probe. Never mutates anything."""
     host = servers_service.get_host(host_id)
@@ -1128,18 +1282,38 @@ def test_ssh_host(host_id):
 # ---------------------------------------------------------------------------
 # Sites (hosting)
 # ---------------------------------------------------------------------------
+def _site_for_request(site_id):
+    """Load a site the caller is allowed to act on, or None.
+
+    The platform owner may act on any client's site; a client only on one in their
+    own org. Cross-tenant access returns 404 rather than 403 on purpose - a client
+    should not be able to probe which site ids exist.
+    """
+    site = sites_service.get_site(site_id)
+    if not site or not can_access_org(site.get("org_id")):
+        return None
+    return site
+
+
 @app.route("/api/sites", methods=["GET"])
 @login_required
 def list_sites():
+    """The caller's websites, plus the deploy targets they may choose.
+
+    The server IP is included for everyone - a client has to point their DNS at it,
+    which is the whole model. The SSH host list is *not*: it is the hosting fleet's
+    own infrastructure, and it used to be returned to every signed-in user.
+    """
     targets = [{"value": "local", "label": "This server (local)"}]
-    for host in servers_service.list_hosts():
-        if host["enabled"]:
-            targets.append({
-                "value": str(host["id"]),
-                "label": "%s (%s@%s)" % (host["label"], host["username"], host["host"]),
-            })
+    if is_owner():
+        for host in servers_service.list_hosts():
+            if host["enabled"]:
+                targets.append({
+                    "value": str(host["id"]),
+                    "label": "%s (%s@%s)" % (host["label"], host["username"], host["host"]),
+                })
     return jsonify({
-        "sites": sites_service.list_sites(),
+        "sites": sites_service.list_sites(list_scope()),
         "targets": targets,
         "dry_run": actions.is_dry_run(),
         "server_ip": provisioner.SERVER_IP,
@@ -1147,29 +1321,38 @@ def list_sites():
 
 
 @app.route("/api/sites", methods=["POST"])
-@login_required
+@client_admin_required
 def create_site():
     data = request.get_json(silent=True) or {}
     domain = (data.get("domain") or "").strip().lower()
     if not tool_policy.check_domain(domain).allowed:
         return jsonify({"error": "That is not a valid domain name"}), 400
+    # Domains stay globally unique: two clients cannot both own acme.com.
     if sites_service.get_site_by_domain(domain):
         return jsonify({"error": "That domain is already configured"}), 409
-    return jsonify({"site": sites_service.create_site(data, owner_id=session["user_id"])}), 201
+    # The tenant comes from the session, never from the payload.
+    org_id = data.get("org_id") if is_owner() else current_org()
+    return jsonify({
+        "site": sites_service.create_site(
+            data, owner_id=session["user_id"], org_id=org_id
+        ),
+    }), 201
 
 
 @app.route("/api/sites/<int:site_id>", methods=["GET"])
 @login_required
 def get_site(site_id):
-    site = sites_service.get_site(site_id)
+    site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"site": site})
 
 
 @app.route("/api/sites/<int:site_id>", methods=["PUT"])
-@login_required
+@client_admin_required
 def update_site(site_id):
+    if not _site_for_request(site_id):
+        return jsonify({"error": "Not found"}), 404
     updated = sites_service.update_site(site_id, request.get_json(silent=True) or {})
     if not updated:
         return jsonify({"error": "Not found"}), 404
@@ -1177,9 +1360,9 @@ def update_site(site_id):
 
 
 @app.route("/api/sites/<int:site_id>", methods=["DELETE"])
-@login_required
+@client_admin_required
 def delete_site(site_id):
-    if not sites_service.get_site(site_id):
+    if not _site_for_request(site_id):
         return jsonify({"error": "Not found"}), 404
     sites_service.delete_site(site_id)
     return jsonify({"ok": True})
@@ -1189,7 +1372,7 @@ def delete_site(site_id):
 @login_required
 def site_dns(site_id):
     """The exact DNS records to create, plus what the domain resolves to now."""
-    site = sites_service.get_site(site_id)
+    site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
     return jsonify({
@@ -1204,7 +1387,7 @@ def site_dns(site_id):
 @login_required
 def check_site(site_id):
     """Re-check DNS. Read-only, so it needs no approval."""
-    site = sites_service.get_site(site_id)
+    site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
     info = provisioner.check_dns(site["domain"])
@@ -1217,15 +1400,16 @@ def check_site(site_id):
 
 
 @app.route("/api/sites/<int:site_id>/provision", methods=["POST"])
-@login_required
+@client_admin_required
 def provision_site(site_id):
     """Queue provisioning as a job, so its transcript and approvals stream live."""
-    site = sites_service.get_site(site_id)
+    site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
     job_id = jobs.create_job(
         "Provision %s" % site["domain"], site["domain"],
         session.get("user_id"), "selector", "site_provision",
+        org_id=site.get("org_id"),
     )
     jobs.submit(job_id)
     return jsonify({"job": jobs.get_job(job_id), "site": site}), 201
@@ -1238,7 +1422,11 @@ def provision_site(site_id):
 @login_required
 def list_approvals():
     status = request.args.get("status") or None
-    return jsonify({"approvals": actions.list_approvals(status), "dry_run": actions.is_dry_run()})
+    # Keyword: list_approvals(status, limit, org_id) would read the org as a limit.
+    return jsonify({
+        "approvals": actions.list_approvals(status, org_id=list_scope()),
+        "dry_run": actions.is_dry_run(),
+    })
 
 
 @app.route("/api/approvals/<int:approval_id>/<decision>", methods=["POST"])
@@ -1247,6 +1435,10 @@ def decide_approval(approval_id, decision):
     if decision not in ("approve", "deny"):
         return jsonify({"error": "decision must be approve or deny"}), 400
     if not actions.get_approval(approval_id):
+        return jsonify({"error": "Not found"}), 404
+    # A client may only decide the writes its own runs asked for. Deciding another
+    # client's approval would mean authorising a write to their server.
+    if not can_access_org(actions.approval_org_id(approval_id)):
         return jsonify({"error": "Not found"}), 404
     row = actions.decide_approval(
         approval_id,
@@ -1259,10 +1451,20 @@ def decide_approval(approval_id, decision):
 # ---------------------------------------------------------------------------
 # Agent jobs (background AutoGen runs)
 # ---------------------------------------------------------------------------
+def _job_for_request(job_id):
+    """Load a job the caller may see. 404 for another client's job, never 403."""
+    job = jobs.get_job(job_id)
+    if not job or not can_access_org(job.get("org_id")):
+        return None
+    return job
+
+
 @app.route("/api/jobs", methods=["GET"])
 @login_required
 def list_jobs():
-    return jsonify({"jobs": jobs.list_jobs()})
+    # Keyword, not positional: list_jobs(limit, org_id) would read an org id as a
+    # row limit and quietly return every client's runs.
+    return jsonify({"jobs": jobs.list_jobs(org_id=list_scope())})
 
 
 @app.route("/api/jobs", methods=["POST"])
@@ -1277,7 +1479,10 @@ def create_job():
     if task_name not in jobs.TASKS:
         return jsonify({"error": "Unknown task: %s" % task_name}), 400
     team_mode = (data.get("team_mode") or "selector").strip()
-    job_id = jobs.create_job(title, prompt, session.get("user_id"), team_mode, task_name)
+    job_id = jobs.create_job(
+        title, prompt, session.get("user_id"), team_mode, task_name,
+        org_id=current_org(),
+    )
     jobs.submit(job_id)
     return jsonify({"job": jobs.get_job(job_id)}), 201
 
@@ -1285,7 +1490,7 @@ def create_job():
 @app.route("/api/jobs/<int:job_id>", methods=["GET"])
 @login_required
 def get_job(job_id):
-    job = jobs.get_job(job_id)
+    job = _job_for_request(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"job": job, "artifacts": jobs.list_artifacts(job_id)})
@@ -1294,7 +1499,7 @@ def get_job(job_id):
 @app.route("/api/jobs/<int:job_id>/events", methods=["GET"])
 @login_required
 def job_events(job_id):
-    job = jobs.get_job(job_id)
+    job = _job_for_request(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
     after = request.args.get("after", type=int) or 0
@@ -1308,7 +1513,7 @@ def job_events(job_id):
 @app.route("/api/jobs/<int:job_id>/cancel", methods=["POST"])
 @login_required
 def cancel_job(job_id):
-    if not jobs.get_job(job_id):
+    if not _job_for_request(job_id):
         return jsonify({"error": "Not found"}), 404
     jobs.cancel_job(job_id)
     return jsonify({"job": jobs.get_job(job_id)})

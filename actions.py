@@ -67,17 +67,38 @@ def get_approval(approval_id):
     return _as_dict(row) if row else None
 
 
-def list_approvals(status=None, limit=50):
-    query = "SELECT * FROM action_approvals"
+def list_approvals(status=None, limit=50, org_id=None):
+    """Pending/decided writes, newest first.
+
+    ``org_id`` scopes them through the job that asked for the write. An approval
+    with no job (raised outside a run) belongs to no client, so only the platform
+    operator can see it - which is why the filter is on the join, not the row.
+    """
+    query = ("SELECT a.* FROM action_approvals a "
+             "LEFT JOIN jobs j ON j.id = a.job_id WHERE 1 = 1")
     params = []
     if status:
-        query += " WHERE status = ?"
+        query += " AND a.status = ?"
         params.append(status)
-    query += " ORDER BY id DESC LIMIT ?"
+    if org_id is not None:
+        query += " AND j.org_id = ?"
+        params.append(org_id)
+    query += " ORDER BY a.id DESC LIMIT ?"
     params.append(limit)
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
     return [_as_dict(r) for r in rows]
+
+
+def approval_org_id(approval_id):
+    """The org that owns an approval's job, or None if it has no job."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT j.org_id AS org_id FROM action_approvals a "
+            "LEFT JOIN jobs j ON j.id = a.job_id WHERE a.id = ?",
+            (approval_id,),
+        ).fetchone()
+    return row["org_id"] if row else None
 
 
 def decide_approval(approval_id, decision, decided_by="", result=""):

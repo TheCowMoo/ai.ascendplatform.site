@@ -83,13 +83,35 @@ def _created_at():
 
 metadata = MetaData()
 
+# Tenants: one row per client. The platform operator is not an org, and the
+# ``owner`` role bypasses org scoping entirely.
+#
+# Domains stay globally unique - two clients cannot both own acme.com - while
+# *access* to a site is scoped to its org. Conflating those two ideas is what let
+# every logged-in user list every client's sites before this existed.
+orgs = Table(
+    "orgs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("slug", Text, nullable=False, unique=True),
+    Column("plan", Text, nullable=False, server_default=_literal("standard")),
+    Column("status", Text, nullable=False, server_default=_literal("active")),
+    Column("notes", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
 users = Table(
     "users", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("email", Text, nullable=False, unique=True),
     Column("name", Text, nullable=False),
     Column("password_hash", Text, nullable=False),
+    # owner = the platform operator (sees everything, belongs to no org);
+    # client_admin = a client's admin; member = a client's staff.
     Column("role", Text, nullable=False, server_default=_literal("member")),
+    Column("org_id", Integer),
     _created_at(),
 )
 
@@ -107,7 +129,9 @@ bots = Table(
     Column("webhook_url", Text, nullable=False, server_default=_literal("")),
     Column("profile_id", Integer),
     Column("use_profile_kb", Integer, nullable=False, server_default=text("1")),
+    # owner_id = who created it (audit); org_id = the tenant that owns it.
     Column("owner_id", Integer),
+    Column("org_id", Integer),
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
@@ -159,6 +183,7 @@ jobs = Table(
     Column("task", Text, nullable=False, server_default=_literal("echo")),
     Column("team_mode", Text, nullable=False, server_default=_literal("selector")),
     Column("requester_id", Integer),
+    Column("org_id", Integer),
     Column("status", Text, nullable=False, server_default=_literal("queued")),
     Column("result", Text, nullable=False, server_default=_literal("")),
     Column("error", Text, nullable=False, server_default=_literal("")),
@@ -202,7 +227,10 @@ Index("idx_job_artifacts_job", job_artifacts.c.job_id)
 business_profiles = Table(
     "business_profiles", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("owner_id", Integer, nullable=False, unique=True),
+    # One profile per org: the brand and voice belong to the client, not to
+    # whichever login happened to create it. owner_id is kept as the creator.
+    Column("owner_id", Integer, nullable=False),
+    Column("org_id", Integer, unique=True),
     Column("name", Text, nullable=False, server_default=_literal("")),
     Column("tagline", Text, nullable=False, server_default=_literal("")),
     Column("description", Text, nullable=False, server_default=_literal("")),
@@ -272,6 +300,7 @@ sites = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("owner_id", Integer),
+    Column("org_id", Integer),
     Column("domain", Text, nullable=False, unique=True),
     Column("aliases", Text, nullable=False, server_default=_literal("[]")),
     Column("docroot", Text, nullable=False, server_default=_literal("")),
@@ -439,6 +468,11 @@ def _prepare(statement, params, is_postgres):
         kind = "insert"
     elif upper.startswith("UPDATE") or upper.startswith("DELETE"):
         kind = "dml"
+    elif upper.startswith(("CREATE", "ALTER", "DROP", "TRUNCATE")):
+        # DDL returns no rows. Classifying it as a SELECT meant execute() called
+        # fetchall() on a non-row result, which raised ResourceClosedError the first
+        # time _ensure_columns actually had a column to add.
+        kind = "ddl"
     else:
         kind = "select"
     return sql, binds, kind
@@ -479,6 +513,9 @@ class Connection:
         if kind == "dml":
             return Result([], rowcount=raw.rowcount)
 
+        if kind == "ddl":
+            return Result([], rowcount=0)
+
         rows = [Row(r._mapping.items(), tuple(r)) for r in raw.fetchall()]
         return Result(rows, rowcount=len(rows))
 
@@ -487,25 +524,51 @@ def get_connection():
     return Connection(engine.connect())
 
 
+# Additive column additions for databases created by an earlier version. The
+# container runs `alembic upgrade head`, but a dev SQLite file that predates a
+# revision never sees those migrations, so the same additions are declared here.
+# Append-only.
+_ADDITIVE_COLUMNS = (
+    ("bots", "webhook_url", "webhook_url TEXT NOT NULL DEFAULT ''"),
+    ("bots", "profile_id", "profile_id INTEGER"),
+    ("bots", "use_profile_kb", "use_profile_kb INTEGER NOT NULL DEFAULT 1"),
+    ("users", "org_id", "org_id INTEGER"),
+    ("bots", "org_id", "org_id INTEGER"),
+    ("sites", "org_id", "org_id INTEGER"),
+    ("jobs", "org_id", "org_id INTEGER"),
+    ("business_profiles", "org_id", "org_id INTEGER"),
+)
+
+
 def _ensure_columns():
     """Additive migrations for databases created by earlier versions."""
     try:
-        inspector = sa.inspect(engine)
-        columns = {c["name"] for c in inspector.get_columns("bots")}
+        tables = set(sa.inspect(engine).get_table_names())
     except Exception:
         return
-    additions = []
-    if "webhook_url" not in columns:
-        additions.append("webhook_url TEXT NOT NULL DEFAULT ''")
-    if "profile_id" not in columns:
-        additions.append("profile_id INTEGER")
-    if "use_profile_kb" not in columns:
-        additions.append("use_profile_kb INTEGER NOT NULL DEFAULT 1")
-    if not additions:
-        return
+
     with get_connection() as conn:
-        for ddl in additions:
-            conn.execute("ALTER TABLE bots ADD COLUMN " + ddl)
+        for table, column, ddl in _ADDITIVE_COLUMNS:
+            if table not in tables:
+                continue
+            try:
+                present = {c["name"] for c in sa.inspect(engine).get_columns(table)}
+            except Exception:
+                continue
+            if column not in present:
+                conn.execute("ALTER TABLE %s ADD COLUMN %s" % (table, ddl))
+
+        # A Business Profile is unique per *org*. SQLite cannot add a constraint in
+        # place, so the tenant key gets an index instead - and multiple NULLs are
+        # allowed, which is exactly what pre-tenancy rows have.
+        if "business_profiles" in tables:
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_business_profiles_org "
+                    "ON business_profiles (org_id)"
+                )
+            except Exception:
+                pass
 
 
 def init_db():
