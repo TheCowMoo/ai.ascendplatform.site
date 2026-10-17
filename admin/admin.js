@@ -16,25 +16,54 @@
   // single source of truth and a rename needs no code change.
   var BRAND = 'AscendPlatform';
 
-  // Left-sidebar navigation. `ready: false` tabs render a "coming soon" panel.
-  var NAV = [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊', hash: '#/' },
-    { id: 'profile', label: 'Business Profile', icon: '🏢', hash: '#/profile' },
-    { id: 'bots', label: 'Chatbots', icon: '🤖', hash: '#/bots' },
-    { id: 'conversations', label: 'Conversations', icon: '💬', hash: '#/conversations' },
-    { id: 'jobs', label: 'Jobs', icon: '⚙️', hash: '#/jobs' },
-    { id: 'analytics', label: 'Analytics', icon: '📈', hash: '#/analytics', ready: false },
-    { id: 'agents', label: 'Agents', icon: '🧠', hash: '#/agents' },
-    { id: 'sites', label: 'Sites', icon: '🌐', hash: '#/sites' },
-    { id: 'servers', label: 'Servers', icon: '🖥️', hash: '#/servers', adminOnly: true },
-    { id: 'users', label: 'Users', icon: '👤', hash: '#/users', adminOnly: true },
-    { id: 'settings', label: 'Settings', icon: '🛠️', hash: '#/settings', adminOnly: true }
-  ];
+  // Two areas, not one long list. `app` is a client's workspace; `platform` is the
+  // operator's console. Mixing them is how a client ended up with "Servers" in their
+  // sidebar, so the area now decides the nav *and* the router gates on it.
+  var AREAS = {
+    app: {
+      label: 'Workspace',
+      home: '#/app/',
+      nav: [
+        { id: 'dashboard', label: 'Dashboard', icon: '📊', hash: '#/app/dashboard' },
+        { id: 'sites', label: 'Websites', icon: '🌐', hash: '#/app/sites' },
+        { id: 'blogs', label: 'Blogs', icon: '✍️', hash: '#/app/blogs' },
+        { id: 'funnels', label: 'Funnels', icon: '🧲', hash: '#/app/funnels' },
+        { id: 'emails', label: 'Emails', icon: '✉️', hash: '#/app/emails' },
+        { id: 'library', label: 'Library', icon: '🗂️', hash: '#/app/library' },
+        { id: 'bots', label: 'Chatbots', icon: '🤖', hash: '#/app/bots' },
+        { id: 'conversations', label: 'Conversations', icon: '💬', hash: '#/app/conversations' },
+        { id: 'profile', label: 'Business Profile', icon: '🏢', hash: '#/app/profile' },
+        { id: 'jobs', label: 'Jobs', icon: '⚙️', hash: '#/app/jobs' },
+        { id: 'team', label: 'Team', icon: '👤', hash: '#/app/team', adminOnly: true },
+        { id: 'settings', label: 'Settings', icon: '🛠️', hash: '#/app/settings', adminOnly: true }
+      ]
+    },
+    platform: {
+      label: 'Platform',
+      home: '#/platform/clients',
+      nav: [
+        { id: 'clients', label: 'Clients', icon: '🏬', hash: '#/platform/clients' },
+        { id: 'servers', label: 'Servers', icon: '🖥️', hash: '#/platform/servers' },
+        { id: 'agents', label: 'Agents', icon: '🧠', hash: '#/platform/agents' },
+        { id: 'settings', label: 'Platform settings', icon: '🛠️', hash: '#/platform/settings' }
+      ]
+    }
+  };
+
+  // Flat view of both areas, so the "coming soon" helper keeps working.
+  var NAV = AREAS.app.nav.concat(AREAS.platform.nav);
 
   function currentNavId(parts) {
-    var first = parts[0] || '';
+    var first = parts[1] || '';
     if (first === 'bot') return 'bots';
     return first || 'dashboard';
+  }
+
+  // Platform operator, or a client's own admin - the two levels that may manage
+  // people and settings. Everything else is a member.
+  function canAdmin(user) {
+    if (!user) return false;
+    return isOwner(user) || user.role === 'client_admin';
   }
 
   function api(method, url, body) {
@@ -90,16 +119,19 @@
 
   // ---------- Shell: sidebar + topbar ----------
   function sidebar(parts) {
+    var area = parts[0] === 'platform' ? 'platform' : 'app';
+    var tab = parts[1] || '';
     var aside = el('aside', 'sidebar');
     var brand = el('div', 'side-brand');
     brand.innerHTML = '<span class="dot"></span>' + esc(BRAND);
     aside.appendChild(brand);
 
+    aside.appendChild(el('div', 'side-heading', AREAS[area].label));
+
     var nav = el('nav', 'side-nav');
-    var active = currentNavId(parts);
-    NAV.forEach(function (item) {
-      if (item.adminOnly && !isOwner(state.user)) return;
-      var link = el('a', 'side-item' + (item.id === active ? ' active' : ''));
+    AREAS[area].nav.forEach(function (item) {
+      if (item.adminOnly && !canAdmin(state.user)) return;
+      var link = el('a', 'side-item' + (item.id === tab ? ' active' : ''));
       link.href = item.hash;
       link.innerHTML = '<span class="side-icon">' + item.icon + '</span>' +
         '<span class="side-label">' + esc(item.label) + '</span>' +
@@ -109,11 +141,25 @@
     });
     aside.appendChild(nav);
 
+    // The operator works in both areas: their own brand and sites live in the
+    // workspace, the clients they host live in the console.
+    if (isOwner(state.user)) {
+      var other = area === 'platform' ? 'app' : 'platform';
+      var swap = el('a', 'side-item side-swap');
+      swap.href = AREAS[other].home;
+      swap.innerHTML = '<span class="side-icon">' + (other === 'platform' ? '🛰️' : '↩') + '</span>' +
+        '<span class="side-label">' + (other === 'platform' ? 'Platform console' : 'Client workspace') + '</span>';
+      aside.appendChild(swap);
+    }
+
     var foot = el('div', 'side-foot');
     var who = el('div', 'side-user');
+    var org = state.user.org || null;
+    // A client sees which workspace they are in; the operator sees the platform.
+    var who2 = org ? esc(org.name) : (isOwner(state.user) ? 'Platform operator' : esc(state.user.role));
     who.innerHTML = '<span class="avatar">' + esc(initials(state.user.name)) + '</span>' +
       '<div><div class="side-user-name">' + esc(state.user.name) + '</div>' +
-      '<div class="side-user-role">' + esc(state.user.role) + '</div></div>';
+      '<div class="side-user-role">' + who2 + '</div></div>';
     foot.appendChild(who);
     var logout = el('button', 'btn btn-ghost btn-sm', 'Log out');
     logout.onclick = function () {
@@ -2155,14 +2201,372 @@
     return container;
   }
 
+  // ---------- Shared form modal ----------
+  // fields: [{name, label, type, value, options, placeholder, help}]. onSubmit gets
+  // (data, fail, ok), so a rejected save shows the server's message in place.
+  function formModal(title, fields, onSubmit) {
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal');
+    modal.appendChild(el('h3', null, title));
+    var form = el('form', 'form');
+    var inputs = {};
+    fields.forEach(function (f) {
+      var wrap = el('label', 'field');
+      wrap.appendChild(el('span', null, f.label));
+      var input;
+      if (f.type === 'select') {
+        input = el('select');
+        (f.options || []).forEach(function (opt) {
+          var isObj = opt && typeof opt === 'object';
+          var option = el('option', null, isObj ? (opt.label || opt.value) : opt);
+          option.value = isObj ? opt.value : opt;
+          input.appendChild(option);
+        });
+        input.value = f.value || '';
+      } else if (f.type === 'textarea') {
+        input = el('textarea');
+        input.value = f.value || '';
+      } else {
+        input = el('input');
+        input.type = f.type || 'text';
+        input.value = f.value || '';
+      }
+      if (f.placeholder) input.placeholder = f.placeholder;
+      inputs[f.name] = input;
+      wrap.appendChild(input);
+      if (f.help) wrap.appendChild(el('small', 'muted', f.help));
+      form.appendChild(wrap);
+    });
+    var error = el('div', 'form-error');
+    form.appendChild(error);
+    var actions = el('div', 'modal-actions');
+    var cancel = el('button', 'btn btn-ghost', 'Cancel');
+    cancel.type = 'button';
+    cancel.onclick = function () { backdrop.remove(); };
+    var save = el('button', 'btn btn-primary', 'Save');
+    save.type = 'submit';
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    form.appendChild(actions);
+    form.onsubmit = function (ev) {
+      ev.preventDefault();
+      var data = {};
+      Object.keys(inputs).forEach(function (key) { data[key] = inputs[key].value; });
+      save.disabled = true;
+      error.textContent = '';
+      onSubmit(data, function (message) {
+        save.disabled = false;
+        error.textContent = message || 'That did not work';
+      }, function () {
+        backdrop.remove();
+      });
+    };
+    modal.appendChild(form);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    return backdrop;
+  }
+
+  // ---------- Clients (platform console: onboarding) ----------
+  var PLANS = ['trial', 'standard', 'pro', 'enterprise'];
+  var ORG_STATUSES = ['active', 'suspended', 'cancelled'];
+
+  function viewClients() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.appendChild(el('h1', null, 'Clients'));
+    var add = el('button', 'btn btn-primary', '+ New client');
+    add.onclick = function () { showClientForm(null, refresh); };
+    head.appendChild(add);
+    container.appendChild(head);
+    container.appendChild(el('p', 'muted',
+      'Each client gets their own workspace: their sites, content, chatbots and team. ' +
+      'Creating one also creates the first admin login, so a client is never left unable to sign in.'));
+    var body = el('div');
+    container.appendChild(body);
+
+    function refresh() {
+      api('GET', '/api/orgs').then(function (d) {
+        body.innerHTML = '';
+        var orgs = d.orgs || [];
+        if (!orgs.length) {
+          body.appendChild(el('p', 'muted', 'No clients yet. Create the first one.'));
+          return;
+        }
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Client</th><th>Plan</th><th>Status</th>' +
+          '<th>Created</th><th></th></tr></thead>';
+        var tbody = el('tbody');
+        orgs.forEach(function (org) {
+          var tr = el('tr');
+          tr.innerHTML = '<td><a href="#/platform/clients/' + org.id + '">' + esc(org.name) +
+            '</a><div class="muted">' + esc(org.slug) + '</div></td>' +
+            '<td><span class="badge">' + esc(org.plan) + '</span></td>' +
+            '<td><span class="badge badge-' + (org.status === 'active' ? 'admin' : 'member') + '">' +
+            esc(org.status) + '</span></td>' +
+            '<td class="muted">' + esc((org.created_at || '').slice(0, 10)) + '</td>';
+          var td = el('td', 'row-actions');
+          var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+          edit.onclick = function () { showClientForm(org, refresh); };
+          td.appendChild(edit);
+          var del = el('button', 'btn btn-danger btn-sm', 'Delete');
+          del.onclick = function () {
+            if (!confirm('Delete "' + org.name + '"? Their logins must be removed first.')) return;
+            api('DELETE', '/api/orgs/' + org.id)
+              .then(function () { toast('Deleted', true); refresh(); })
+              .catch(function (e) { toast(e.message, false); });
+          };
+          td.appendChild(del);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+    refresh();
+    return container;
+  }
+
+  function showClientForm(org, done) {
+    var isNew = !org;
+    var fields = [
+      { name: 'name', label: 'Client name', value: org ? org.name : '', placeholder: 'Acme Ltd' },
+      { name: 'slug', label: 'Slug', value: org ? org.slug : '',
+        help: 'Used in URLs and support. Generated from the name when blank.' },
+      { name: 'plan', label: 'Plan', type: 'select', options: PLANS, value: org ? org.plan : 'standard' },
+      { name: 'status', label: 'Status', type: 'select', options: ORG_STATUSES, value: org ? org.status : 'active' },
+      { name: 'notes', label: 'Notes', type: 'textarea', value: org ? org.notes : '' }
+    ];
+    if (isNew) {
+      fields.push({ name: 'email', label: 'First admin email', type: 'email', placeholder: 'owner@acme.com' });
+      fields.push({ name: 'password', label: 'First admin password', type: 'password',
+        help: 'At least 8 characters. They can change it once signed in.' });
+      fields.push({ name: 'contact_name', label: 'Their name', placeholder: 'Jane Doe' });
+    }
+    formModal(isNew ? 'New client' : 'Edit ' + org.name, fields, function (data, fail, ok) {
+      var request = isNew
+        ? api('POST', '/api/orgs', data)
+        : api('PUT', '/api/orgs/' + org.id, data);
+      request.then(function () {
+        ok();
+        toast(isNew ? 'Client created' : 'Client saved', true);
+        done();
+      }).catch(function (e) { fail(e.message); });
+    });
+  }
+
+  function viewClient(orgId) {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.appendChild(el('h1', null, 'Client'));
+    var back = el('a', 'btn btn-ghost', '← All clients');
+    back.href = '#/platform/clients';
+    head.appendChild(back);
+    container.appendChild(head);
+    var body = el('div');
+    container.appendChild(body);
+
+    function refresh() {
+      api('GET', '/api/orgs/' + orgId).then(function (d) {
+        var org = d.org;
+        var users = d.users || [];
+        body.innerHTML = '';
+
+        var card = el('div', 'panel');
+        card.appendChild(el('h3', null, org.name));
+        card.appendChild(el('p', 'muted', org.slug + ' · plan ' + org.plan + ' · ' + org.status));
+        if (org.notes) card.appendChild(el('p', null, org.notes));
+        var edit = el('button', 'btn btn-ghost btn-sm', 'Edit client');
+        edit.onclick = function () { showClientForm(org, refresh); };
+        card.appendChild(edit);
+        body.appendChild(card);
+
+        var panel = el('div', 'panel');
+        var bar = el('div', 'panel-head');
+        bar.appendChild(el('h3', null, 'Team (' + users.length + ')'));
+        var add = el('button', 'btn btn-primary btn-sm', '+ Add login');
+        add.onclick = function () { showOrgUserForm(org, refresh); };
+        bar.appendChild(add);
+        panel.appendChild(bar);
+
+        if (!users.length) {
+          panel.appendChild(el('p', 'muted', 'No logins yet - this client cannot sign in.'));
+        } else {
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>';
+          var tbody = el('tbody');
+          users.forEach(function (user) {
+            var tr = el('tr');
+            tr.innerHTML = '<td>' + esc(user.name) + '</td>' +
+              '<td>' + esc(user.email) + '</td>' +
+              '<td><span class="badge ' + (user.role === 'member' ? 'badge-member' : 'badge-admin') + '">' +
+              esc(user.role) + '</span></td>';
+            var td = el('td', 'row-actions');
+            var reset = el('button', 'btn btn-ghost btn-sm', 'Set password');
+            reset.onclick = function () { showPasswordForm(user); };
+            td.appendChild(reset);
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          panel.appendChild(table);
+        }
+        body.appendChild(panel);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+    refresh();
+    return container;
+  }
+
+  function showOrgUserForm(org, done) {
+    formModal('Add a login to ' + org.name, [
+      { name: 'name', label: 'Name' },
+      { name: 'email', label: 'Email', type: 'email' },
+      { name: 'password', label: 'Password', type: 'password', help: 'At least 8 characters.' },
+      { name: 'role', label: 'Role', type: 'select', options: ['client_admin', 'member'], value: 'member' }
+    ], function (data, fail, ok) {
+      api('POST', '/api/orgs/' + org.id + '/users', data)
+        .then(function () { ok(); toast('Login added', true); done(); })
+        .catch(function (e) { fail(e.message); });
+    });
+  }
+
+  function showPasswordForm(user, done) {
+    formModal('Set a password for ' + user.name, [
+      { name: 'new_password', label: 'New password', type: 'password', help: 'At least 8 characters.' }
+    ], function (data, fail, ok) {
+      api('POST', '/api/users/' + user.id + '/password', data)
+        .then(function () { ok(); toast('Password set', true); if (done) done(); })
+        .catch(function (e) { fail(e.message); });
+    });
+  }
+
+  // ---------- Content: Websites, Blogs, Funnels, Emails, Library ----------
+  // Websites is the existing sites view. The other four are one table filtered by
+  // kind; the Library is the same list unfiltered, because "everything the team
+  // produced" is exactly the union of them.
+  var CONTENT_TABS = {
+    blogs: { kind: 'blog', title: 'Blogs', blurb: 'Articles written for you and published onto a website.' },
+    funnels: { kind: 'funnel', title: 'Funnels', blurb: 'Opt-in pages and the steps that follow them.' },
+    emails: { kind: 'email', title: 'Emails', blurb: 'Campaigns and sequences sent to your list.' },
+    library: { kind: null, title: 'Library', blurb: 'Everything the team has produced for you, in one place.' }
+  };
+
+  function viewDeliverables(tab) {
+    var meta = CONTENT_TABS[tab] || CONTENT_TABS.library;
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.appendChild(el('h1', null, meta.title));
+    var add = el('button', 'btn btn-primary', '+ New draft');
+    add.onclick = function () { showDeliverableForm(meta.kind || 'blog', null, refresh); };
+    head.appendChild(add);
+    container.appendChild(head);
+    container.appendChild(el('p', 'muted', meta.blurb));
+    var body = el('div');
+    container.appendChild(body);
+
+    function refresh() {
+      var url = '/api/deliverables' + (meta.kind ? '?kind=' + meta.kind : '');
+      api('GET', url).then(function (d) {
+        body.innerHTML = '';
+        var items = d.deliverables || [];
+        var counts = d.counts || {};
+        body.appendChild(el('p', 'muted',
+          'Blogs ' + (counts.blog || 0) + ' · Funnels ' + (counts.funnel || 0) +
+          ' · Emails ' + (counts.email || 0) + ' · Everything ' + (counts.all || 0)));
+        if (!items.length) {
+          body.appendChild(el('p', 'muted',
+            'Nothing here yet. The team writes these, and you can add a draft yourself.'));
+          return;
+        }
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Title</th><th>Kind</th><th>Status</th>' +
+          '<th>Updated</th><th></th></tr></thead>';
+        var tbody = el('tbody');
+        items.forEach(function (item) {
+          var tr = el('tr');
+          tr.innerHTML = '<td>' + esc(item.title) +
+            (item.slug ? '<div class="muted">/' + esc(item.slug) + '</div>' : '') + '</td>' +
+            '<td><span class="badge">' + esc(item.kind) + '</span></td>' +
+            '<td><span class="badge badge-' + (item.status === 'published' ? 'admin' : 'member') + '">' +
+            esc(item.status) + '</span></td>' +
+            '<td class="muted">' + esc((item.updated_at || '').slice(0, 16)) + '</td>';
+          var td = el('td', 'row-actions');
+          var open = el('button', 'btn btn-ghost btn-sm', 'Open');
+          open.onclick = function () { showDeliverableForm(item.kind, item, refresh); };
+          td.appendChild(open);
+          var del = el('button', 'btn btn-danger btn-sm', 'Delete');
+          del.onclick = function () {
+            if (!confirm('Delete "' + item.title + '"?')) return;
+            api('DELETE', '/api/deliverables/' + item.id)
+              .then(function () { toast('Deleted', true); refresh(); })
+              .catch(function (e) { toast(e.message, false); });
+          };
+          td.appendChild(del);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+    refresh();
+    return container;
+  }
+
+  function showDeliverableForm(kind, item, done) {
+    var isNew = !item;
+    formModal(isNew ? 'New ' + kind : item.title, [
+      { name: 'title', label: 'Title', value: item ? item.title : '' },
+      { name: 'kind', label: 'Kind', type: 'select', options: ['blog', 'funnel', 'email', 'asset'],
+        value: item ? item.kind : kind },
+      { name: 'status', label: 'Status', type: 'select',
+        options: ['draft', 'scheduled', 'published', 'failed'], value: item ? item.status : 'draft' },
+      { name: 'slug', label: 'Slug', value: item ? item.slug : '' },
+      { name: 'summary', label: 'Summary', type: 'textarea', value: item ? item.summary : '' },
+      { name: 'content', label: 'Content', type: 'textarea', value: item ? item.content : '' },
+      { name: 'url', label: 'Published URL', value: item ? item.url : '',
+        placeholder: 'https://acme.com/blog/post' }
+    ], function (data, fail, ok) {
+      var request = isNew
+        ? api('POST', '/api/deliverables', data)
+        : api('PUT', '/api/deliverables/' + item.id, data);
+      request.then(function () { ok(); toast('Saved', true); done(); })
+        .catch(function (e) { fail(e.message); });
+    });
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
     runCleanups();
     app.innerHTML = '';
-    var parts = (location.hash || '#/').replace(/^#/, '').split('/').filter(Boolean);
+    var parts = (location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
 
     if (!state.user) { app.appendChild(viewLogin()); return; }
+
+    // Landing: the operator belongs in the console, a client in their workspace.
+    if (!parts.length) {
+      location.replace(isOwner(state.user) ? AREAS.platform.home : AREAS.app.home);
+      return;
+    }
+    // A bookmark, or an in-page link written before the split. Rebuild it inside the
+    // workspace instead of bouncing the user somewhere unrelated.
+    if (parts[0] !== 'app' && parts[0] !== 'platform') {
+      location.replace('#/app/' + parts.join('/'));
+      return;
+    }
+    // #/platform/* is the operator's console. Sending a client home is friendlier
+    // than letting them render it and collect a 403 from every request.
+    if (parts[0] === 'platform' && !isOwner(state.user)) {
+      location.replace(AREAS.app.home);
+      return;
+    }
+
+    var area = parts[0];
+    var tab = parts[1] || '';
+    var rest = parts.slice(2);
 
     var shell = el('div', 'app-shell');
     shell.appendChild(sidebar(parts));
@@ -2174,21 +2578,26 @@
     app.appendChild(shell);
 
     var view;
-    if (parts[0] === 'bot' && parts[1] === 'new') view = viewEditor(null);
-    else if (parts[0] === 'bot' && parts[2] === 'stats') view = viewStats(parts[1]);
-    else if (parts[0] === 'bot' && parts[2] === 'conversations') view = viewConversations(parts[1]);
-    else if (parts[0] === 'bot' && parts[1]) view = viewEditor(parts[1]);
-    else if (parts[0] === 'profile') view = viewProfile();
-    else if (parts[0] === 'agents') view = viewAgents();
-    else if (parts[0] === 'bots') view = viewBots();
-    else if (parts[0] === 'conversations') view = viewConversationsIndex();
-    else if (parts[0] === 'sites') view = viewSites();
-    else if (parts[0] === 'servers') view = viewServers();
-    else if (parts[0] === 'users') view = viewUsers();
-    else if (parts[0] === 'settings') view = viewSettings();
-    else if (parts[0] === 'jobs' && parts[1]) view = viewJob(parts[1]);
-    else if (parts[0] === 'jobs') view = viewJobs();
-    else if (isSoonTab(parts[0])) view = viewSoon(parts[0]);
+    if (area === 'platform') {
+      if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
+      else if (tab === 'servers') view = viewServers();
+      else if (tab === 'agents') view = viewAgents();
+      else if (tab === 'settings') view = viewSettings();
+      else view = viewClients();
+    } else if (tab === 'bot' && rest[0] === 'new') view = viewEditor(null);
+    else if (tab === 'bot' && rest[1] === 'stats') view = viewStats(rest[0]);
+    else if (tab === 'bot' && rest[1] === 'conversations') view = viewConversations(rest[0]);
+    else if (tab === 'bot' && rest[0]) view = viewEditor(rest[0]);
+    else if (tab === 'profile') view = viewProfile();
+    else if (tab === 'bots') view = viewBots();
+    else if (tab === 'conversations') view = viewConversationsIndex();
+    else if (tab === 'sites') view = viewSites();
+    else if (tab === 'jobs' && rest[0]) view = viewJob(rest[0]);
+    else if (tab === 'jobs') view = viewJobs();
+    else if (tab === 'team') view = viewUsers();
+    else if (tab === 'settings') view = viewSettings();
+    else if (CONTENT_TABS[tab]) view = viewDeliverables(tab);
+    else if (isSoonTab(tab)) view = viewSoon(tab);
     else view = viewDashboard();
 
     content.appendChild(view);

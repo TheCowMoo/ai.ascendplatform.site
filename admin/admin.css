@@ -231,3 +231,13 @@ input[type=color] { width: 44px; height: 44px; border: 1px solid var(--border); 
 .tool-toggle input { width: auto; margin: 0; }
 .bot-card-meta .warn { color: #b45309; font-weight: 600; }
 .badge-status { background: #e5e7eb; color: #374151; }
+
+/* ---------- Two-area shell, section headings and inline forms ---------- */
+.side-heading { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 14px 16px 6px; font-weight: 600; }
+.side-swap { margin: 10px 8px; border-top: 1px solid var(--border); padding-top: 12px; color: var(--muted); }
+.side-swap:hover { color: var(--brand); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.panel-head h3 { margin: 0; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.form-error { color: var(--danger); font-size: 13px; min-height: 18px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }

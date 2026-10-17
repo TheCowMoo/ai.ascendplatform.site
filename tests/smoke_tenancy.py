@@ -42,6 +42,12 @@ NO_ORG_PASSWORD = "no-org-pass-1234"
 STAFF_EMAIL = "staff@tenancy.test"
 STAFF_PASSWORD = "staff-pass-1234"
 
+# A client created through the platform console during the run.
+GAMMA = {
+    "name": "Tenancy Gamma", "slug": "tenancy-gamma",
+    "email": "gamma@tenancy.test", "password": "gamma-pass-1234",
+}
+
 
 def login(email, password):
     client = appmod.app.test_client()
@@ -63,7 +69,7 @@ def cleanup():
             print("cleaned up leftover site", domain)
 
     with appmod.get_connection() as conn:
-        for spec in (ALPHA, BETA):
+        for spec in (ALPHA, BETA, GAMMA):
             org = orgs_service.get_org_by_slug(spec["slug"])
             if not org:
                 continue
@@ -92,6 +98,7 @@ def cleanup():
             conn.execute("DELETE FROM jobs WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM users WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM client_settings WHERE org_id = ?", (org_id,))
+            conn.execute("DELETE FROM deliverables WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM business_profiles WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM orgs WHERE id = ?", (org_id,))
         conn.execute("DELETE FROM users WHERE email = ?", (NO_ORG_EMAIL,))
@@ -436,6 +443,92 @@ def test_a_clients_mail_settings_are_used(alpha, job_id):
     a.put("/api/settings", json={"clear": ["SMTP_HOST"]})
 
 
+def test_platform_console(alpha):
+    """The console onboards a client; no client can reach the console itself."""
+    owner = owner_login()
+
+    created = owner.post("/api/orgs", json={
+        "name": GAMMA["name"], "email": GAMMA["email"], "password": GAMMA["password"],
+    })
+    assert created.status_code == 201, created.get_data(as_text=True)
+    gamma = created.get_json()["org"]
+    assert gamma["slug"] == GAMMA["slug"], gamma
+    print("owner created client %d (%s)" % (gamma["id"], gamma["slug"]))
+
+    # The first admin is created in the same call, so the client can sign in at once.
+    login(GAMMA["email"], GAMMA["password"])
+    print("  its first admin signed in straight away")
+
+    # Plan and status are data only - which is exactly what payment wiring will move.
+    updated = owner.put("/api/orgs/%d" % gamma["id"], json={"plan": "pro", "status": "suspended"})
+    assert updated.status_code == 200, updated.get_data(as_text=True)
+    assert updated.get_json()["org"]["plan"] == "pro", updated.get_json()
+    print("  plan/status edited -> pro/suspended")
+
+    # A client admin is refused every console route, read or write.
+    a = login(ALPHA["email"], ALPHA["password"])
+    for method, path in (("get", "/api/orgs"),
+                         ("post", "/api/orgs"),
+                         ("put", "/api/orgs/%d" % gamma["id"]),
+                         ("delete", "/api/orgs/%d" % gamma["id"])):
+        call = getattr(a, method)
+        resp = call(path) if method == "get" else call(path, json={"name": "hijack"})
+        assert resp.status_code == 403, "%s %s -> %d" % (method.upper(), path, resp.status_code)
+    print("  a client admin is refused every /api/orgs route -> 403")
+
+    # A client with logins cannot be deleted out from under them.
+    blocked = owner.delete("/api/orgs/%d" % gamma["id"])
+    assert blocked.status_code == 409, blocked.status_code
+    print("  deleting a client that still has logins -> 409")
+
+
+def test_deliverables_are_isolated(alpha, beta):
+    """Blogs, funnels, emails and the library are the client's content."""
+    a = login(ALPHA["email"], ALPHA["password"])
+    b = login(BETA["email"], BETA["password"])
+
+    created = a.post("/api/deliverables", json={
+        "kind": "blog", "title": "Alpha post", "summary": "A first draft",
+    })
+    assert created.status_code == 201, created.get_data(as_text=True)
+    item = created.get_json()["deliverable"]
+    assert item["org_id"] == alpha["id"], item
+    assert item["slug"] == "alpha-post", item
+    print("A created a blog draft: %r (org %s)" % (item["title"], item["org_id"]))
+
+    blogs = a.get("/api/deliverables?kind=blog").get_json()
+    assert any(x["id"] == item["id"] for x in blogs["deliverables"]), blogs
+    assert blogs["counts"]["blog"] >= 1, blogs["counts"]
+    print("  A's Blogs tab: %d item(s), counts %s" % (len(blogs["deliverables"]), blogs["counts"]))
+
+    b_all = b.get("/api/deliverables").get_json()["deliverables"]
+    assert not any(x["id"] == item["id"] for x in b_all), "B can see A's content!"
+    print("  B's Library: %d item(s), none of them A's" % len(b_all))
+
+    for method, path, body in (
+        ("get", "/api/deliverables/%d" % item["id"], None),
+        ("put", "/api/deliverables/%d" % item["id"], {"title": "Hijacked"}),
+        ("delete", "/api/deliverables/%d" % item["id"], None),
+    ):
+        call = getattr(b, method)
+        resp = call(path, json=body) if body is not None else call(path)
+        assert resp.status_code == 404, "%s -> %d" % (path, resp.status_code)
+        print("  blocked %-6s %-26s -> 404" % (method.upper(), path))
+
+    # Publishing is a status change, and it survives the round trip.
+    published = a.put("/api/deliverables/%d" % item["id"], json={
+        "status": "published", "url": "https://alpha.test/blog/alpha-post",
+    })
+    assert published.status_code == 200, published.get_data(as_text=True)
+    assert published.get_json()["deliverable"]["status"] == "published"
+    print("  A published it -> %s" % published.get_json()["deliverable"]["url"])
+
+    # A bad kind is rejected rather than quietly stored.
+    assert a.get("/api/deliverables?kind=sausages").status_code == 400
+    assert a.delete("/api/deliverables/%d" % item["id"]).status_code == 200
+    print("  an unknown kind -> 400; A deleted its own draft -> 200")
+
+
 def test_owner_only_surfaces_are_shut(alpha):
     """The console surfaces a client must never reach."""
     a = login(ALPHA["email"], ALPHA["password"])
@@ -520,6 +613,10 @@ def main():
         test_settings_are_scoped(alpha, beta)
         print("\n--- a client's own SMTP, used by a job ---")
         test_a_clients_mail_settings_are_used(alpha, job_id)
+        print("\n--- platform console: onboarding a client ---")
+        test_platform_console(alpha)
+        print("\n--- content: blogs, funnels, emails, library ---")
+        test_deliverables_are_isolated(alpha, beta)
         print("\n--- console surfaces, closed to a client ---")
         test_owner_only_surfaces_are_shut(alpha)
         print("\n--- the platform operator's view ---")

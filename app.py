@@ -41,6 +41,7 @@ import profile as profile_mod
 import agents as agent_roster
 import settings
 import orgs as orgs_service
+import deliverables as deliverables_service
 import tools as tool_registry
 import actions
 import provisioner
@@ -1242,6 +1243,150 @@ def business_profile_seed():
         return error
     prof = profile_mod.seed_sample_profile(org, session.get("user_id"))
     return jsonify({"profile": profile_out(prof)})
+
+
+# ---------------------------------------------------------------------------
+# Clients (the platform console's onboarding surface)
+#
+# Operator only, and the HTTP shape of ``orgs.py``: this is where a client is
+# created, given its first login, moved between plans and suspended. `create_org`
+# seeds the first client_admin in the same call, so a client is never created
+# unreachable - which is the failure an onboarding screen invites.
+# ---------------------------------------------------------------------------
+@app.route("/api/orgs", methods=["GET"])
+@owner_required
+def list_orgs():
+    return jsonify({"orgs": orgs_service.list_orgs()})
+
+
+@app.route("/api/orgs", methods=["POST"])
+@owner_required
+def create_org():
+    try:
+        org = orgs_service.create_org(request.get_json(silent=True) or {})
+    except orgs_service.OrgError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"org": org}), 201
+
+
+@app.route("/api/orgs/<int:org_id>", methods=["GET"])
+@owner_required
+def get_org(org_id):
+    org = orgs_service.get_org(org_id)
+    if not org:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"org": org, "users": orgs_service.list_org_users(org_id)})
+
+
+@app.route("/api/orgs/<int:org_id>", methods=["PUT"])
+@owner_required
+def update_org(org_id):
+    try:
+        org = orgs_service.update_org(org_id, request.get_json(silent=True) or {})
+    except orgs_service.OrgError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not org:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"org": org})
+
+
+@app.route("/api/orgs/<int:org_id>", methods=["DELETE"])
+@owner_required
+def delete_org(org_id):
+    try:
+        removed = orgs_service.delete_org(org_id)
+    except orgs_service.OrgError as exc:
+        # 409, not 400: the request is valid, the client just is not empty yet.
+        return jsonify({"error": str(exc)}), 409
+    if not removed:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/orgs/<int:org_id>/users", methods=["POST"])
+@owner_required
+def add_org_user(org_id):
+    try:
+        users = orgs_service.add_org_user(org_id, request.get_json(silent=True) or {})
+    except orgs_service.OrgError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"users": users}), 201
+
+
+# ---------------------------------------------------------------------------
+# Deliverables (the content a client publishes)
+#
+# Blogs, funnels and emails. The Library tab is the same list without a kind
+# filter, because "everything the team produced" is exactly their union.
+# ---------------------------------------------------------------------------
+def _deliverable_for_request(deliverable_id):
+    """A deliverable the caller may act on, or None. 404 for another client's."""
+    item = deliverables_service.get_deliverable(deliverable_id)
+    if not item or not can_access_org(item.get("org_id")):
+        return None
+    return item
+
+
+@app.route("/api/deliverables", methods=["GET"])
+@login_required
+def list_deliverables():
+    kind = (request.args.get("kind") or "").strip().lower() or None
+    if kind and kind not in deliverables_service.KINDS:
+        return jsonify({"error": "kind must be one of: %s"
+                                 % ", ".join(deliverables_service.KINDS)}), 400
+    scope = list_scope()
+    return jsonify({
+        "deliverables": deliverables_service.list_deliverables(kind, scope),
+        "counts": deliverables_service.counts(scope),
+        "kinds": list(deliverables_service.KINDS),
+        "statuses": list(deliverables_service.STATUSES),
+    })
+
+
+@app.route("/api/deliverables", methods=["POST"])
+@client_admin_required
+def create_deliverable():
+    try:
+        item = deliverables_service.create_deliverable(
+            request.get_json(silent=True) or {},
+            org_id=current_org(),
+            created_by=session.get("user_id"),
+        )
+    except deliverables_service.DeliverableError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"deliverable": item}), 201
+
+
+@app.route("/api/deliverables/<int:deliverable_id>", methods=["GET"])
+@login_required
+def get_deliverable(deliverable_id):
+    item = _deliverable_for_request(deliverable_id)
+    if not item:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deliverable": item})
+
+
+@app.route("/api/deliverables/<int:deliverable_id>", methods=["PUT"])
+@client_admin_required
+def update_deliverable(deliverable_id):
+    if not _deliverable_for_request(deliverable_id):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        item = deliverables_service.update_deliverable(
+            deliverable_id, request.get_json(silent=True) or {}
+        )
+    except deliverables_service.DeliverableError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"deliverable": item})
+
+
+@app.route("/api/deliverables/<int:deliverable_id>", methods=["DELETE"])
+@client_admin_required
+def delete_deliverable(deliverable_id):
+    if not _deliverable_for_request(deliverable_id):
+        return jsonify({"error": "Not found"}), 404
+    deliverables_service.delete_deliverable(deliverable_id)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

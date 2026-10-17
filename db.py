@@ -340,6 +340,33 @@ action_approvals = Table(
     Column("decided_by", Text, nullable=False, server_default=_literal("")),
 )
 
+# What the team produced for a client: a blog post, a funnel, an email. The
+# "Websites" tab is the ``sites`` table - these are the things published *onto* a
+# site or sent from it.
+#
+# One table with a ``kind`` rather than three near-identical ones: a blog, a funnel
+# step and an email differ in content, not in lifecycle. ``status`` is what the
+# approval gate moves (draft -> scheduled -> published), and ``org_id`` is what makes
+# them a client's rather than the platform's.
+deliverables = Table(
+    "deliverables",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),
+    Column("site_id", Integer),
+    Column("kind", Text, nullable=False, server_default=_literal("blog")),
+    Column("title", Text, nullable=False, server_default=_literal("")),
+    Column("slug", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("draft")),
+    Column("summary", Text, nullable=False, server_default=_literal("")),
+    Column("content", Text, nullable=False, server_default=_literal("")),
+    Column("url", Text, nullable=False, server_default=_literal("")),
+    Column("job_id", Integer),
+    Column("created_by", Integer),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
 # Operator-managed configuration, written from the admin Settings tab. Values
 # here are layered over the process environment by ``settings.get`` (panel wins),
 # which is also what lets a change take effect without a restart. Only keys

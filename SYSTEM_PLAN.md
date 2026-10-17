@@ -1049,18 +1049,58 @@ resolves for A — not for B, not for the platform — and its audit trail is A'
 a client being refused a platform key both on read and on write, and the mailer
 resolving a job's client. **All 16 suites green.**
 
-### Still to do (S7, part 3)
+### Part 3 — the platform console, the client workspace, and real content tabs
 
-- `/platform/` (operator console) split from `/app/` (client workspace), and the nav
-  regrouped into Websites, Blogs, Funnels, Emails, Library. The Settings *API* already
-  serves a client's own scope, but the tab is still flagged `adminOnly`, so a client
-  has no screen for their SMTP yet — only the operator can set it, with `?org_id=N`.
-- The client-onboarding console UI over the `orgs` service (`orgs.py` has the API:
-  `create_org` seeds the first `client_admin` in the same call, so a client is never
-  created unreachable).
+The single sidebar became **two areas**, because one list cannot serve both audiences:
+
+| Area | Route | Who | Nav |
+|------|-------|-----|-----|
+| Workspace | `#/app/*` | a client, and the operator for their own brand | Dashboard, **Websites, Blogs, Funnels, Emails, Library**, Chatbots, Conversations, Business Profile, Jobs, Team, Settings |
+| Platform | `#/platform/*` | the operator only | Clients, Servers, Agents, Platform settings |
+
+The area decides the nav *and* the router gates on it: a client who lands on
+`#/platform/*` is redirected to their workspace rather than rendered against routes
+that would answer 403 to every call. A pre-split bookmark or an in-page link
+(`#/sites`, `#/bot/<id>`) is rewritten into `#/app/…` instead of bouncing the user
+somewhere unrelated. The sidebar shows which bucket you are in — a client sees their
+org name, the operator sees "Platform operator" — and the operator gets a switch
+between the two, since their own brand and sites live in the workspace.
+
+**Onboarding (platform console).** The Clients tab lists every org and creates one
+in a single form: name, slug, plan, status, notes, plus the first admin's email and
+password. That last part is the point — `orgs.create_org` seeds the first
+`client_admin` in the same call, because a client with no login is a client you have
+to fix by hand. The client detail page shows their team and can add logins, set
+passwords, and edit the plan/status. Deleting is refused (409) while logins exist, so
+nothing is orphaned. `plan`/`status`/`notes` are data-only today, which is exactly
+what payment wiring will move.
+
+**Content tabs.** Websites is the existing `sites` view. Blogs, Funnels and Emails are
+one new `deliverables` table filtered by `kind`, and **Library is the same list
+unfiltered** — "everything the team produced" is the union of them, so a fourth table
+would have been a fourth place to disagree. One table with a `kind` rather than three
+near-identical ones: a blog, a funnel step and an email differ in content, not in
+lifecycle (`draft → scheduled → published`, with `failed` available). Each row carries
+`org_id` (whose it is), `site_id` (where it goes), `job_id` (which run produced it) and
+`url` (where it went live). Drafts can be written by hand today; the agent tool that
+fills them is the next step, not a rewrite.
+
+`smoke_tenancy.py` covers both: the console creating a client whose admin can sign in
+immediately, plan/status edits, every `/api/orgs` route refused to a client admin
+(403), a delete refused while logins exist (409), and deliverables — created for A,
+invisible to B on the list and by id, published, and rejected for an unknown kind.
+
+### Still to do (S7, part 4)
+
+- **The agents do not write deliverables yet.** The table, the API and the tabs are
+  real; what is missing is `save_deliverable` / `publish_deliverable` /
+  `write_site_page` tools so a run fills them. Until then the content is
+  hand-written, and generation is blocked anyway on `providers_configured: []`.
 - **`tests/test_migrations.py` should upgrade a populated database**, not just an
   empty one. Both §23's `DuplicateTable` and this stage's `UNIQUE(owner_id)` were
   upgraded-vs-fresh divergences, and the suite covers only the fresh path.
+- Nothing schedules or sends an email deliverable: `send_email` sends immediately when
+  a job calls it, so `status: scheduled` is a label, not a timer.
 
 
 
