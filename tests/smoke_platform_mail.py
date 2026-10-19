@@ -175,6 +175,46 @@ def test_a_client_cannot_see_or_use_the_platform_sender():
         platform_mail.delete_sender(sender["id"])
 
 
+def test_the_request_identifies_itself():
+    """Cloudflare blocks urllib's default User-Agent with 403 error 1010."""
+    _configure()
+    CALLS.clear()
+    sender = platform_mail.save_sender(
+        {"name": "UA", "from_email": "ua@ascend.test", "is_default": True}
+    )
+    try:
+        platform_mail.send("ua-check@example.test", "Hi", "<p>x</p>")
+        agent = _call_to("/contacts/upsert")["headers"].get("User-Agent", "")
+        assert agent and "urllib" not in agent.lower(), agent
+        assert agent.startswith("AscendPlatform"), agent
+        print("User-Agent ->", agent)
+    finally:
+        platform_mail.delete_sender(sender["id"])
+
+
+def test_a_cloudflare_block_is_explained_as_such():
+    """A 1010 must not read like a bad token."""
+    _configure()
+
+    def blocked(method, url, headers, payload=None, timeout=20):
+        return 403, json.dumps({
+            "title": "Error 1010: Access denied",
+            "detail": "The site owner has blocked access based on your browser's signature.",
+            "error_code": 1010,
+            "error_name": "browser_signature_banned",
+        })
+
+    platform_mail._transport = blocked
+    try:
+        result = platform_mail.test_connection()
+    finally:
+        platform_mail._transport = _respond
+    assert result["ok"] is False, result
+    assert "Cloudflare" in result["output"], result
+    assert "1010" in result["output"], result
+    print("cloudflare ->", result["output"][:90])
+
+
 def main():
     test_unconfigured_refuses_without_a_request()
     test_send_upserts_the_contact_then_messages_it()
@@ -182,6 +222,8 @@ def main():
     test_a_rejected_token_is_reported_not_raised()
     test_only_one_sender_is_the_default()
     test_a_client_cannot_see_or_use_the_platform_sender()
+    test_the_request_identifies_itself()
+    test_a_cloudflare_block_is_explained_as_such()
     _unconfigure()
     print("\nPLATFORM MAIL OK")
 

@@ -24,6 +24,12 @@ from db import get_connection, now_str
 DEFAULT_BASE = "https://services.leadconnectorhq.com"
 DEFAULT_VERSION = "2021-07-28"
 
+# GHL sits behind Cloudflare, which answers urllib's default User-Agent
+# ("Python-urllib/3.12") with 403 error 1010, "browser signature banned" - before the
+# request ever reaches the API, so no token would work. Naming ourselves fixes it; this
+# is about not being on the blocked list, not about impersonating a browser.
+USER_AGENT = "AscendPlatform/1.0 (+https://ascendplatform.site)"
+
 TEXT_FIELDS = ("name", "from_name", "from_email", "reply_to", "signature", "logo_url")
 
 
@@ -55,6 +61,7 @@ def _headers(conn):
         "Version": conn["version"],
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": USER_AGENT,
     }
 
 
@@ -94,11 +101,25 @@ def _call(method, path, payload=None):
     except ValueError:
         body = {"raw": raw}
     if status >= 400:
-        raise MailError(
-            "GoHighLevel %s %s failed (%s): %s"
-            % (method, path, status, _short(raw or str(body)))
-        )
+        raise MailError(_describe_failure(method, path, status, raw or str(body)))
     return body
+
+
+def _describe_failure(method, path, status, raw):
+    """A message that names the layer that actually refused.
+
+    Cloudflare answering 1010 is not the GoHighLevel API rejecting a token, and
+    treating it as one sends the operator off to regenerate credentials that are
+    probably fine.
+    """
+    body = _short(raw)
+    if status == 403 and ("1010" in body or "browser_signature_banned" in body):
+        return (
+            "Cloudflare blocked the request before it reached GoHighLevel "
+            "(error 1010, browser signature). The credentials were never checked - "
+            "this is a client fingerprint issue, not a token one. %s" % body
+        )
+    return "GoHighLevel %s %s failed (%s): %s" % (method, path, status, body)
 
 
 # ---------------------------------------------------------------------------

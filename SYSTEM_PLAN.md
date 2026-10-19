@@ -1559,6 +1559,17 @@ path, and the public preview exposing nothing secret.
 verified - a sender address, a model name - say so in the UI and prove it by doing it,
 rather than validating a string against nothing.
 
+**And name the layer that refused.** The first live call came back
+`403 Error 1010: Access denied / browser_signature_banned` - Cloudflare, in front of
+`services.leadconnectorhq.com`, rejecting `urllib`'s default `Python-urllib/3.12`
+User-Agent before the request ever reached GHL. A working token, a correct location id,
+and an error that looks exactly like bad credentials. `platform_mail` now sends
+`AscendPlatform/1.0 (+https://ascendplatform.site)`, and a 403 whose body mentions 1010
+is reported as *"Cloudflare blocked the request ... the credentials were never checked -
+this is a client fingerprint issue, not a token one"*, so the next person reads the
+right cause the first time.
+
+
 
 
 
