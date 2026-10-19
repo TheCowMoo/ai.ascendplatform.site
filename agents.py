@@ -57,7 +57,7 @@ DEFAULT_ROSTER = [
             "benefit-led voice. Use the Business Profile for brand voice and facts. "
             "Return ready-to-publish text, not descriptions of it."
         ),
-        "tools": ["save_deliverable"],
+        "tools": ["save_deliverable", "search_photos"],
         "turn_order": 3,
     },
     {
@@ -365,7 +365,9 @@ CONTENT_RULE = (
     "appears in their console. Pass the complete document as content, then summarise "
     "what you made in a sentence or two instead of pasting the whole thing. "
     "Every <img> must use an absolute https URL (the download_url search_photos "
-    "returns); a local disk path renders as a broken image for the reader."
+    "returns); a local disk path renders as a broken image for the reader. Never leave "
+    "a placeholder such as [INSERT IMAGE URL] or [Your Name] in content the user will "
+    "receive - call search_photos yourself and use a real URL, or leave the image out."
 )
 
 

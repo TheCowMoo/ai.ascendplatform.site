@@ -228,16 +228,26 @@ def _clean_messages(messages):
 
 
 def without_empty_blocks(messages):
-    """Drop ``{"type": "text", "text": ""}`` from an Anthropic request payload.
+    """Drop anything that would serialise to an empty text block.
 
-    autogen-ext introduces that block while *it* converts messages, after any hook we
-    control, and Anthropic rejects the entire request with 400 "messages: text content
-    blocks must be non-empty". The block only exists in the payload the SDK is about to
-    send, so that is where it has to be removed.
+    Two shapes reach Anthropic as an empty text block: a list holding
+    ``{"type": "text", "text": ""}``, and a message whose whole ``content`` is ``""``.
+    Either makes the API reject the entire request with 400 "messages: text content
+    blocks must be non-empty". Both are removed here, in the payload the SDK is about
+    to send - the only place the block reliably exists.
     """
     cleaned = []
     for message in messages or []:
-        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(message, dict):
+            cleaned.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                cleaned.append(message)
+            # An empty turn says nothing; dropping it is safe and it cannot pair with
+            # tool results, because a tool-calling turn always has list content.
+            continue
         if isinstance(content, list):
             kept = [
                 block for block in content
@@ -247,10 +257,28 @@ def without_empty_blocks(messages):
                     and not str(block.get("text") or "").strip()
                 )
             ]
+            if not kept:
+                continue
             if kept != content:
                 message = dict(message, content=kept)
         cleaned.append(message)
     return cleaned
+
+
+def _shapes(messages):
+    """A short description of a request's messages, for an error that diagnoses itself."""
+    parts = []
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        role = message.get("role") if isinstance(message, dict) else type(message).__name__
+        if isinstance(content, list):
+            kinds = ",".join(
+                str(block.get("type")) for block in content if isinstance(block, dict)
+            )
+            parts.append("%s[%s]" % (role, kinds))
+        else:
+            parts.append("%s:%r" % (role, str(content)[:24]))
+    return " ".join(parts)[:600]
 
 
 def _patch_anthropic_client(client):
@@ -263,7 +291,24 @@ def _patch_anthropic_client(client):
 
     async def create(*args, **kwargs):
         kwargs["messages"] = without_empty_blocks(kwargs.get("messages"))
-        return await original(*args, **kwargs)
+        try:
+            return await original(*args, **kwargs)
+        except Exception as exc:
+            if "text content blocks must be non-empty" not in str(exc):
+                raise
+            # Cleaning once was not enough, so our model of the objection is
+            # incomplete: drop every message that could be empty and try again.
+            kwargs["messages"] = [
+                message for message in kwargs["messages"]
+                if message.get("content") not in (None, [], "", None)
+            ]
+            try:
+                return await original(*args, **kwargs)
+            except Exception as retry:
+                # Make the next report self-diagnosing instead of another guess.
+                raise RuntimeError(
+                    "%s | request messages: %s" % (retry, _shapes(kwargs.get("messages")))
+                ) from retry
 
     try:
         resource.create = create
