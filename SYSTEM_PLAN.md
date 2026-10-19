@@ -1503,5 +1503,62 @@ nobody runs twice.
 will look for it - not only in a log - and the instructions for doing that must ship
 with the tool, not with whatever prompt a database happened to be seeded with.
 
+## 31. Platform mail through GoHighLevel, and invitations
+
+**Goal.** The platform's own mail - invitations, operator notices - should go out
+through GoHighLevel, and only ever for the platform. Clients keep their own SMTP, which
+is what `tools/mail.py` already does and still does.
+
+**The API fact that shaped everything.** GHL cannot send to an email address. It sends
+to a **contact**, so every message is `POST /contacts/upsert` followed by
+`POST /conversations/messages` with `type: "Email"` and a `contactId`. Invitees
+therefore become contacts in the sub-account, which is a side effect worth wanting in a
+CRM-based business but is not a neutral one.
+
+Two related facts: `emailFrom` only chooses among addresses **already verified** in the
+sub-account (no API creates one, so "Test" is a real send), and custom fields are
+enumerable via `GET /locations/{id}/customFields` - which is what the sender screen
+mirrors instead of inventing its own schema.
+
+**Separation.** `platform_mail.py` is the operator's channel; `tools/mail.py` stays the
+client's. The new settings group is explicitly `scope: PLATFORM`, so no client can
+resolve or overwrite the GHL token - the SMTP group remains the only client-scoped one.
+
+**Invitations.** `0009_platform_email` adds `invites` and `mail_senders`.
+
+- The **user row is created at invite time** with an unusable random password. Email
+  uniqueness and org scoping are settled before anyone clicks, and a resend is a new
+  token on the same account rather than a second user.
+- The token is stored as a **SHA-256 hash** and the plaintext is returned exactly once,
+  to the caller that emails it. That is why the console shows "Copy link" only at the
+  moment of creation or resend: nobody - including the operator - can retrieve an old
+  one afterwards. Resending retires the previous link.
+- Status is **derived** (`pending | accepted | revoked | expired`) from timestamps
+  rather than stored, so an invitation cannot read as pending after it has expired.
+- Roles are limited to `client_admin` and `client_member`. A stray `owner` here would be
+  a privilege escalation delivered by email.
+- A failed send returns **502 with the invite and its link**, because the invitation is
+  real and usable; making the operator start again would be the worse outcome.
+
+**UI.** `#/platform/email` holds the connection card (Test connection, Test send), the
+sender form - label, from-name, from-address, reply-to and the live GHL custom fields -
+and the invitation list with Resend and Revoke. `#/accept/<token>` is a **public page
+rendered ahead of the auth gate** in `admin.js`; links point at `/admin/#/accept/...`
+rather than `/`, because relying on a redirect to carry a fragment is how invite links
+break in mail clients.
+
+**Tests.** `smoke_platform_mail.py` drives the whole GHL flow offline through a
+replaced `_transport`: the unconfigured refusal issuing no request, upsert-then-message
+shapes, headers and version, custom-field resolution (unknown keys dropped), a rejected
+token reported rather than raised, single-default senders, and the platform sender being
+invisible from a client scope. `smoke_invites.py` covers the locked account, the hashed
+token, single use, revoke, expiry, resend retiring the old link, the 502-but-created
+path, and the public preview exposing nothing secret.
+
+**Rule this establishes.** Where a third party is the only place a thing can be
+verified - a sender address, a model name - say so in the UI and prove it by doing it,
+rather than validating a string against nothing.
+
+
 
 

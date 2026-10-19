@@ -42,6 +42,7 @@ import agents as agent_roster
 import settings
 import orgs as orgs_service
 import deliverables as deliverables_service
+import invites as invites_service
 import tools as tool_registry
 import actions
 import provisioner
@@ -1415,6 +1416,213 @@ def publish_deliverable(deliverable_id):
     except deliverables_service.DeliverableError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Platform email (GoHighLevel)
+#
+# Operator-only. The GHL credentials are ordinary platform settings, read and written
+# through /api/settings like every other deployment value; these routes cover what is
+# not a scalar: senders, the custom-field catalogue, and a real test send.
+# ---------------------------------------------------------------------------
+@app.route("/api/platform/email", methods=["GET"])
+@owner_required
+def platform_email_status():
+    import platform_mail
+
+    fields = []
+    error = ""
+    if platform_mail.is_configured():
+        try:
+            fields = platform_mail.custom_fields()
+        except platform_mail.MailError as exc:
+            error = str(exc)
+    return jsonify({
+        "configured": platform_mail.is_configured(),
+        "senders": platform_mail.senders(),
+        "custom_fields": fields,
+        "error": error,
+        "invites": invites_service.list_invites(limit=50),
+        "roles": list(invites_service.ROLES),
+        "template": {
+            "subject": settings.get("INVITE_SUBJECT"),
+            "body": settings.get("INVITE_BODY_HTML") or invites_service.DEFAULT_BODY,
+            "expires_days": settings.get_int("INVITE_EXPIRES_DAYS", 7),
+        },
+    })
+
+
+@app.route("/api/platform/email/test", methods=["POST"])
+@owner_required
+def platform_email_test():
+    import platform_mail
+
+    return jsonify(platform_mail.test_connection())
+
+
+@app.route("/api/platform/email/senders", methods=["POST"])
+@owner_required
+def platform_email_save_sender():
+    import platform_mail
+
+    data = request.get_json(silent=True) or {}
+    try:
+        sender = platform_mail.save_sender(data, sender_id=data.get("id"))
+    except platform_mail.MailError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"sender": sender}), 200 if data.get("id") else 201
+
+
+@app.route("/api/platform/email/senders/<int:sender_id>", methods=["DELETE"])
+@owner_required
+def platform_email_delete_sender(sender_id):
+    import platform_mail
+
+    platform_mail.delete_sender(sender_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/platform/email/send-test", methods=["POST"])
+@owner_required
+def platform_email_send_test():
+    """Send a real email: the only reliable proof that a from-address is verified."""
+    import platform_mail
+
+    data = request.get_json(silent=True) or {}
+    to = (data.get("to") or session.get("email") or "").strip()
+    if not to:
+        return jsonify({"error": "Give a recipient, or set your own account email"}), 400
+    try:
+        result = platform_mail.send(
+            to,
+            "AscendPlatform test email",
+            "<p>This is a test from the platform's GoHighLevel sender.</p>"
+            "<p>If you can read it, invitations will deliver.</p>",
+        )
+    except platform_mail.MailError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "delivery": result})
+
+
+# ---------------------------------------------------------------------------
+# Invitations
+#
+# The link is password-equivalent, so it is emailed, single-use and expiring. Creating
+# one also creates the (locked) account, which is why a failed send still leaves a
+# usable invitation the operator can resend or hand over by copying the link.
+# ---------------------------------------------------------------------------
+def _invite_link(token):
+    # /admin/ explicitly: "/" only redirects there, and relying on a redirect to carry
+    # a fragment is asking for a broken link in some mail clients.
+    return "%s/admin/#/accept/%s" % ((request.url_root or "").rstrip("/"), token)
+
+
+@app.route("/api/invites", methods=["GET"])
+@owner_required
+def list_invites():
+    return jsonify({"invites": invites_service.list_invites()})
+
+
+@app.route("/api/invites", methods=["POST"])
+@owner_required
+def create_invite():
+    import platform_mail
+
+    data = request.get_json(silent=True) or {}
+    org_id = data.get("org_id")
+    try:
+        org_id = int(org_id) if org_id not in (None, "") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "org_id must be a number"}), 400
+    try:
+        invite, token = invites_service.create(
+            data.get("email"),
+            name=data.get("name") or "",
+            org_id=org_id,
+            role=data.get("role") or "client_admin",
+            invited_by=session.get("user_id"),
+        )
+    except invites_service.InviteError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    subject, html = invites_service.render(
+        invite, token, base_url=request.url_root, inviter=session.get("name") or ""
+    )
+    try:
+        delivery = platform_mail.send(
+            invite["email"], subject, html, custom_fields={"name": invite["name"]}
+        )
+    except platform_mail.MailError as exc:
+        # The invitation exists and its link works - only the mail failed. Return the
+        # invite anyway so the console can offer Resend or a copyable link.
+        return jsonify({"invite": invite, "link": _invite_link(token), "error": str(exc)}), 502
+    return jsonify({"invite": invite, "link": _invite_link(token), "delivery": delivery}), 201
+
+
+@app.route("/api/invites/<int:invite_id>/resend", methods=["POST"])
+@owner_required
+def resend_invite(invite_id):
+    import platform_mail
+
+    try:
+        invite, token = invites_service.resend(invite_id)
+    except invites_service.InviteError as exc:
+        return jsonify({"error": str(exc)}), 400
+    subject, html = invites_service.render(
+        invite, token, base_url=request.url_root, inviter=session.get("name") or ""
+    )
+    try:
+        delivery = platform_mail.send(invite["email"], subject, html)
+    except platform_mail.MailError as exc:
+        return jsonify({"invite": invite, "link": _invite_link(token), "error": str(exc)}), 502
+    return jsonify({"invite": invite, "link": _invite_link(token), "delivery": delivery})
+
+
+@app.route("/api/invites/<int:invite_id>/revoke", methods=["POST"])
+@owner_required
+def revoke_invite(invite_id):
+    return jsonify({"invite": invites_service.revoke(invite_id)})
+
+
+# Public: the accept page has no session yet. The token is 256 bits of entropy, so the
+# endpoint leaks nothing a bearer of the link does not already have.
+@app.route("/api/invites/<token>", methods=["GET"])
+def preview_invite(token):
+    preview = invites_service.preview(token)
+    if not preview:
+        return jsonify({"error": "That invitation link is not valid."}), 404
+    return jsonify({"invite": preview})
+
+
+@app.route("/api/invites/accept", methods=["POST"])
+def accept_invite():
+    """Set the password and start the session - the whole point of the link."""
+    data = request.get_json(silent=True) or {}
+    password = data.get("password") or ""
+    problem = _check_new_password(password)
+    if problem:
+        return jsonify({"error": problem}), 400
+    try:
+        user = invites_service.accept(data.get("token"), password)
+    except invites_service.InviteError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    session.clear()
+    session["user_id"] = user["id"]
+    session["role"] = user["role"]
+    session["name"] = user["name"]
+    session["email"] = user["email"]
+    session["org_id"] = user["org_id"]
+    return jsonify({
+        "ok": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+            "is_owner": False,
+        },
+    })
 
 
 # ---------------------------------------------------------------------------

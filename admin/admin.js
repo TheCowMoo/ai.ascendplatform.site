@@ -43,6 +43,7 @@
       home: '#/platform/clients',
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
+        { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
         { id: 'servers', label: 'Servers', icon: 'server', hash: '#/platform/servers' },
         { id: 'agents', label: 'Agents', icon: 'cpu', hash: '#/platform/agents' },
         { id: 'settings', label: 'Platform settings', icon: 'sliders', hash: '#/platform/settings' }
@@ -74,7 +75,14 @@
     }
     return fetch(url, opts).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
-        if (!res.ok) { var e = new Error(data.error || ('HTTP ' + res.status)); e.status = res.status; throw e; }
+        if (!res.ok) {
+          var e = new Error(data.error || ('HTTP ' + res.status));
+          e.status = res.status;
+          // Keep the body: a 502 from an invitation still carries the invite and its
+          // link, so the console can recover instead of leaving the operator stuck.
+          e.data = data;
+          throw e;
+        }
         return data;
       });
     });
@@ -2767,12 +2775,361 @@
     });
   }
 
+  // ---------- Public: accepting an invitation ----------
+  // Rendered before the auth gate: the visitor has no session yet, and the whole point
+  // of the link is to create one.
+  function viewAccept(token) {
+    var wrap = el('div', 'container');
+    var card = el('div', 'form-card');
+    card.appendChild(el('h2', null, 'Set your password'));
+    var who = el('p', 'muted', 'Checking your invitation…');
+    card.appendChild(who);
+
+    var password = el('input');
+    password.type = 'password';
+    password.placeholder = 'At least 8 characters';
+    var confirm = el('input');
+    confirm.type = 'password';
+    confirm.placeholder = 'Repeat it';
+    var error = el('div', 'form-error', '');
+    var submit = el('button', 'btn btn-primary', 'Create password and sign in');
+    [password, confirm, submit, error].forEach(function (node) { card.appendChild(node); });
+
+    var usable = false;
+    api('GET', '/api/invites/' + encodeURIComponent(token)).then(function (d) {
+      var inv = d.invite;
+      who.textContent = (inv.name ? inv.name + ' · ' : '') + inv.email +
+        (inv.org ? ' · ' + inv.org : '');
+      if (inv.status !== 'pending') {
+        error.textContent = inv.status === 'accepted'
+          ? 'This invitation has already been used - sign in instead.'
+          : 'This invitation is ' + inv.status + '. Ask for a new one.';
+        return;
+      }
+      usable = true;
+    }).catch(function (e) {
+      who.textContent = '';
+      error.textContent = e.message;
+    });
+
+    submit.onclick = function () {
+      if (!usable) return;
+      if ((password.value || '').length < 8) {
+        error.textContent = 'Use at least 8 characters';
+        return;
+      }
+      if (password.value !== confirm.value) {
+        error.textContent = 'The two passwords do not match';
+        return;
+      }
+      submit.disabled = true;
+      api('POST', '/api/invites/accept', { token: token, password: password.value })
+        .then(function () {
+          location.replace('#/');
+          location.reload();
+        })
+        .catch(function (e) {
+          submit.disabled = false;
+          error.textContent = e.message;
+        });
+    };
+
+    wrap.appendChild(card);
+    return wrap;
+  }
+
+  // ---------- Platform: email and invitations ----------
+  function viewPlatformEmail() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Email &amp; invites</h2><p>The platform sends its own ' +
+      'invitations through GoHighLevel. Clients keep their own SMTP.</p></div>';
+    var inviteBtn = el('button', 'btn btn-primary', '+ Invite someone');
+    head.appendChild(inviteBtn);
+    container.appendChild(head);
+
+    var connection = el('div', 'form-card');
+    var senderBox = el('div', 'mt');
+    var invitesBox = el('div', 'mt');
+    container.appendChild(connection);
+    container.appendChild(senderBox);
+    container.appendChild(invitesBox);
+
+    var state = { senders: [], fields: [] };
+
+    inviteBtn.onclick = function () { inviteForm(); };
+
+    function linkModal(title, message, link, failed) {
+      var backdrop = el('div', 'modal-backdrop');
+      var modal = el('div', 'modal');
+      modal.appendChild(el('h3', null, title));
+      modal.appendChild(el('p', failed ? 'form-error' : 'muted', message));
+      if (link) {
+        // The database only keeps a hash, so this is the only moment the link exists.
+        var input = el('input');
+        input.value = link;
+        input.readOnly = true;
+        modal.appendChild(input);
+        var copy = el('button', 'btn btn-primary', 'Copy link');
+        copy.onclick = function () { copyText(link, copy); };
+        modal.appendChild(copy);
+      }
+      var close = el('button', 'btn btn-ghost', 'Close');
+      close.onclick = function () { document.body.removeChild(backdrop); };
+      modal.appendChild(close);
+      backdrop.appendChild(modal);
+      backdrop.onclick = function (e) { if (e.target === backdrop) document.body.removeChild(backdrop); };
+      document.body.appendChild(backdrop);
+    }
+
+    function inviteForm() {
+      api('GET', '/api/orgs').then(function (d) {
+        var orgs = d.orgs || [];
+        var names = ['(no client - platform staff)'].concat(
+          orgs.map(function (o) { return o.name; })
+        );
+        formModal('Invite someone', [
+          { name: 'email', label: 'Email address' },
+          { name: 'name', label: 'Their name (optional)' },
+          { name: 'org', label: 'Client', type: 'select', options: names },
+          { name: 'role', label: 'Role', type: 'select',
+            options: ['client_admin', 'client_member'] }
+        ], function (data, fail, ok) {
+          var chosen = orgs.filter(function (o) { return o.name === data.org; })[0];
+          var payload = { email: data.email, name: data.name, role: data.role };
+          if (chosen) payload.org_id = chosen.id;
+          api('POST', '/api/invites', payload).then(function (res) {
+            ok();
+            linkModal('Invitation sent', 'Emailed to ' + res.invite.email + '.', res.link, false);
+            load();
+          }).catch(function (e) {
+            var body = e.data || {};
+            if (body.invite) {
+              // Created, but the mail did not go out: the account and link are real,
+              // so show them rather than making the operator start again.
+              ok();
+              linkModal('Invitation created, email not sent', e.message, body.link, true);
+              load();
+            } else {
+              fail(e.message);
+            }
+          });
+        });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function renderConnection(d) {
+      connection.innerHTML = '';
+      connection.appendChild(el('h3', null, 'GoHighLevel connection'));
+      connection.appendChild(el('p', 'muted', d.configured
+        ? 'Credentials saved. GHL only sends from an address verified in the sub-account.'
+        : 'No API token yet - add one in Platform settings, group "Platform email".'));
+      if (d.error) connection.appendChild(el('p', 'form-error', d.error));
+      var row = el('div', 'row-actions');
+      var test = el('button', 'btn btn-ghost', 'Test connection');
+      test.onclick = function () {
+        test.disabled = true;
+        api('POST', '/api/platform/email/test', {}).then(function (r) {
+          toast(r.output, r.ok);
+        }).catch(function (e) { toast(e.message, false); }).finally(function () { test.disabled = false; });
+      };
+      var sendTest = el('button', 'btn btn-ghost', 'Send test email');
+      sendTest.onclick = function () {
+        sendTest.disabled = true;
+        api('POST', '/api/platform/email/send-test', {}).then(function () {
+          toast('Test email sent to your account address', true);
+        }).catch(function (e) { toast(e.message, false); }).finally(function () { sendTest.disabled = false; });
+      };
+      var settingsLink = el('a', 'btn btn-ghost', 'Credentials & template');
+      settingsLink.href = '#/platform/settings';
+      row.appendChild(test);
+      row.appendChild(sendTest);
+      row.appendChild(settingsLink);
+      connection.appendChild(row);
+    }
+
+    function senderForm(s) {
+      var fields = [
+        { name: 'name', label: 'Label', value: s ? s.name : 'AscendPlatform' },
+        { name: 'from_name', label: 'From name', value: s ? s.from_name : '' },
+        { name: 'from_email', label: 'From address', value: s ? s.from_email : '',
+          placeholder: 'hello@yourdomain.com',
+          help: 'Must be verified in GoHighLevel - use "Send test email" to prove it.' },
+        { name: 'reply_to', label: 'Reply-to (optional)', value: s ? s.reply_to : '' }
+      ];
+      // These are the fields already in the GHL location: nothing here invents schema,
+      // it only maps our values onto theirs.
+      var stored = (s && s.custom_fields) || {};
+      state.fields.forEach(function (field) {
+        var key = field.fieldKey || field.id;
+        fields.push({
+          name: 'cf:' + key,
+          label: field.name + ' (GHL custom field)',
+          value: stored[key] || stored[field.id] || '',
+          help: field.dataType
+        });
+      });
+      formModal(s ? 'Edit sender' : 'New sender', fields, function (data, fail, ok) {
+        var payload = {
+          name: data.name,
+          from_name: data.from_name,
+          from_email: data.from_email,
+          reply_to: data.reply_to,
+          signature: s ? s.signature : '',
+          logo_url: s ? s.logo_url : '',
+          custom_fields: {},
+          is_default: s ? s.is_default : state.senders.length === 0
+        };
+        if (s) payload.id = s.id;
+        Object.keys(data).forEach(function (key) {
+          if (key.indexOf('cf:') === 0) payload.custom_fields[key.slice(3)] = data[key];
+        });
+        api('POST', '/api/platform/email/senders', payload).then(function () {
+          ok();
+          toast('Sender saved', true);
+          load();
+        }).catch(function (e) { fail(e.message); });
+      });
+    }
+
+    function renderSenders() {
+      senderBox.innerHTML = '';
+      var heading = el('div', 'page-head');
+      heading.innerHTML = '<div><h3>Sender</h3><p class="muted">Who invitations come ' +
+        'from: a label, a verified from-address, and the GHL custom fields to stamp on ' +
+        'the contacts it creates.</p></div>';
+      var add = el('button', 'btn btn-ghost', '+ Add sender');
+      add.onclick = function () { senderForm(null); };
+      heading.appendChild(add);
+      senderBox.appendChild(heading);
+
+      if (!state.senders.length) {
+        senderBox.appendChild(el('p', 'muted',
+          'No sender yet - invitations need a from-address, so add one.'));
+        return;
+      }
+      state.senders.forEach(function (sender) {
+        var card = el('div', 'panel-card');
+        card.innerHTML = '<strong>' + esc(sender.name || sender.from_email) + '</strong>' +
+          (sender.is_default ? ' <span class="badge badge-admin">default</span>' : '') +
+          '<div class="muted">' +
+          esc(sender.from_name ? sender.from_name + ' <' + sender.from_email + '>'
+                               : sender.from_email) + '</div>' +
+          (sender.reply_to ? '<div class="muted">reply-to ' + esc(sender.reply_to) + '</div>' : '');
+        var row = el('div', 'row-actions');
+        var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+        edit.onclick = function () { senderForm(sender); };
+        row.appendChild(edit);
+        if (!sender.is_default) {
+          var makeDefault = el('button', 'btn btn-ghost btn-sm', 'Make default');
+          makeDefault.onclick = function () {
+            var payload = {
+              id: sender.id,
+              name: sender.name,
+              from_name: sender.from_name,
+              from_email: sender.from_email,
+              reply_to: sender.reply_to,
+              signature: sender.signature,
+              logo_url: sender.logo_url,
+              custom_fields: sender.custom_fields,
+              is_default: true
+            };
+            api('POST', '/api/platform/email/senders', payload).then(load)
+              .catch(function (e) { toast(e.message, false); });
+          };
+          row.appendChild(makeDefault);
+        }
+        card.appendChild(row);
+        senderBox.appendChild(card);
+      });
+    }
+
+    function renderInvites(list) {
+      invitesBox.innerHTML = '';
+      var heading = el('div', 'page-head');
+      heading.innerHTML = '<div><h3>Invitations</h3><p class="muted">Each link is ' +
+        'emailed once and works once. Resending retires the previous link.</p></div>';
+      invitesBox.appendChild(heading);
+      if (!list.length) {
+        invitesBox.appendChild(el('p', 'muted', 'No invitations yet.'));
+        return;
+      }
+      var table = el('table', 'table');
+      table.innerHTML = '<thead><tr><th>Email</th><th>Role</th><th>Status</th>' +
+        '<th>Expires</th><th></th></tr></thead>';
+      var tbody = el('tbody');
+      list.forEach(function (invite) {
+        var tr = el('tr');
+        tr.innerHTML = '<td>' + esc(invite.email) +
+          (invite.name ? '<div class="muted">' + esc(invite.name) + '</div>' : '') + '</td>' +
+          '<td><span class="badge">' + esc(invite.role) + '</span></td>' +
+          '<td><span class="badge">' + esc(invite.status) + '</span></td>' +
+          '<td class="muted">' + esc((invite.expires_at || '').slice(0, 10)) + '</td>';
+        var td = el('td', 'row-actions');
+        if (invite.status !== 'accepted') {
+          var resend = el('button', 'btn btn-ghost btn-sm', 'Resend');
+          resend.onclick = function () {
+            resend.disabled = true;
+            api('POST', '/api/invites/' + invite.id + '/resend', {}).then(function (res) {
+              linkModal('New link', 'Emailed to ' + res.invite.email + '.', res.link, false);
+              load();
+            }).catch(function (e) {
+              var body = e.data || {};
+              if (body.link) {
+                linkModal('Email not sent', e.message, body.link, true);
+                load();
+              } else {
+                toast(e.message, false);
+                resend.disabled = false;
+              }
+            });
+          };
+          td.appendChild(resend);
+          if (invite.status === 'pending') {
+            var revoke = el('button', 'btn btn-danger btn-sm', 'Revoke');
+            revoke.onclick = function () {
+              api('POST', '/api/invites/' + invite.id + '/revoke', {}).then(load)
+                .catch(function (e) { toast(e.message, false); });
+            };
+            td.appendChild(revoke);
+          }
+        } else {
+          td.appendChild(el('span', 'muted', 'accepted ' + (invite.accepted_at || '').slice(0, 10)));
+        }
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      invitesBox.appendChild(table);
+    }
+
+    function load() {
+      api('GET', '/api/platform/email').then(function (d) {
+        state.senders = d.senders || [];
+        state.fields = d.custom_fields || [];
+        renderConnection(d);
+        renderSenders();
+        renderInvites(d.invites || []);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    load();
+    return container;
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
     runCleanups();
     app.innerHTML = '';
     var parts = (location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
+
+    // An invitation link has to work before anyone is signed in, so this is handled
+    // ahead of the auth gate and rendered without the app shell.
+    if (parts[0] === 'accept' && parts[1]) {
+      app.appendChild(viewAccept(decodeURIComponent(parts[1])));
+      return;
+    }
 
     if (!state.user) { app.appendChild(viewLogin()); return; }
 
@@ -2811,6 +3168,7 @@
     if (area === 'platform') {
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
       else if (tab === 'servers') view = viewServers();
+      else if (tab === 'email') view = viewPlatformEmail();
       else if (tab === 'agents') view = viewAgents();
       else if (tab === 'settings') view = viewSettings();
       else view = viewClients();

@@ -173,6 +173,8 @@ SPEC = [
                help="Must be verified in GoHighLevel - an unverified sender is rejected "
                     "at send time, which is what the Test send proves."),
             _f("GHL_REPLY_TO", "Reply-to address"),
+            _f("PLATFORM_URL", "Platform URL",
+               help="Used to build invitation links, e.g. https://ai.example.com."),
             _f("INVITE_EXPIRES_DAYS", "Invitation lifetime (days)", kind="int", default="7"),
             _f("INVITE_SUBJECT", "Invitation subject",
                default="You're invited to AscendPlatform"),
