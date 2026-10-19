@@ -372,6 +372,50 @@ deliverables = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
+# The platform's own mail is not the clients' SMTP: invitations and operator notices
+# go through GoHighLevel, and a client must never be able to see or spend that token.
+# A sender is a *record of who we send as* - GHL remains the only place a from-address
+# can be verified - plus the custom-field values stamped onto each contact it creates.
+mail_senders = Table(
+    "mail_senders",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),  # NULL = the platform's own sender
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("from_name", Text, nullable=False, server_default=_literal("")),
+    Column("from_email", Text, nullable=False, server_default=_literal("")),
+    Column("reply_to", Text, nullable=False, server_default=_literal("")),
+    Column("signature", Text, nullable=False, server_default=_literal("")),
+    Column("logo_url", Text, nullable=False, server_default=_literal("")),
+    Column("custom_fields", Text, nullable=False, server_default=_literal("{}")),
+    Column("is_default", Integer, nullable=False, server_default=text("0")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+# An invitation to join the platform. The token is stored as a SHA-256 hash: until it
+# expires it is password-equivalent, so the database must not hold a usable copy.
+# The user row is created at invite time (with an unusable random password) so email
+# uniqueness and org scoping are enforced up front, and "resend" is only a new token.
+invites = Table(
+    "invites",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", Text, nullable=False, server_default=_literal("")),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("org_id", Integer),
+    Column("role", Text, nullable=False, server_default=_literal("client_admin")),
+    Column("user_id", Integer),
+    Column("token_hash", Text, nullable=False, server_default=_literal("")),
+    Column("invited_by", Integer),
+    Column("expires_at", Text, nullable=False, server_default=_literal("")),
+    Column("accepted_at", Text),
+    Column("revoked_at", Text),
+    _created_at(),
+    Index("ix_invites_email", "email"),
+    Index("ix_invites_token", "token_hash"),
+)
+
 # Operator-managed configuration, written from the admin Settings tab. Values
 # here are layered over the process environment by ``settings.get`` (panel wins),
 # which is also what lets a change take effect without a restart. Only keys

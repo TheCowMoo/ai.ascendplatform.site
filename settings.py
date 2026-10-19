@@ -150,6 +150,37 @@ SPEC = [
         ],
     },
     {
+        "id": "platform_email",
+        "label": "Platform email (GoHighLevel)",
+        "icon": "mail",
+        "blurb": "How the platform itself sends invitations and notices. Clients send "
+                 "through their own SMTP above; this token belongs to the operator.",
+        "test": "ghl",
+        # PLATFORM, explicitly. The SMTP group above is the only client-scoped one, so
+        # no client may ever resolve — or overwrite — the operator's GHL credentials.
+        "scope": PLATFORM,
+        "fields": [
+            _f("GHL_API_TOKEN", "GoHighLevel API token", secret=True,
+               help="Private Integration token from the sub-account where invites live."),
+            _f("GHL_LOCATION_ID", "Location ID",
+               help="The sub-account that sends the invitations."),
+            _f("GHL_API_VERSION", "API version", default="2021-07-28",
+               help="Sent as the Version header. Change only if GoHighLevel asks you to."),
+            _f("GHL_API_BASE", "API base URL",
+               default="https://services.leadconnectorhq.com"),
+            _f("GHL_FROM_NAME", "From name", help="What the recipient sees in their inbox."),
+            _f("GHL_FROM_EMAIL", "From address",
+               help="Must be verified in GoHighLevel - an unverified sender is rejected "
+                    "at send time, which is what the Test send proves."),
+            _f("GHL_REPLY_TO", "Reply-to address"),
+            _f("INVITE_EXPIRES_DAYS", "Invitation lifetime (days)", kind="int", default="7"),
+            _f("INVITE_SUBJECT", "Invitation subject",
+               default="You're invited to AscendPlatform"),
+            _f("INVITE_BODY_HTML", "Invitation body (HTML)",
+               help="Merge fields: {{name}}, {{org}}, {{role}}, {{link}}, {{expires}}."),
+        ],
+    },
+    {
         "id": "hosting",
         "label": "Servers & hosting",
         "icon": "server",
@@ -598,6 +629,7 @@ def test(group_id, org_id=None):
         "pexels": _test_pexels,
         "llm": _test_llm,
         "smtp": _test_smtp,
+        "ghl": _test_ghl,
     }.get(group_id)
     if runner is None:
         return {"ok": False, "output": "No test available for %r." % group_id}
@@ -660,3 +692,17 @@ def _test_smtp(org_id=None):
         "output": "Connected to %s:%d%s."
         % (host, port, " and signed in" if user else ""),
     }
+
+
+def _test_ghl(org_id=None):
+    """Prove the GHL token by reading the location and its custom fields.
+
+    Two calls on purpose: the location call proves the token and the version header,
+    and the custom-fields call proves the scope the sender screen needs. A token that
+    can do one but not the other would otherwise fail later, mid-invitation.
+    """
+    if org_id is not None:
+        return {"ok": False, "output": "That group configures the platform, not a client."}
+    import platform_mail  # lazy: platform_mail imports this module
+
+    return platform_mail.test_connection()
