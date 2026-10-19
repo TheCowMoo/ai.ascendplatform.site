@@ -11,7 +11,7 @@ made in the admin UI, not a code change. ``run_team`` is registered as the
 import json
 import os
 
-from db import get_connection, now_str
+from db import IntegrityError, get_connection, now_str, seed_lock
 import jobs
 import llm
 import tools as tool_registry
@@ -144,14 +144,27 @@ def _num(value):
 
 
 def ensure_roster():
-    """Seed the default roster once, so a fresh install has a working team."""
+    """Seed the default roster once, so a fresh install has a working team.
+
+    This runs while the app is being imported, and the app serves with two uvicorn
+    workers - so both processes arrive here at the same moment. It used to be a plain
+    "count, then insert": on an empty database both read 0, both inserted the whole
+    roster, and the deploy came up with every agent twice, which AutoGen then refused
+    to build a team from. ``seed_lock`` serialises them; ``INSERT OR IGNORE`` plus the
+    unique index on ``agents.name`` mean a repeat cannot duplicate anything even if
+    the lock is never taken.
+    """
     with get_connection() as conn:
+        seed_lock(conn)
         count = conn.execute("SELECT COUNT(*) AS n FROM agents").fetchone()["n"]
         if count:
             return sync_default_tools()
         for item in DEFAULT_ROSTER:
+            # OR IGNORE is translated to ON CONFLICT DO NOTHING on PostgreSQL, so an
+            # agent that already exists is left exactly as the operator configured it.
             conn.execute(
-                "INSERT INTO agents (name, role, provider, model, system_prompt, tools, turn_order, enabled) "
+                "INSERT OR IGNORE INTO agents "
+                "(name, role, provider, model, system_prompt, tools, turn_order, enabled) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
                 (
                     item["name"],
@@ -203,31 +216,71 @@ def get_agent(agent_id):
     return _agent_out(row) if row else None
 
 
-def create_agent(data):
+def _duplicate_message(name):
+    return (
+        "Another agent is already called %r. AutoGen identifies participants by name, "
+        "so a team cannot contain two agents with the same name." % name
+    )
+
+
+def _name_taken(name, exclude_id=None):
+    """Is another agent already called this? Compared case-insensitively.
+
+    Case-insensitive on purpose: "Operator" and "operator" are different to AutoGen,
+    but they are never different on purpose, and the near-duplicate is invisible in
+    the roster list until the team fails.
+    """
+    query = "SELECT id FROM agents WHERE lower(name) = lower(?)"
+    params = [name]
+    if exclude_id is not None:
+        query += " AND id <> ?"
+        params.append(exclude_id)
     with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO agents (name, role, provider, model, system_prompt, tools, turn_order, enabled, temperature, max_tokens) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                (data.get("name") or "").strip() or "Agent",
-                (data.get("role") or "").strip(),
-                (data.get("provider") or "deepseek").strip(),
-                (data.get("model") or "").strip(),
-                (data.get("system_prompt") or "").strip(),
-                json.dumps(data.get("tools") or []),
-                int(data.get("turn_order") or 0),
-                1 if data.get("enabled", True) else 0,
-                _num(data.get("temperature")),
-                _num(data.get("max_tokens")),
-            ),
-        )
-        agent_id = cur.lastrowid
+        return conn.execute(query, tuple(params)).fetchone() is not None
+
+
+def create_agent(data):
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise ValueError("Name is required")
+    if _name_taken(name):
+        raise ValueError(_duplicate_message(name))
+    try:
+        with get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO agents (name, role, provider, model, system_prompt, tools, turn_order, enabled, temperature, max_tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    (data.get("role") or "").strip(),
+                    (data.get("provider") or "deepseek").strip(),
+                    (data.get("model") or "").strip(),
+                    (data.get("system_prompt") or "").strip(),
+                    json.dumps(data.get("tools") or []),
+                    int(data.get("turn_order") or 0),
+                    1 if data.get("enabled", True) else 0,
+                    _num(data.get("temperature")),
+                    _num(data.get("max_tokens")),
+                ),
+            )
+            agent_id = cur.lastrowid
+    except IntegrityError:
+        # The unique index caught a name that appeared between the check and the
+        # insert - two people editing the roster at once.
+        raise ValueError(_duplicate_message(name))
     return get_agent(agent_id)
 
 
 def update_agent(agent_id, data):
     if not get_agent(agent_id):
         return None
+    candidate = None
+    if "name" in data:
+        candidate = (data.get("name") or "").strip()
+        if not candidate:
+            raise ValueError("Name is required")
+        if _name_taken(candidate, exclude_id=agent_id):
+            raise ValueError(_duplicate_message(candidate))
     sets, values = [], []
     for field in TEXT_FIELDS:
         if field in data:
@@ -252,8 +305,13 @@ def update_agent(agent_id, data):
     sets.append("updated_at = ?")
     values.append(now_str())
     values.append(agent_id)
-    with get_connection() as conn:
-        conn.execute("UPDATE agents SET %s WHERE id = ?" % ", ".join(sets), values)
+    try:
+        with get_connection() as conn:
+            conn.execute("UPDATE agents SET %s WHERE id = ?" % ", ".join(sets), values)
+    except IntegrityError:
+        if candidate is None:
+            raise  # not the name index - let it surface as the real error
+        raise ValueError(_duplicate_message(candidate))
     return get_agent(agent_id)
 
 
@@ -273,6 +331,26 @@ def _safe_name(name):
     if cleaned[0].isdigit():
         cleaned = "a" + cleaned
     return cleaned[:64]
+
+
+def unique_name(name, taken):
+    """A name AutoGen accepts: sanitised, and not already used in this team.
+
+    ``_safe_name`` is lossy - "Image Artist" and "Image-Artist" both become
+    "Image_Artist" - so two distinct agents can collide *after* sanitising even when
+    the roster is clean. AutoGen requires unique participant names and rejects the
+    whole team, so disambiguate rather than refuse: the operator's roster is right,
+    the identifier just needs to be.
+    """
+    base = _safe_name(name)
+    candidate = base
+    suffix_n = 2
+    while candidate in taken:
+        suffix = "_%d" % suffix_n
+        candidate = base[: 64 - len(suffix)] + suffix
+        suffix_n += 1
+    taken.add(candidate)
+    return candidate
 
 
 def _event_type(message_type):
@@ -350,6 +428,7 @@ async def build_team(job, emit, factory):
 
     max_messages = int(os.environ.get("AGENT_MAX_MESSAGES", "20"))
     participants = []
+    taken = set()
 
     for row in roster:
         granted = row["tools"] or []
@@ -363,8 +442,16 @@ async def build_team(job, emit, factory):
         tools = tool_registry.resolve(granted, emit, job_id=job.get("id"))
         if tools:
             guard_tools_supported(row, model_client, len(tools))
+        participant_name = unique_name(row["name"], taken)
+        if participant_name != _safe_name(row["name"]):
+            emit(
+                "system",
+                "system",
+                "Agent '%s' sanitises to a name another agent already uses; this run "
+                "calls it '%s'." % (row["name"], participant_name),
+            )
         options = {
-            "name": _safe_name(row["name"]),
+            "name": participant_name,
             "model_client": model_client,
             "system_message": row["system_prompt"] or row["role"] or "You are a helpful assistant.",
         }

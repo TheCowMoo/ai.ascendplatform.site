@@ -33,7 +33,7 @@ try:
 except ImportError:
     pass
 
-from db import get_connection, init_db, new_bot_id, IntegrityError, now_str, days_ago
+from db import get_connection, init_db, new_bot_id, IntegrityError, now_str, days_ago, seed_lock
 import meta as meta_api
 import llm
 import jobs
@@ -412,6 +412,11 @@ def bot_profile_org(bot):
 def seed_initial_data():
     try:
         with get_connection() as conn:
+            # Two uvicorn workers import this module at once, so without the lock the
+            # "count, then insert" below runs twice on a fresh database: two admin
+            # users (one fails on the unique email and is swallowed) and two "Cheryl"
+            # bots, exactly as the agent roster was duplicated.
+            seed_lock(conn)
             n = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             if n == 0:
                 email = os.environ.get("ADMIN_EMAIL", "admin@example.com").strip().lower()
@@ -1512,16 +1517,21 @@ def list_agents():
 @app.route("/api/agents", methods=["POST"])
 @owner_required
 def create_agent():
-    data = request.get_json(silent=True) or {}
-    if not (data.get("name") or "").strip():
-        return jsonify({"error": "Name is required"}), 400
-    return jsonify({"agent": agent_roster.create_agent(data)}), 201
+    # ValueError covers a missing name and a duplicate one; the roster cannot contain
+    # two agents with the same name because AutoGen identifies participants by name.
+    try:
+        return jsonify({"agent": agent_roster.create_agent(request.get_json(silent=True) or {})}), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/api/agents/<int:agent_id>", methods=["PUT"])
 @owner_required
 def update_agent(agent_id):
-    updated = agent_roster.update_agent(agent_id, request.get_json(silent=True) or {})
+    try:
+        updated = agent_roster.update_agent(agent_id, request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not updated:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"agent": updated})

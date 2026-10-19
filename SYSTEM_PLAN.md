@@ -1352,3 +1352,87 @@ needs no network and no real key:
 data we own, not from a third-party name lookup. `PROVIDERS` decides; the vendor SDK
 only executes.
 
+## 29. "The participant names must be unique"
+
+**Symptom.** The first job that got past provider selection died with:
+
+```
+File "/app/agents.py", line 383, in build_team
+    team = SelectorGroupChat(
+  File ".../autogen_agentchat/teams/_group_chat/_base_group_chat.py", line 84
+ValueError: The participant names must be unique.
+```
+
+Every model client and every tool had already been built by that point - so the fix in
+section 28 was working, and this was the next layer down.
+
+**Cause: an import-time race, run twice.** `ensure_roster()` seeds the default roster,
+and it runs while the app is being imported (`app.py`):
+
+```python
+count = conn.execute("SELECT COUNT(*) AS n FROM agents").fetchone()["n"]
+if count:
+    return sync_default_tools()
+for item in DEFAULT_ROSTER:      # seven inserts
+```
+
+The app serves with `uvicorn --workers 2`. On a database whose `agents` table is empty -
+exactly the state of a freshly migrated PostgreSQL, because revision `0002` only
+*creates* the table - both worker processes read `0` at the same instant and both
+inserted the whole roster. The deployment came up with **fourteen agents, every name
+twice**, and `SelectorGroupChat` refuses to build a team from that.
+
+Nothing prevented it and nothing detected it: `agents.name` had no unique constraint,
+and neither `create_agent` nor `update_agent` compared names, so the same duplicate
+could also have been made by hand in the roster editor.
+
+**Fix, in the order the guarantees stack up.**
+
+1. **Stop the race.** `db.seed_lock(conn)` takes `pg_advisory_xact_lock` for the
+   duration of the seeding transaction. Two workers now queue: the second one sees the
+   seven rows the first just committed and does nothing.
+2. **Make a repeat impossible, not just unlikely.** Revision `0008_agents_unique` adds
+   a unique index on `agents.name`, declares it in `db.metadata` so `0001` builds it on
+   a fresh database too, and `ensure_roster` inserts with `INSERT OR IGNORE` (translated
+   to `ON CONFLICT DO NOTHING` on PostgreSQL). Even with the lock removed, a double seed
+   cannot produce a duplicate.
+3. **Repair the databases that already have one.** The migration first deletes rows
+   that are *identical in every field* to a lower-id row - provably a double seed, since
+   the surviving row holds exactly the same name, provider, prompt and tools. Rows that
+   share a name but differ in content were written by hand, so they are **renamed**
+   (`Operator (12)`) rather than deleted. If a rename still clashes, the migration stops
+   with the offending names instead of failing on the index with an opaque error.
+4. **Refuse it at the source.** `agents._name_taken()` rejects a duplicate on create and
+   on rename, case-insensitively (two agents called "Operator" and "operator" are never
+   a deliberate choice, and the difference is invisible in a list), excluding the agent
+   being edited so a normal save still works. The API turns that into a 400 with the
+   name in the message; `IntegrityError` from the index is caught as a backstop for two
+   people editing at once.
+5. **Handle what the index cannot.** Sanitising is lossy - `_safe_name("Image Artist")`
+   and `_safe_name("Image-Artist")` are both `Image_Artist` - so two legitimately
+   distinct agents can still collide in the team. `unique_name()` suffixes the second
+   one (`Image_Artist_2`) and `build_team` emits a system event naming the substitution,
+   because a silent rename would make the transcript lie about who spoke.
+
+**The same race, elsewhere.** `seed_initial_data()` had it too: `SELECT COUNT(*) FROM
+users` then insert. There the second worker dies on the unique email and the error is
+swallowed, but the **bots** table has a random id and no unique key, so a fresh
+deployment got two "Cheryl" bots. It takes the same lock now.
+
+**Test.** `tests/smoke_agents.py` asserts the API rejects a duplicate create and a
+rename onto another agent's name (case-insensitively) while allowing an agent to keep
+its own name; that `ensure_roster()` twice leaves the row count unchanged; that two
+names which sanitise identically still build a team, with `Image_Artist_2` in the
+transcript. `tests/test_migrations.py` gained the case it never covered - **upgrade a
+database that already has data**: it populates the pre-0008 schema with two identical
+copies plus one hand-written agent sharing a name, upgrades to head, and asserts the
+copies collapse, the hand-written row survives under a new name, and the unique index
+exists.
+
+**Rule this establishes.** "Insert it if the table is empty" is not safe at import time
+under more than one worker: take a lock, or make the constraint do the work. And when
+the runtime requires an invariant - AutoGen needs unique participant names - the
+database should enforce it, so the failure is a clear validation message instead of an
+exception three layers into a library.
+
+

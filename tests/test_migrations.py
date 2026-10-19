@@ -72,6 +72,63 @@ def test_schema_matches_metadata():
     print("tables: %d, exactly matching db.metadata" % len(present))
 
 
+def _rows(sql):
+    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    with engine.connect() as conn:
+        return conn.execute(sa.text(sql)).fetchall()
+
+
+def test_upgrade_dedupes_a_raced_roster():
+    """Upgrading a populated table must repair the double seed, not fail on it.
+
+    The seed race left two identical copies of every agent, and revision 0008 cannot
+    create its unique index while they are there. This is the "upgrade a database that
+    already has data" path - the half of the migration story this file never covered.
+    """
+    result, output = _alembic("downgrade", "0007_deliverables")
+    assert result.returncode == 0, output[-2000:]
+
+    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    with engine.begin() as conn:
+        for _copy in range(2):  # the two racing uvicorn workers
+            for order, name in enumerate(("Planner", "Operator")):
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO agents (name, role, provider, model, system_prompt, "
+                        "tools, turn_order, enabled) VALUES (:n, 'role', 'deepseek', '', "
+                        "'prompt', '[]', :t, 1)"
+                    ),
+                    {"n": name, "t": order},
+                )
+        # A hand-written agent that merely shares a name differs in content, so it
+        # must be renamed rather than deleted.
+        conn.execute(
+            sa.text(
+                "INSERT INTO agents (name, role, provider, model, system_prompt, "
+                "tools, turn_order, enabled) VALUES ('Operator', 'different job', "
+                "'deepseek', '', 'other prompt', '[]', 9, 1)"
+            )
+        )
+    assert len(_rows("SELECT id FROM agents")) == 5
+
+    result, output = _alembic("upgrade", "head")
+    if result.returncode != 0:
+        print(output[-2000:])
+    assert result.returncode == 0, "upgrade over populated agents failed"
+
+    names = [row[0] for row in _rows("SELECT name FROM agents ORDER BY id")]
+    print("agents after upgrade:", names)
+    assert names.count("Planner") == 1, names
+    assert names.count("Operator") == 1, names
+    assert len(names) == 3, names
+    assert any(n.startswith("Operator (") for n in names), names
+
+    indexes = sa.inspect(sa.create_engine(os.environ["DATABASE_URL"])).get_indexes("agents")
+    unique = [i["name"] for i in indexes if i.get("unique") and i["column_names"] == ["name"]]
+    assert "uq_agents_name" in unique, indexes
+    print("duplicate roster repaired, unique index on agents.name present")
+
+
 def test_downgrade_is_clean():
     """The chain reverses fully: each revision drops only its own tables."""
     result, output = _alembic("downgrade", "base")
@@ -86,5 +143,6 @@ def test_downgrade_is_clean():
 if __name__ == "__main__":
     test_upgrade_head_on_an_empty_database()
     test_schema_matches_metadata()
+    test_upgrade_dedupes_a_raced_roster()
     test_downgrade_is_clean()
     print("MIGRATIONS OK")

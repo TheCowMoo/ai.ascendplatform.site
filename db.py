@@ -280,6 +280,11 @@ agents = Table(
     Column("max_tokens", Integer),
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    # AutoGen identifies participants by name and refuses a team with repeats
+    # ("The participant names must be unique."), so the database enforces what the
+    # runtime requires. Seeding raced on a fresh deploy and produced every agent
+    # twice; this is the backstop that makes that impossible, not just unlikely.
+    Index("uq_agents_name", "name", unique=True),
 )
 
 # Remote servers the Operator agent may act on. The key never leaves the box;
@@ -605,6 +610,27 @@ class Connection:
 
 def get_connection():
     return Connection(engine.connect())
+
+
+# Any bigint works; it only has to be the same in every process that seeds.
+SEED_LOCK_KEY = 20261020
+
+
+def seed_lock(conn):
+    """Serialise import-time seeding across worker processes.
+
+    The app seeds at import time and serves with ``uvicorn --workers 2``, so two
+    processes reach every "insert it if the table is empty" block at the same moment.
+    On a fresh database both read an empty table and both insert - which is how a
+    deploy came up with the whole agent roster duplicated, and every team build died
+    inside AutoGen with "The participant names must be unique."
+
+    Held until the surrounding transaction commits (``Connection.__exit__``), so the
+    count, the inserts and the commit are one atomic step. SQLite needs no lock: the
+    writer takes the file lock itself, and the tests are single-process.
+    """
+    if IS_POSTGRES:
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (SEED_LOCK_KEY,))
 
 
 def _sqlite_unique_on(table, column):
