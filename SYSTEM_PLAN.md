@@ -1102,6 +1102,76 @@ invisible to B on the list and by id, published, and rejected for an unknown kin
 - Nothing schedules or sends an email deliverable: `send_email` sends immediately when
   a job calls it, so `status: scheduled` is a label, not a timer.
 
+---
+
+## 25. Design pass — one language, three surfaces
+
+The brief was "premium, non-coloured emoji, still true to the branding". Colour emoji
+were the least of it; the sheet had no token discipline at all.
+
+### What was wrong
+
+| Symptom | Evidence |
+|---|---|
+| Colour literals everywhere | ~60 of them in 243 lines (`#f9fafb`, `#fef3c7`, `#e0e7ff`, `#0f172a`, `rgba(79,70,229,.12)`…) |
+| Duplicated rules, silently winning | `.topbar` (×2), `.badge-status` (×2), `.modal-actions` (×2) — the *later* copy overrode the shared one |
+| Six radii, four shadows | 8/9/10/12/14/16px; `0 10px 30px`, `0 8px 24px`, `0 20px 50px`, `0 0 40px` |
+| 32 colour emoji in `admin.js` | 18 in the nav alone, plus a 🚧 placeholder |
+| No focus style on buttons | only `input` had a ring, so keyboard users were invisible on every button and nav link |
+| Muted text below AA | `#6b7280` on `#f4f5f7` ≈ 4.0:1 |
+
+### The system
+
+One cool neutral ramp with one step per job, a single accent, **two radii**
+(8 controls / 14 cards), **two shadows**, a 4px spacing rhythm, six type sizes. Old
+variable names are kept as aliases (`--brand: var(--accent-600)`) so nothing had to be
+rewritten in lockstep. System font stack — a webfont costs 100–300ms per load and buys
+nothing here; the premium comes from the rhythm.
+
+**Icons**: an inline SVG sprite in `index.html` (1.5px stroke, `currentColor`, 20px
+grid). Emoji render as Apple art on macOS, Microsoft's flat set on Windows and Noto on
+Android, so the same nav can never look deliberate everywhere. The sprite costs no
+request and icons inherit the accent, so the active nav item tints its own glyph.
+
+Also fixed while in there: `aria-current="page"` on the active nav item, `:focus-visible`
+on everything interactive, and empty states that carry the next action instead of a 🚧.
+
+### The two client-owned accents (this is the part that mattered)
+
+The widget and the generated landing page take a **client-chosen** `brand_color`, and
+both hardcoded `color: #fff` on top of it. A client picking `#fde68a` got white-on-pale-
+yellow — an unreadable launcher, header, user bubble and send button. Both now derive
+the foreground from the hex (WCAG relative luminance, threshold 0.42 → `#0b1120` or
+`#ffffff`), implemented once in JS (`inkOn`) and once in Python (`readable_ink`) against
+the same threshold so the surfaces cannot disagree.
+
+The widget's quick-reply chips were also hardcoded indigo, so they ignored the client's
+brand entirely; they now use a derived tint of it. Shadows dropped from
+`0 20px 50px rgba(0,0,0,.3)` to a hairline plus a soft overlay.
+
+### Two traps in the landing template
+
+It is a `str.format()` string, so **every literal `{` must be `{{`** — a stray brace is a
+runtime error inside `render_index`, not an import error, so nothing else catches it.
+`tests/test_brand_contrast.py` renders it for exactly that reason. And `font_family` is a
+client-editable field interpolated straight into `<style>`, so it is now whitelisted
+(`safe_font`) rather than passed through: `x;} body{display:none} .y{` is refused.
+
+### Cache
+
+`/widget.js` is loaded from pages we do not control, with no version and no
+`Cache-Control`, so a redesign could take days to appear. The route now sends
+`max-age=300, must-revalidate` (ETag keeps the steady state at 304) and new embed
+snippets carry `?v=2`.
+
+### Verification
+
+`tests/test_brand_contrast.py` covers the colour maths (indigo → white, pale → near-black,
+`#f59e0b` right at the boundary), malformed input, the template rendering, and the font
+whitelist. **All 16 suites green**, `node --check` clean on both bundles. The visual
+result itself has to be signed off by eye — `/admin/`, `/demo?bot=<id>` for the widget,
+and a freshly provisioned site for the template.
+
 
 
 

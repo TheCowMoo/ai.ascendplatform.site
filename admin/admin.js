@@ -24,28 +24,28 @@
       label: 'Workspace',
       home: '#/app/',
       nav: [
-        { id: 'dashboard', label: 'Dashboard', icon: '📊', hash: '#/app/dashboard' },
-        { id: 'sites', label: 'Websites', icon: '🌐', hash: '#/app/sites' },
-        { id: 'blogs', label: 'Blogs', icon: '✍️', hash: '#/app/blogs' },
-        { id: 'funnels', label: 'Funnels', icon: '🧲', hash: '#/app/funnels' },
-        { id: 'emails', label: 'Emails', icon: '✉️', hash: '#/app/emails' },
-        { id: 'library', label: 'Library', icon: '🗂️', hash: '#/app/library' },
-        { id: 'bots', label: 'Chatbots', icon: '🤖', hash: '#/app/bots' },
-        { id: 'conversations', label: 'Conversations', icon: '💬', hash: '#/app/conversations' },
-        { id: 'profile', label: 'Business Profile', icon: '🏢', hash: '#/app/profile' },
-        { id: 'jobs', label: 'Jobs', icon: '⚙️', hash: '#/app/jobs' },
-        { id: 'team', label: 'Team', icon: '👤', hash: '#/app/team', adminOnly: true },
-        { id: 'settings', label: 'Settings', icon: '🛠️', hash: '#/app/settings', adminOnly: true }
+        { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
+        { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
+        { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
+        { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
+        { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
+        { id: 'library', label: 'Library', icon: 'library', hash: '#/app/library' },
+        { id: 'bots', label: 'Chatbots', icon: 'bot', hash: '#/app/bots' },
+        { id: 'conversations', label: 'Conversations', icon: 'chat', hash: '#/app/conversations' },
+        { id: 'profile', label: 'Business Profile', icon: 'building', hash: '#/app/profile' },
+        { id: 'jobs', label: 'Jobs', icon: 'cog', hash: '#/app/jobs' },
+        { id: 'team', label: 'Team', icon: 'user', hash: '#/app/team', adminOnly: true },
+        { id: 'settings', label: 'Settings', icon: 'sliders', hash: '#/app/settings', adminOnly: true }
       ]
     },
     platform: {
       label: 'Platform',
       home: '#/platform/clients',
       nav: [
-        { id: 'clients', label: 'Clients', icon: '🏬', hash: '#/platform/clients' },
-        { id: 'servers', label: 'Servers', icon: '🖥️', hash: '#/platform/servers' },
-        { id: 'agents', label: 'Agents', icon: '🧠', hash: '#/platform/agents' },
-        { id: 'settings', label: 'Platform settings', icon: '🛠️', hash: '#/platform/settings' }
+        { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
+        { id: 'servers', label: 'Servers', icon: 'server', hash: '#/platform/servers' },
+        { id: 'agents', label: 'Agents', icon: 'cpu', hash: '#/platform/agents' },
+        { id: 'settings', label: 'Platform settings', icon: 'sliders', hash: '#/platform/settings' }
       ]
     }
   };
@@ -78,6 +78,13 @@
         return data;
       });
     });
+  }
+
+  // Icon reference from the sprite in index.html. `currentColor` means an icon
+  // inherits the text colour, so the active nav item tints its own glyph.
+  function icon(name, extra) {
+    return '<svg class="icon' + (extra ? ' ' + extra : '') + '" aria-hidden="true"><use href="#i-' +
+      name + '"/></svg>';
   }
 
   function esc(s) {
@@ -133,7 +140,8 @@
       if (item.adminOnly && !canAdmin(state.user)) return;
       var link = el('a', 'side-item' + (item.id === tab ? ' active' : ''));
       link.href = item.hash;
-      link.innerHTML = '<span class="side-icon">' + item.icon + '</span>' +
+      if (item.id === tab) link.setAttribute('aria-current', 'page');
+      link.innerHTML = '<span class="side-icon">' + icon(item.icon) + '</span>' +
         '<span class="side-label">' + esc(item.label) + '</span>' +
         (item.ready === false ? '<span class="side-soon">Soon</span>' : '');
       link.onclick = function () { document.body.classList.remove('nav-open'); };
@@ -147,7 +155,8 @@
       var other = area === 'platform' ? 'app' : 'platform';
       var swap = el('a', 'side-item side-swap');
       swap.href = AREAS[other].home;
-      swap.innerHTML = '<span class="side-icon">' + (other === 'platform' ? '🛰️' : '↩') + '</span>' +
+      swap.innerHTML = '<span class="side-icon">' +
+        icon(other === 'platform' ? 'arrow-right' : 'arrow-left') + '</span>' +
         '<span class="side-label">' + (other === 'platform' ? 'Platform console' : 'Client workspace') + '</span>';
       aside.appendChild(swap);
     }
@@ -173,7 +182,8 @@
   function topbar() {
     var bar = el('div', 'topbar');
     var inner = el('div', 'topbar-inner');
-    var burger = el('button', 'burger', '☰');
+    var burger = el('button', 'burger');
+    burger.innerHTML = icon('menu');
     burger.setAttribute('aria-label', 'Toggle navigation');
     burger.onclick = function () { document.body.classList.toggle('nav-open'); };
     inner.appendChild(burger);
@@ -219,7 +229,9 @@
 
   // ---------- Embed modal ----------
   function showEmbed(bot) {
-    var snippet = '<script src="' + location.origin + '/widget.js" data-bot="' + bot.id + '"><\/script>';
+    // ?v=2 busts the copy a client's page already cached; the route also sends a
+    // short max-age so existing snippets pick up a redesign within minutes.
+    var snippet = '<script src="' + location.origin + '/widget.js?v=2" data-bot="' + bot.id + '"><\/script>';
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal');
     modal.innerHTML = '<h3>Embed widget</h3><p class="muted">Paste this into the client\'s website, before <code>&lt;/body&gt;</code>:</p>';
@@ -312,7 +324,7 @@
     api('GET', '/api/bots').then(function (d) {
       var bots = d.bots || [];
       if (!bots.length) {
-        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">🤖</div>No chatbots yet. Click <b>+ New Chatbot</b> to create your first one.</div>';
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' + icon('bot') + '</div><strong>No chatbots yet</strong><p>Create one to put an assistant on your site or in your DMs.</p></div>';
         return;
       }
       bots.forEach(function (bot) {
@@ -994,7 +1006,7 @@
   function groupCard(group, refresh) {
     var card = el('div', 'panel-card settings-group');
     var head = el('div', 'settings-group-head');
-    head.innerHTML = '<span class="settings-icon">' + (group.icon || '&#9881;') + '</span>' +
+    head.innerHTML = '<span class="settings-icon">' + icon(group.icon || 'sliders') + '</span>' +
       '<div><h3>' + esc(group.label) + '</h3>' +
       '<div class="muted">' + esc(group.blurb || '') + '</div></div>';
     card.appendChild(head);
@@ -1118,8 +1130,11 @@
     head.innerHTML = '<div><h2>' + esc(meta ? meta.label : id) + '</h2><p>Coming soon.</p></div>';
     container.appendChild(head);
     var panel = el('div', 'panel-card');
-    panel.innerHTML = '<div class="empty-state"><div class="big">' + (meta ? meta.icon : '🚧') +
-      '</div>This section is planned.<br><span class="muted">See SYSTEM_PLAN.md for the roadmap.</span></div>';
+    // meta.icon is a sprite symbol name, not a glyph - rendering it as text was
+    // the bug this replaces.
+    panel.innerHTML = '<div class="empty-state"><div class="big">' +
+      icon(meta && meta.icon ? meta.icon : 'alert') +
+      '</div><strong>This section is planned</strong><p>See SYSTEM_PLAN.md for the roadmap.</p></div>';
     container.appendChild(panel);
     return container;
   }
@@ -1136,7 +1151,7 @@
     api('GET', '/api/bots').then(function (d) {
       var bots = d.bots || [];
       if (!bots.length) {
-        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">💬</div>No chatbots yet.</div>';
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' + icon('chat') + '</div><strong>No conversations yet</strong><p>They appear here as soon as someone talks to one of your chatbots.</p></div>';
         return;
       }
       bots.forEach(function (bot) {
@@ -1432,7 +1447,7 @@
         grid.innerHTML = '';
         var agentsList = d.agents || [];
         if (!agentsList.length) {
-          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">🧠</div>No agents yet. Click <b>+ New agent</b>.</div>';
+          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' + icon('cpu') + '</div><strong>No agents yet</strong><p>The roster is the team that writes and publishes your content.</p></div>';
           return;
         }
         agentsList.forEach(function (agent) { grid.appendChild(agentCard(agent, refresh)); });
@@ -1630,7 +1645,7 @@
         grid.innerHTML = '';
         var sites = d.sites || [];
         if (!sites.length) {
-          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">🌐</div>No sites yet. Click <b>+ New site</b>.</div>';
+          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' + icon('globe') + '</div><strong>No websites yet</strong><p>Add a domain and point its DNS at this server to go live.</p></div>';
           return;
         }
         sites.forEach(function (site) { grid.appendChild(siteCard(site, refresh)); });
@@ -1646,7 +1661,7 @@
     var top = el('div', 'bot-card-top');
     var av = el('div', 'bot-avatar');
     av.style.background = site.status === 'live' ? '#16a34a' : (site.status === 'error' ? '#dc2626' : '#4f46e5');
-    av.innerHTML = '🌐';
+    av.innerHTML = icon('globe');
     top.appendChild(av);
     var names = el('div');
     names.innerHTML = '<div class="bot-card-name">' + esc(site.domain) + '</div>' +
@@ -1839,7 +1854,7 @@
           '</div>';
         var hosts = d.hosts || [];
         if (!hosts.length) {
-          tableWrap.innerHTML = '<div class="empty-state"><div class="big">🖥️</div>No servers yet.</div>';
+          tableWrap.innerHTML = '<div class="empty-state"><div class="big">' + icon('server') + '</div><strong>No servers yet</strong><p>Add an SSH target only if you deploy to hardware other than this one.</p></div>';
           return;
         }
         var table = el('table', 'table');
@@ -2020,7 +2035,7 @@
       api('GET', '/api/jobs').then(function (d) {
         var jobs = d.jobs || [];
         if (!jobs.length) {
-          tableWrap.innerHTML = '<div class="empty-state"><div class="big">⚙️</div>No jobs yet.</div>';
+          tableWrap.innerHTML = '<div class="empty-state"><div class="big">' + icon('cog') + '</div><strong>No jobs yet</strong><p>Jobs are what the agent team runs; start one from the box above.</p></div>';
           return;
         }
         var table = el('table', 'table');

@@ -1898,7 +1898,15 @@ def admin_assets(filename):
 
 @app.route("/widget.js")
 def widget_js():
-    return send_from_directory(WIDGET_DIR, "widget.js")
+    """The embeddable widget.
+
+    It is loaded from pages we do not control, so a redesign has to reach existing
+    embeds in minutes rather than whenever a browser decides to revalidate. Werkzeug
+    still sends ETag/Last-Modified, so the steady-state cost is a 304.
+    """
+    response = send_from_directory(WIDGET_DIR, "widget.js")
+    response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    return response
 
 
 @app.route("/demo")

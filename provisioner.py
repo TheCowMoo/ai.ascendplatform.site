@@ -106,30 +106,169 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<meta name="description" content="{tagline}">
 <style>
-  :root {{ --brand: {color}; }}
+  :root {{
+    --brand: {color};
+    --ink: {ink};
+    --soft: {soft};
+    --line: #e6e8ec;
+    --text: #1f2937;
+    --muted: #5b6472;
+  }}
   * {{ box-sizing: border-box; }}
-  body {{ margin: 0; font-family: {font}; color: #1f2937; background: #f8fafc; }}
-  header {{ background: var(--brand); color: #fff; padding: 72px 24px; text-align: center; }}
-  header h1 {{ margin: 0 0 8px; font-size: 34px; }}
-  header p {{ margin: 0; opacity: .9; }}
-  main {{ max-width: 760px; margin: 0 auto; padding: 40px 24px; line-height: 1.6; }}
-  h2 {{ color: var(--brand); }}
-  footer {{ text-align: center; color: #6b7280; font-size: 13px; padding: 32px 24px; }}
+  html {{ -webkit-text-size-adjust: 100%; }}
+  body {{
+    margin: 0; font-family: {font};
+    color: var(--text); background: #fff;
+    font-size: 17px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }}
+  .wrap {{ max-width: 760px; margin: 0 auto; padding: 0 24px; }}
+
+  /* The brand as an accent bloom, not a full-bleed wash: a saturated block of a
+     client's colour is the quickest way for a page to look unfinished. */
+  header {{ position: relative; padding: 96px 0 76px; text-align: center; overflow: hidden; border-bottom: 1px solid var(--line); }}
+  header::before {{
+    content: ""; position: absolute; left: 50%; top: -60%; width: 620px; height: 620px;
+    transform: translateX(-50%); border-radius: 50%;
+    background: var(--soft); filter: blur(70px); z-index: 0;
+  }}
+  header .wrap {{ position: relative; z-index: 1; }}
+  .eyebrow {{
+    display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px;
+    padding: 6px 14px; border-radius: 999px;
+    background: #fff; border: 1px solid var(--line);
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted);
+  }}
+  .eyebrow::before {{ content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--brand); }}
+  h1 {{
+    margin: 0 0 14px; font-size: 46px; line-height: 1.1;
+    letter-spacing: -0.03em; font-weight: 680; color: #0b1120;
+  }}
+  header p {{ margin: 0; font-size: 19px; color: var(--muted); max-width: 44ch; margin: 0 auto; }}
+
+  main {{ padding: 56px 0 24px; }}
+  h2 {{
+    position: relative; margin: 40px 0 14px; padding-left: 16px;
+    font-size: 22px; letter-spacing: -0.02em; font-weight: 650; color: #0b1120;
+  }}
+  h2:first-child {{ margin-top: 0; }}
+  h2::before {{
+    content: ""; position: absolute; left: 0; top: .28em; bottom: .22em;
+    width: 3px; border-radius: 2px; background: var(--brand);
+  }}
+  p {{ margin: 0 0 16px; }}
+  a {{ color: var(--brand); }}
+  ul {{ padding-left: 20px; }}
+  li {{ margin-bottom: 6px; }}
+  blockquote {{ margin: 0 0 16px; padding: 2px 0 2px 16px; border-left: 3px solid var(--soft); color: var(--muted); }}
+  code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; background: #f6f7f9; padding: 2px 6px; border-radius: 6px; }}
+  img {{ max-width: 100%; height: auto; border-radius: 12px; }}
+  hr {{ border: none; border-top: 1px solid var(--line); margin: 32px 0; }}
+
+  footer {{ margin-top: 56px; border-top: 1px solid var(--line); padding: 28px 0 40px; text-align: center; color: var(--muted); font-size: 13px; }}
+  footer a {{ color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }}
+
+  @media (max-width: 560px) {{
+    header {{ padding: 64px 0 52px; }}
+    h1 {{ font-size: 32px; }}
+    header p {{ font-size: 17px; }}
+    main {{ padding: 40px 0 16px; }}
+  }}
 </style>
 </head>
 <body>
 <header>
-  <h1>{title}</h1>
-  <p>{tagline}</p>
+  <div class="wrap">
+    <span class="eyebrow">{brand}</span>
+    <h1>{title}</h1>
+    <p>{tagline}</p>
+  </div>
 </header>
 <main>
+  <div class="wrap">
 {body}
+  </div>
 </main>
-<footer>Built with CMBGrowthAI</footer>
+<footer>
+  <div class="wrap">Built with <a href="https://ascendplatform.site">{brand}</a></div>
+</footer>
 </body>
 </html>
 """
+
+
+SAFE_FONTS = (
+    "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "Georgia, 'Times New Roman', serif",
+    "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+)
+
+
+def _rgb(hex_color):
+    """Parse #rgb or #rrggbb into (r, g, b), or None."""
+    value = (hex_color or "").strip().lstrip("#")
+    if len(value) == 3:
+        value = "".join(ch * 2 for ch in value)
+    if len(value) != 6:
+        return None
+    try:
+        return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return None
+
+
+def readable_ink(hex_color):
+    """``#0b1120`` or ``#ffffff`` - whichever is legible on this background.
+
+    The brand colour is a client's choice, and pale ones exist: white text on
+    #fde68a is unreadable, so the foreground is computed rather than assumed.
+    Same threshold as the widget's ``inkOn`` so both surfaces agree.
+    """
+    rgb = _rgb(hex_color)
+    if not rgb:
+        return "#ffffff"
+
+    def lin(channel):
+        c = channel / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    luminance = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+    return "#0b1120" if luminance > 0.42 else "#ffffff"
+
+
+def soft_tint(hex_color, alpha=0.16):
+    """The brand at low alpha, so tints follow the client's own hue."""
+    rgb = _rgb(hex_color) or (79, 70, 229)
+    return "rgba(%d,%d,%d,%.2f)" % (rgb[0], rgb[1], rgb[2], alpha)
+
+
+def safe_font(value):
+    """Whitelist a font stack.
+
+    The stack comes from a client-editable profile field and is interpolated into a
+    ``<style>`` block, so passing it through untouched would let a client's value
+    close the rule and inject its own CSS. A bare family name is accepted; anything
+    else falls back to the system stack.
+    """
+    text = (value or "").strip()
+    for choice in SAFE_FONTS:
+        if text.lower() == choice.lower():
+            return choice
+    if text and all(ch.isalnum() or ch in " -_" for ch in text):
+        return '"%s", %s' % (text, SAFE_FONTS[0])
+    return SAFE_FONTS[0]
+
+
+def _brand_name():
+    """The product name, honouring the Settings tab when it is readable."""
+    try:
+        import settings
+        return settings.get("BRAND_NAME", "AscendPlatform") or "AscendPlatform"
+    except Exception:
+        return "AscendPlatform"
 
 
 def html_escape(value):
@@ -147,13 +286,23 @@ def render_vhost(domain, docroot, aliases=None):
 
 def render_index(title="New site", tagline="", body_html="", brand_color="#4f46e5",
                  font_family="system-ui, sans-serif"):
-    """A small, self-contained landing page used when no content is supplied."""
+    """A small, self-contained landing page used when no content is supplied.
+
+    Everything is inline because the result is written into a client's own docroot
+    and served by Caddy with no build step: no stylesheet request, no webfont.
+    """
+    color = brand_color or "#4f46e5"
     return INDEX_TEMPLATE.format(
         title=html_escape(title),
         tagline=html_escape(tagline),
         body=body_html or "<p>This site is ready. Add content in the Sites tab.</p>",
-        color=brand_color or "#4f46e5",
-        font=font_family or "system-ui, sans-serif",
+        color=color,
+        # Derived from the brand: a pale colour needs dark ink, and the tint has to
+        # follow the hue or the hero bloom reads as a grey smudge.
+        ink=readable_ink(color),
+        soft=soft_tint(color, 0.16),
+        font=safe_font(font_family),
+        brand=html_escape(_brand_name()),
     )
 
 

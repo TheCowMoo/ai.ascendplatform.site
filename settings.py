@@ -82,7 +82,7 @@ SPEC = [
     {
         "id": "llm",
         "label": "AI providers",
-        "icon": "🧠",
+        "icon": "cpu",
         "blurb": "Credentials for the models the agents run on. Applied immediately.",
         "test": "llm",
         "fields": [
@@ -103,7 +103,7 @@ SPEC = [
     {
         "id": "pexels",
         "label": "Stock photography",
-        "icon": "📷",
+        "icon": "image",
         "blurb": "Lets the agents pull real photos into the content they build.",
         "test": "pexels",
         "fields": [
@@ -120,7 +120,7 @@ SPEC = [
     {
         "id": "actions",
         "label": "Safety & approvals",
-        "icon": "🛡️",
+        "icon": "shield",
         "blurb": "How far the agents may go on their own.",
         "fields": [
             _f("ALLOW_LIVE_ACTIONS", "Allow live actions", kind="bool", default="0",
@@ -134,7 +134,7 @@ SPEC = [
     {
         "id": "email",
         "label": "Email (SMTP)",
-        "icon": "✉️",
+        "icon": "mail",
         "blurb": "How the team sends mail.",
         "test": "smtp",
         # The one client-scoped group: a client sends from their own domain, so
@@ -152,7 +152,7 @@ SPEC = [
     {
         "id": "hosting",
         "label": "Servers & hosting",
-        "icon": "🖥️",
+        "icon": "server",
         "blurb": "Limits applied whenever the Operator reaches a server.",
         "fields": [
             _f("SSH_TIMEOUT", "SSH connect timeout (seconds)", kind="int",
@@ -166,7 +166,7 @@ SPEC = [
     {
         "id": "app",
         "label": "App & branding",
-        "icon": "🎛️",
+        "icon": "sliders",
         "blurb": "Presentation and platform limits.",
         "fields": [
             _f("BRAND_NAME", "Product name", default="AscendPlatform"),
@@ -178,7 +178,7 @@ SPEC = [
     {
         "id": "infra",
         "label": "Infrastructure",
-        "icon": "🔧",
+        "icon": "wrench",
         "blurb": "Structural settings - they choose the topology (which queue, "
                  "where artifacts live), so they cannot change under a running "
                  "process. Shown for visibility: edit .env and restart instead.",
