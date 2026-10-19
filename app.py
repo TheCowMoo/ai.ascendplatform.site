@@ -1465,6 +1465,12 @@ def update_settings():
         changed = settings.update_many(values, clear, actor, org)
     except settings.SettingsError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        # An unexpected write failure must not reach the browser as a blank 500: the
+        # toast shows this text, which is how the PostgreSQL "RETURNING id" bug would
+        # have been identified in seconds instead of a round of guesswork.
+        app.logger.exception("Settings update failed for %s", actor)
+        return jsonify({"error": "Could not save (%s: %s)" % (type(exc).__name__, exc)}), 500
     app.logger.info(
         "Settings updated by %s: %s", actor, ", ".join(changed) or "(nothing changed)"
     )

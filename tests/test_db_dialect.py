@@ -42,7 +42,10 @@ def test_prepare_sqlite():
 def test_prepare_postgres():
     sql, binds, kind = db._prepare("INSERT OR IGNORE INTO meta_events (mid) VALUES (?)", ("m1",), True)
     assert kind == "insert", kind
-    assert sql == "INSERT INTO meta_events (mid) VALUES (:p0) ON CONFLICT DO NOTHING RETURNING id", sql
+    # meta_events is keyed by `mid`, so there is no id to return. The old expectation
+    # here said "RETURNING id", which is precisely the bug that broke saving an API key
+    # on PostgreSQL - see test_postgres_only_returns_an_id_when_one_exists.
+    assert sql == "INSERT INTO meta_events (mid) VALUES (:p0) ON CONFLICT DO NOTHING", sql
     print("postgres upsert OK:", sql)
 
     sql2, _, kind2 = db._prepare("INSERT INTO jobs (title) VALUES (?)", ("t",), True)
@@ -60,6 +63,30 @@ def test_prepare_postgres():
     assert kind4 == "select"
     assert "RETURNING" not in sql4.upper()
     print("postgres select OK:", sql4)
+
+
+def test_postgres_only_returns_an_id_when_one_exists():
+    """RETURNING id only on tables that actually have an id column.
+
+    ``settings`` is keyed by ``key``, ``client_settings`` by (org_id, key) and
+    ``meta_events`` by ``mid``. Appending ``RETURNING id`` to those made the first
+    save of an API key a 500 on PostgreSQL - "column id does not exist" - while every
+    SQLite suite stayed green, because ``_prepare`` only takes this path on Postgres.
+    """
+    bots = db._prepare("INSERT INTO bots (id, name) VALUES (?, ?)", ("i", "n"), True)[0]
+    assert bots.endswith("RETURNING id"), bots
+
+    agents = db._prepare("INSERT INTO agents (name) VALUES (?)", ("n",), True)[0]
+    assert agents.endswith("RETURNING id"), agents
+
+    for sql, params in (
+        ("INSERT INTO settings (key, value) VALUES (?, ?)", ("k", "v")),
+        ("INSERT INTO client_settings (org_id, key, value) VALUES (?, ?, ?)", (1, "k", "v")),
+        ("INSERT INTO meta_events (mid) VALUES (?)", ("m",)),
+    ):
+        prepared = db._prepare(sql, params, True)[0]
+        assert "RETURNING" not in prepared.upper(), (sql, prepared)
+    print("RETURNING id only where an id exists")
 
 
 def test_bind_mismatch_is_loud():
@@ -149,7 +176,7 @@ def test_postgres_schema():
     print(users)
 
     assert "SERIAL" in info["jobs_ddl"], info["jobs_ddl"]
-    assert info["upsert"].endswith("ON CONFLICT DO NOTHING RETURNING id"), info["upsert"]
+    assert info["upsert"] == "INSERT INTO meta_events (mid) VALUES (:p0) ON CONFLICT DO NOTHING", info["upsert"]
     assert info["insert"].endswith("RETURNING id"), info["insert"]
     print("postgres upsert:", info["upsert"])
     print("postgres insert:", info["insert"])
@@ -161,6 +188,7 @@ if __name__ == "__main__":
     test_bind()
     test_prepare_sqlite()
     test_prepare_postgres()
+    test_postgres_only_returns_an_id_when_one_exists()
     test_bind_mismatch_is_loud()
     test_sqlite_schema()
     test_postgres_schema()

@@ -1178,3 +1178,38 @@ and a freshly provisioned site for the template.
 
 
 
+
+---
+
+## 26. Saving an API key returned 500 on PostgreSQL
+
+**Symptom.** The Settings tab could not save anything on the deployed instance. The
+toast said `HTTP 500`, and `/api/health` kept reporting `providers_configured: []`.
+
+**Cause.** `db._prepare()` appended `RETURNING id` to *every* INSERT on PostgreSQL, so
+the new row's id could come back through the sqlite-compatible `lastrowid` API. Three
+tables have no `id` column at all: `settings` (key), `client_settings` (org_id + key)
+and `meta_events` (mid). The first save of a key therefore became
+`INSERT INTO settings (...) RETURNING id` and died with "column id does not exist".
+An UPDATE worked - no RETURNING - which is why an existing row never complained, and a
+freshly migrated database always starts with an INSERT.
+
+**Why nothing caught it.** The suffix is only added when `is_postgres` is true, and
+every suite runs on SQLite. Worse, `tests/test_db_dialect.py` *asserted the buggy
+string*: it expected `ON CONFLICT DO NOTHING RETURNING id` for `meta_events`, a table
+keyed by `mid`. A test that encodes a bug is worse than no test, because it looks like
+coverage.
+
+**Fix.** `_prepare()` resolves the INSERT target and appends `RETURNING id` only when
+that table really has an `id` column. `Connection.execute()` also only calls
+`fetchone()` when `RETURNING` is present, since a non-returning INSERT on PostgreSQL is
+not a row-returning statement and raises `ResourceClosedError` - the same shape of
+mistake as the DDL classification bug in §24.
+
+**Also.** An unexpected failure in `PUT /api/settings` now returns the exception type
+and message and logs the traceback, instead of a blank 500 the UI can only render as
+`HTTP 500`.
+
+**Still open.** A CI job running the suite against a real PostgreSQL service is the
+only structural fix. Sections 23, 24 and this one all end by noting that the Postgres
+path is exercised only in production; this is what that costs.

@@ -493,6 +493,29 @@ def _bind(sql, params):
     return rewritten, binds
 
 
+_INSERT_TARGET = re.compile(
+    r"(?is)^\s*INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def _insert_target(statement):
+    """The table an INSERT writes to, or '' when it cannot be parsed."""
+    match = _INSERT_TARGET.match(statement or "")
+    return match.group(1).lower() if match else ""
+
+
+def _has_id_column(table_name):
+    """True when ``table_name`` actually has an ``id`` column to return.
+
+    ``settings`` has ``key`` as its primary key and ``client_settings`` has a
+    composite one, so ``RETURNING id`` on either is a SQL error - which is exactly
+    what a first-time "save your API key" did on PostgreSQL (500, "column id does
+    not exist") while every SQLite test passed, because SQLite never takes this path.
+    """
+    table = metadata.tables.get(table_name)
+    return table is not None and "id" in table.c
+
+
 def _prepare(statement, params, is_postgres):
     """Rewrite a ``?``-style statement for the active dialect.
 
@@ -513,7 +536,10 @@ def _prepare(statement, params, is_postgres):
     sql, binds = _bind(statement, params)
 
     if is_postgres and is_insert and "RETURNING" not in sql.upper():
-        suffix += " RETURNING id"
+        # Only ask for an id when there is one: settings and client_settings are
+        # keyed by what they store, not by a surrogate id.
+        if _has_id_column(_insert_target(statement)):
+            suffix += " RETURNING id"
 
     if suffix:
         sql = sql.rstrip().rstrip(";") + suffix
@@ -558,11 +584,14 @@ class Connection:
         raw = self._conn.execute(sa.text(prepared), binds)
 
         if kind == "insert":
-            if IS_POSTGRES:
+            # fetchone() only makes sense when RETURNING was actually appended - on
+            # PostgreSQL an insert without it is not a row-returning statement, and
+            # calling fetchone() there raises ResourceClosedError.
+            if IS_POSTGRES and "RETURNING" in prepared.upper():
                 row = raw.fetchone()
                 lastrowid = row[0] if row else None
                 return Result([], rowcount=1 if lastrowid is not None else 0, lastrowid=lastrowid)
-            return Result([], rowcount=raw.rowcount, lastrowid=raw.lastrowid)
+            return Result([], rowcount=raw.rowcount, lastrowid=getattr(raw, "lastrowid", None))
 
         if kind == "dml":
             return Result([], rowcount=raw.rowcount)
