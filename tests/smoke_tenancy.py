@@ -532,10 +532,14 @@ def test_deliverables_are_isolated(alpha, beta):
 def test_owner_only_surfaces_are_shut(alpha):
     """The console surfaces a client must never reach."""
     a = login(ALPHA["email"], ALPHA["password"])
-    for path in ("/api/ssh-hosts", "/api/agents"):
+    for path in ("/api/ssh-hosts", "/api/agents", "/api/providers"):
         resp = a.get(path)
         assert resp.status_code == 403, "GET %s -> %d (expected 403)" % (path, resp.status_code)
         print("  blocked GET    %-18s -> 403" % path)
+
+    # ...while the operator can still reach the provider list, which is the point of
+    # the guard: it must not lock the person who owns the keys out of their own panel.
+    assert owner_login().get("/api/providers").status_code == 200
 
     # Settings are reachable, but only the client's own scope: a client admin may
     # configure their SMTP and must never see the platform's key names at all.

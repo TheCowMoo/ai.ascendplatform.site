@@ -2088,7 +2088,13 @@ def cancel_job(job_id):
 # Providers (agent model routing)
 # ---------------------------------------------------------------------------
 @app.route("/api/providers", methods=["GET"])
+@owner_required
 def providers():
+    """Which providers the platform's keys configure.
+
+    Operator information: the agents are site-wide and run on the platform's keys, so
+    a client has no business enumerating them. This route had no guard at all.
+    """
     return jsonify({
         "providers": llm.list_providers(),
         "configured": llm.configured_providers(),

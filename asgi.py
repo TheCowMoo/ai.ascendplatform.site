@@ -65,11 +65,24 @@ def require_session(request: Request):
     return data
 
 
+def require_owner(request: Request):
+    """Dependency: 403 unless the caller is the platform operator.
+
+    ``/api/providers`` reports which providers *the platform's* keys configure. The
+    agents are site-wide and run on the operator's keys, so that is operator
+    information - and it used to answer with no session at all.
+    """
+    data = require_session(request)
+    if data.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Migrated routes
 # ---------------------------------------------------------------------------
 @app.get("/api/providers", tags=["platform"])
-def providers():
+def providers(session=Depends(require_owner)):
     """Provider status; never exposes secrets."""
     return {
         "providers": llm.list_providers(),

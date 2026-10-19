@@ -521,8 +521,12 @@ def _field_for_ui(field, org_id=None):
     client_value = None
     if org_id is not None and field["scope"] == CLIENT:
         client_value = _panel_value(key, org_id)
-    panel = _panel_value(key)
-    env = (os.environ.get(key) or "").strip()
+    # A client never resolves a platform value. all_for_ui() already omits those
+    # groups, but the two layers must agree: one regression should not be enough to
+    # hand a client the operator's model names and endpoints.
+    allowed = org_id is None or field["scope"] == CLIENT
+    panel = _panel_value(key) if allowed else ""
+    env = (os.environ.get(key) or "").strip() if allowed else ""
     if client_value:
         origin, value = "client", client_value
     elif panel:

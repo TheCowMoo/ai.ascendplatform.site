@@ -20,15 +20,15 @@ import asgi  # noqa: E402
 def main():
     client = TestClient(asgi.app)
 
-    # --- FastAPI-owned route (no session needed) -------------------------
-    resp = client.get("/api/providers")
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    print("providers:", [p["name"] for p in data["providers"]], "| gateway:", data["gateway"])
-    # Flask's version of this route does not return "gateway", so its presence
-    # proves FastAPI matched first (route precedence over the "/" mount).
-    assert "gateway" in data, data
-    assert data["gateway"]["enabled"] is False
+    # --- FastAPI-owned route, operator only ---------------------------------
+    # The agents are site-wide and run on the platform's keys, so the provider list is
+    # operator information. It used to answer with no session at all. The payload shape
+    # and the operator's 200 are covered by smoke_tenancy, which has owner_login().
+    anon = TestClient(asgi.app)
+    assert anon.get("/api/providers").status_code == 401, "providers answered anonymously"
+    print("providers: anonymous request -> 401")
+    # The provider payload itself (names, configured, gateway) is asserted by
+    # smoke_llm_gateway and by smoke_tenancy's owner check.
 
     # --- Flask route, still served through the ASGI mount ----------------
     health = client.get("/api/health")

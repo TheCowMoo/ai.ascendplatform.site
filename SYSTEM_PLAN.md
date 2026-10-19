@@ -1559,6 +1559,34 @@ path, and the public preview exposing nothing secret.
 verified - a sender address, a model name - say so in the UI and prove it by doing it,
 rather than validating a string against nothing.
 
+## 32. The agents are site-wide, so their settings are the operator's alone
+
+The roster has no `org_id` and every job runs on the platform's keys: the agents are
+one team for the whole platform, not one per client. That makes the AI configuration
+operator information, and it is now shut on both sides.
+
+**Already true, and already tested** (`smoke_tenancy.test_owner_only_surfaces_are_shut`):
+`settings.all_for_ui(org_id)` returns only `CLIENT`-scoped groups, so a client admin's
+Settings shows their SMTP and nothing else - the AI, Pexels, hosting and platform-email
+groups are absent from the JSON, not merely blanked; `settings._writable_field()`
+refuses any non-`CLIENT` key when an org is present; `/api/agents` and `/api/ssh-hosts`
+are `owner_required`.
+
+**The actual hole:** `/api/providers` had **no guard at all**, in either half of the
+app - the Flask route and its FastAPI twin both answered anonymously with the provider
+list, which providers are configured, the default, and gateway details. Fixed with
+`@owner_required` (Flask) and a `require_owner` dependency (FastAPI), so an anonymous
+call is 401 and a client is 403 while the operator still gets 200.
+
+`settings._field_for_ui()` also no longer resolves a platform value for a client even
+if a group were to leak back into the payload - belt and braces, since the two layers
+must agree.
+
+**Rule this establishes.** A setting's `scope` decides who can *see* it as well as who
+can *write* it; `platform` means invisible, not read-only. And a route is not protected
+because a similar one is: the same endpoint existed twice, and both copies were open.
+
+
 **And name the layer that refused.** The first live call came back
 `403 Error 1010: Access denied / browser_signature_banned` - Cloudflare, in front of
 `services.leadconnectorhq.com`, rejecting `urllib`'s default `Python-urllib/3.12`
