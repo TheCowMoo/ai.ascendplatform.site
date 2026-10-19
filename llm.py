@@ -227,6 +227,51 @@ def _clean_messages(messages):
     return cleaned
 
 
+def without_empty_blocks(messages):
+    """Drop ``{"type": "text", "text": ""}`` from an Anthropic request payload.
+
+    autogen-ext introduces that block while *it* converts messages, after any hook we
+    control, and Anthropic rejects the entire request with 400 "messages: text content
+    blocks must be non-empty". The block only exists in the payload the SDK is about to
+    send, so that is where it has to be removed.
+    """
+    cleaned = []
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            kept = [
+                block for block in content
+                if not (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and not str(block.get("text") or "").strip()
+                )
+            ]
+            if kept != content:
+                message = dict(message, content=kept)
+        cleaned.append(message)
+    return cleaned
+
+
+def _patch_anthropic_client(client):
+    """Sanitise the request the SDK actually sends, not the messages we hand over."""
+    try:
+        resource = client._client.messages
+        original = resource.create
+    except AttributeError:  # pragma: no cover - a different autogen-ext layout
+        return client
+
+    async def create(*args, **kwargs):
+        kwargs["messages"] = without_empty_blocks(kwargs.get("messages"))
+        return await original(*args, **kwargs)
+
+    try:
+        resource.create = create
+    except (AttributeError, TypeError):  # pragma: no cover - slotted resource
+        return client
+    return client
+
+
 def get_model_client(provider, model=None, temperature=None, **kwargs):
     """Build an AutoGen ``ChatCompletionClient`` for ``provider``.
 
@@ -296,7 +341,7 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
                     ):
                         yield chunk
 
-            return CleanMessagesClient(**opts)
+            return _patch_anthropic_client(CleanMessagesClient(**opts))
 
         # OpenAI-compatible path: DeepSeek and Gemini (no native Gemini client).
         from autogen_core.models import ModelInfo

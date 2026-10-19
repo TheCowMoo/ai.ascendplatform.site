@@ -42,23 +42,52 @@ def _job_context(job_id):
     return row["org_id"], row["requester_id"]
 
 
+def _draft_from_this_job(job_id, org_id, kind, title):
+    """This job's earlier draft with the same kind and title, if there is one."""
+    if not job_id:
+        return None
+    wanted = (title or "").strip().lower()
+    for item in deliverables_service.list_deliverables(kind, org_id):
+        if item.get("job_id") == job_id and (item["title"] or "").strip().lower() == wanted:
+            return item
+    return None
+
+
 def _build_save_deliverable(emit, job_id=None):
-    async def save_deliverable(kind: str, title: str, content: str, summary: str = "") -> str:
+    async def save_deliverable(kind: str, title: str, content: str = "", summary: str = "") -> str:
         """Save content you have written as a draft the user can open in the console."""
-        org_id, requester = _job_context(job_id)
-        try:
-            item = deliverables_service.create_deliverable(
-                {
-                    "kind": (kind or "").strip().lower(),
-                    "title": title,
-                    "content": content,
-                    "summary": summary,
-                    "status": "draft",
-                    "job_id": job_id,
-                },
-                org_id=org_id,
-                created_by=requester,
+        if not (content or "").strip():
+            # A missing content argument used to surface as a pydantic validation error,
+            # which tells the model nothing it can act on. Say it plainly instead.
+            return (
+                "Nothing was saved: content is required. Pass the complete document as "
+                "content - self-contained HTML for an email or a website page."
             )
+        org_id, requester = _job_context(job_id)
+        # The team often saves before the images are chosen, then again once they are.
+        # Updating this job's own draft keeps one row instead of a duplicate per pass.
+        existing = _draft_from_this_job(job_id, org_id, kind, title)
+        try:
+            if existing:
+                item = deliverables_service.update_deliverable(
+                    existing["id"],
+                    {"content": content, "summary": summary or existing.get("summary") or ""},
+                )
+                verb = "Updated"
+            else:
+                item = deliverables_service.create_deliverable(
+                    {
+                        "kind": (kind or "").strip().lower(),
+                        "title": title,
+                        "content": content,
+                        "summary": summary,
+                        "status": "draft",
+                        "job_id": job_id,
+                    },
+                    org_id=org_id,
+                    created_by=requester,
+                )
+                verb = "Saved"
         except deliverables_service.DeliverableError as exc:
             # A refused save must be visible to the model as a failure it can fix
             # (wrong kind, missing title) rather than a silent success.
@@ -69,8 +98,8 @@ def _build_save_deliverable(emit, job_id=None):
 
         tab = deliverables_service.TABS.get(item["kind"], "Library")
         message = (
-            "Saved %s '%s' as draft #%s (%d characters). It is in the %s tab."
-            % (item["kind"], item["title"], item["id"], len(item["content"] or ""), tab)
+            "%s %s '%s' as draft #%s (%d characters). It is in the %s tab."
+            % (verb, item["kind"], item["title"], item["id"], len(item["content"] or ""), tab)
         )
         if emit is not None:
             emit("tool", "tool_result", "save_deliverable: " + message)

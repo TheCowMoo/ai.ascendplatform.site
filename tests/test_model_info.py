@@ -125,12 +125,31 @@ def test_empty_text_blocks_are_dropped():
     print("empty text blocks dropped:", len(messages), "->", len(cleaned))
 
 
+def test_empty_blocks_are_stripped_from_the_payload():
+    """The block autogen-ext adds must be removed where it actually exists."""
+    payload = [
+        {"role": "assistant", "content": [
+            {"type": "text", "text": ""},
+            {"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "text", "text": "  "}, {"type": "text", "text": "keep"}]},
+        {"role": "user", "content": "plain string is untouched"},
+    ]
+    cleaned = llm.without_empty_blocks(payload)
+    assert cleaned[0]["content"] == [
+        {"type": "tool_use", "id": "t1", "name": "x", "input": {}}], cleaned[0]
+    assert cleaned[1]["content"] == [{"type": "text", "text": "keep"}], cleaned[1]
+    assert cleaned[2]["content"] == "plain string is untouched", cleaned[2]
+    print("empty text blocks stripped from the outgoing payload")
+
+
 def main():
     test_every_provider_reports_tool_support()
     test_an_unrecognised_model_still_allows_tools()
     test_the_guard_names_the_agent()
     test_the_agent_that_used_to_fail_now_builds()
     test_empty_text_blocks_are_dropped()
+    test_empty_blocks_are_stripped_from_the_payload()
     print("\nMODEL INFO OK")
 
 

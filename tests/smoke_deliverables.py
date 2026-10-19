@@ -223,6 +223,32 @@ def test_publish_route_validates_the_kind_and_the_session():
     print("publish route:", resp.get_json()["error"])
 
 
+def test_a_second_save_updates_the_same_draft():
+    """The team saves before the images are chosen, then again once they are."""
+    org = _org("Deliverable Save Twice Client")
+    job_id = _job_in_org(org["id"])
+    tool = _save_tool(job_id)
+    asyncio.run(tool.run_json(
+        {"kind": "email", "title": "Cows", "content": "<p>no images yet</p>"}, DRY))
+    second = asyncio.run(tool.run_json(
+        {"kind": "email", "title": "Cows",
+         "content": '<p><img src="https://images.example/cow.jpg" alt="cow"></p>'}, DRY))
+    rows = deliverables.list_deliverables("email", org["id"])
+    assert len(rows) == 1, rows
+    assert "img src" in rows[0]["content"], rows[0]["content"]
+    assert second.startswith("Updated"), second
+    print("second save updated draft #%s instead of duplicating it" % rows[0]["id"])
+
+
+def test_a_save_without_content_is_explained():
+    org = _org("Deliverable No Content Client")
+    reply = asyncio.run(_save_tool(_job_in_org(org["id"])).run_json(
+        {"kind": "email", "title": "Empty"}, DRY))
+    assert "content is required" in reply, reply
+    assert deliverables.list_deliverables("email", org["id"]) == []
+    print("missing content refused with a message the model can act on")
+
+
 def main():
     test_tool_saves_a_draft_in_the_jobs_org()
     test_the_tool_refuses_an_unknown_kind()
@@ -234,6 +260,8 @@ def main():
     test_only_website_pages_can_be_published()
     test_api_offers_the_website_kind()
     test_publish_route_validates_the_kind_and_the_session()
+    test_a_second_save_updates_the_same_draft()
+    test_a_save_without_content_is_explained()
     print("\nDELIVERABLES OK")
 
 
