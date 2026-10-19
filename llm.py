@@ -19,7 +19,24 @@ import os
 
 
 def _env(name, default=""):
-    return (os.environ.get(name) or default).strip()
+    """Resolve a setting: the Settings panel first, then the environment.
+
+    Reading ``os.environ`` directly is why the Test button said "No provider has a
+    key yet" while every key was filled in: the panel writes to the *database*, not
+    to the process environment. Every other tool (pexels, ssh, mail) already goes
+    through ``settings.get``; this module was the one exception.
+
+    ``settings.get`` itself resolves panel -> environment -> SPEC default, so a
+    deployment that configures keys in ``.env`` keeps working unchanged.
+    """
+    try:
+        import settings
+        return str(settings.get(name, default) or "").strip()
+    except Exception:
+        # settings needs the database; before it is reachable (or in a bare import
+        # of this module, as tests and one-off scripts do) the environment is still
+        # the right answer.
+        return (os.environ.get(name, default) or "").strip()
 
 
 # Metadata for every provider an agent can be designated to.

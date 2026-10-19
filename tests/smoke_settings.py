@@ -20,6 +20,7 @@ os.environ.pop("PEXELS_API_KEY", None)
 os.environ.pop("PEXELS_PER_PAGE", None)
 
 import app as appmod  # noqa: E402
+import llm  # noqa: E402
 import settings  # noqa: E402
 import tools.pexels as pexels  # noqa: E402
 
@@ -148,6 +149,37 @@ def test_saved_key_applies_without_restart(client):
         restore("PEXELS_API_KEY")
 
 
+def test_a_panel_key_reaches_the_agent_layer(client):
+    """A key saved in the panel must be visible to the agent side.
+
+    The panel writes to the *database*. ``llm._env()`` read ``os.environ`` directly,
+    so every key could be filled in and the Test button still said "No provider has
+    a key yet" - the panel and the agents disagreed about whether a credential
+    existed at all. Every other tool already went through ``settings.get``.
+    """
+    if llm.gateway_enabled():
+        print("skipped    -> the LiteLLM gateway configures every provider")
+        return
+
+    preserve("DEEPSEEK_API_KEY")
+    settings.clear_value("DEEPSEEK_API_KEY", "smoke-setup")
+    try:
+        assert not llm.is_configured("deepseek"), "expected a clean slate"
+
+        resp = client.put("/api/settings", json={"values": {"DEEPSEEK_API_KEY": "sk-deepseek-smoke"}})
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        assert llm.is_configured("deepseek") is True, \
+            "llm still reads the environment instead of the panel"
+        assert "deepseek" in llm.configured_providers()
+        print("PUT        -> llm.configured_providers() sees the panel key")
+
+        settings.clear_value("DEEPSEEK_API_KEY", "smoke")
+        assert not llm.is_configured("deepseek"), "clearing did not fall back"
+        print("cleared    -> the agent layer falls back again")
+    finally:
+        restore("DEEPSEEK_API_KEY")
+
+
 def test_validation(client):
     """Bad input is refused, and nothing is written when it is."""
     cases = [
@@ -248,6 +280,7 @@ if __name__ == "__main__":
         test_requires_admin(admin)
         test_listing_masks_secrets(admin)
         test_saved_key_applies_without_restart(admin)
+        test_a_panel_key_reaches_the_agent_layer(admin)
         test_validation(admin)
         test_blank_secret_keeps_the_stored_value(admin)
         test_test_button(admin)

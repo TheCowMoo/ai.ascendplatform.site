@@ -571,8 +571,13 @@ def history(limit=50, org_id=None):
 # Live checks (the "Test" buttons)
 # ---------------------------------------------------------------------------
 def _group(group_id):
+    """Find a group by its id *or* by its test name.
+
+    They are not always the same: the email group's test is called ``smtp``, so
+    looking up by id alone made the SMTP "Test" button answer "No test available".
+    """
     for group in SPEC:
-        if group["id"] == group_id:
+        if group["id"] == group_id or group.get("test") == group_id:
             return group
     return None
 

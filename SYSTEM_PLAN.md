@@ -1213,3 +1213,47 @@ and message and logs the traceback, instead of a blank 500 the UI can only rende
 **Still open.** A CI job running the suite against a real PostgreSQL service is the
 only structural fix. Sections 23, 24 and this one all end by noting that the Postgres
 path is exercised only in production; this is what that costs.
+
+---
+
+## 27. "No provider has a key yet", with every key filled in
+
+**Symptom.** After the API keys were finally saved successfully, Settings -> AI
+providers -> **Test** still answered *"No provider has a key yet."*
+
+**Cause.** `llm.py` was the one module that never joined the settings layer:
+
+```python
+def _env(name, default=""):
+    return (os.environ.get(name) or default).strip()
+```
+
+The Settings panel writes to the **database**. `os.environ` never learns about it, so
+`is_configured()` saw no key regardless of what the panel held. `tools/pexels.py`,
+`tools/ssh.py` and `tools/mail.py` all go through `settings.get()` - `llm.py` did not.
+
+It also produced a split brain worth noting: the plain chat path (`app.py`) already
+used `settings.get("DEEPSEEK_API_KEY")`, so the widget would answer happily while the
+agent team reported no provider at all. That is the kind of inconsistency that only
+shows up at the first real run.
+
+**Fix.** `_env` now resolves through `settings.get(name, default)`, falling back to
+`os.environ` only when the settings layer is unavailable (a bare import before the
+database exists). Resolution stays panel -> environment -> SPEC default, so a
+deployment configured from `.env` is unaffected.
+
+**Second bug found while testing the first.** `settings._group()` looked a group up by
+id only, but the email group's id is `email` while its test is named `smtp` - so the
+SMTP "Test" button answered *"No test available for 'smtp'"*. It now matches either.
+Both slipped in during the settings-scoping work, and neither was covered.
+
+**Test.** `tests/smoke_settings.py` now saves a key through the API and asserts
+`llm.is_configured("deepseek")` becomes true, then clears it and asserts it falls back
+- the boundary the unit tests never crossed.
+
+**Audit.** Every remaining `os.environ` read is structural and correctly env-only,
+because it selects the topology or is needed before the database exists: `SITE_ROOT`,
+`CADDYFILE`, `REDIS_URL`, `JOB_BACKEND`, `ARTIFACTS_DIR`, `DATABASE_URL`, `HOST`/`PORT`,
+`SECRET_KEY`, `ADMIN_EMAIL/PASSWORD`. Those are already `readonly` in the panel.
+`AGENT_MAX_MESSAGES` / `AGENT_ROUTER_*` are `.env`-only by omission rather than by
+design, and could join the SPEC if the agent team should be tunable from the UI.
