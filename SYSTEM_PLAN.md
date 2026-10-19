@@ -1586,6 +1586,28 @@ must agree.
 can *write* it; `platform` means invisible, not read-only. And a route is not protected
 because a similar one is: the same endpoint existed twice, and both copies were open.
 
+## 33. "text content blocks must be non-empty", and images that 404
+
+One job produced both. The 400 is Anthropic refusing a message whose content holds an
+empty text block: AutoGen serialises an assistant turn that contained *only* tool calls
+that way, and the run dies after the tools have already fired. `llm._clean_messages()`
+drops empty strings, and the Claude client is now a subclass that sanitises before every
+`create`/`create_stream` - subclassed rather than wrapped, because `AssistantAgent`
+type-checks the client it is given.
+
+The broken images had a plainer cause. `fetch_photo` saved the file and returned its
+**filesystem path**; the model wrote that path into `<img src>`; and nothing served
+`/artifacts` at all - `app.py` only ever listed artifact *names* in JSON. Two fixes: a
+public `/artifacts/<path>` route (public because an email or a published page loads
+images with no session attached), and `fetch_photo` now says plainly that the remote URL
+is what belongs in HTML, because a recipient cannot read the server's disk.
+
+**Rule this establishes.** A tool that produces a file must return a URL the *reader*
+can fetch, not a path on the machine that made it. And an error that names a shape
+("must be non-empty") is usually the library handing us something we can sanitise,
+rather than a mistake in the request we wrote.
+
+
 
 **And name the layer that refused.** The first live call came back
 `403 Error 1010: Access denied / browser_signature_banned` - Cloudflare, in front of

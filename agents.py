@@ -83,7 +83,9 @@ DEFAULT_ROSTER = [
             "products, offices - use search_photos to find suitable stock photography "
             "and fetch_photo to save it, and always report the credit line it returns. "
             "For brand marks, illustrations or anything that does not exist yet, use "
-            "generate_image instead. Name the file path for every asset."
+            "generate_image instead. Name the file path for every asset. In HTML, "
+            "reference the absolute https URL that search_photos returned - never a "
+            "local disk path, which renders as a broken image."
         ),
         "tools": ["search_photos", "fetch_photo", "generate_image"],
         "turn_order": 5,
@@ -361,7 +363,9 @@ CONTENT_RULE = (
     "\n\nWhen the user asks for content - an email, a blog post, a funnel step or a "
     "website page - finish by calling save_deliverable(kind, title, content) so it "
     "appears in their console. Pass the complete document as content, then summarise "
-    "what you made in a sentence or two instead of pasting the whole thing."
+    "what you made in a sentence or two instead of pasting the whole thing. "
+    "Every <img> must use an absolute https URL (the download_url search_photos "
+    "returns); a local disk path renders as a broken image for the reader."
 )
 
 

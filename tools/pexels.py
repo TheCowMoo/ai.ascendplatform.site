@@ -266,7 +266,14 @@ def _build_fetch_photo(emit, job_id=None):
             return "Download failed: %s" % exc
         if emit:
             emit("pexels", "system", "Saved %d bytes to %s" % (size, path))
-        return "Saved %d bytes to %s" % (size, path)
+        # The local copy is for artifacts and records. HTML must use the remote URL:
+        # an email client or a published page cannot read this server's disk, and a
+        # local path in an <img> is a guaranteed broken image.
+        return (
+            "Saved %d bytes to %s. For HTML, use the absolute image URL you passed in "
+            "(%s), not this local path - recipients cannot read the server's disk."
+            % (size, path, url)
+        )
 
     return fetch_photo
 

@@ -15,6 +15,7 @@ Environment:
   GEMINI_API_KEY / GEMINI_BASE_URL / GEMINI_MODEL
 """
 
+import dataclasses
 import os
 
 
@@ -197,6 +198,35 @@ def configured_providers():
     return [name for name in PROVIDERS if is_configured(name)]
 
 
+def _clean_messages(messages):
+    """Drop empty text blocks, which Anthropic rejects with a 400.
+
+    AutoGen serialises an assistant turn that held only tool calls with a text block
+    of ``""``, and the API answers "messages: text content blocks must be non-empty" -
+    mid-run, after those tools have already fired. Removing the empty block changes
+    nothing the model would otherwise see.
+    """
+    cleaned = []
+    for message in messages or []:
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            if content.strip():
+                cleaned.append(message)
+        elif isinstance(content, list):
+            kept = [
+                item for item in content
+                if not (isinstance(item, str) and not item.strip())
+            ]
+            if kept:
+                cleaned.append(
+                    message if len(kept) == len(content)
+                    else dataclasses.replace(message, content=kept)
+                )
+        else:
+            cleaned.append(message)
+    return cleaned
+
+
 def get_model_client(provider, model=None, temperature=None, **kwargs):
     """Build an AutoGen ``ChatCompletionClient`` for ``provider``.
 
@@ -249,7 +279,24 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
             if temperature is not None:
                 opts["temperature"] = temperature
             opts.update(kwargs)
-            return AnthropicChatCompletionClient(**opts)
+
+            class CleanMessagesClient(AnthropicChatCompletionClient):
+                """The Claude client, with the empty-content bug papered over.
+
+                Subclassed rather than wrapped because AssistantAgent type-checks the
+                client it is given; a delegating proxy risks failing that check.
+                """
+
+                async def create(self, messages, *args, **kwargs):
+                    return await super().create(_clean_messages(messages), *args, **kwargs)
+
+                async def create_stream(self, messages, *args, **kwargs):
+                    async for chunk in super().create_stream(
+                        _clean_messages(messages), *args, **kwargs
+                    ):
+                        yield chunk
+
+            return CleanMessagesClient(**opts)
 
         # OpenAI-compatible path: DeepSeek and Gemini (no native Gemini client).
         from autogen_core.models import ModelInfo

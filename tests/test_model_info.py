@@ -105,11 +105,32 @@ def test_the_agent_that_used_to_fail_now_builds():
     print("AssistantAgent built with a custom model and 1 tool")
 
 
+def test_empty_text_blocks_are_dropped():
+    """Anthropic 400s on an empty text block; AutoGen can produce one.
+
+    An assistant turn that held only tool calls is serialised with a text block of
+    "", which kills the run mid-flight ("messages: text content blocks must be
+    non-empty"). The Claude client strips it before the request is built.
+    """
+    from autogen_core.models import AssistantMessage, UserMessage
+
+    messages = [
+        UserMessage(content="hello", source="user"),
+        AssistantMessage(content="", source="Planner"),
+        AssistantMessage(content="   ", source="Planner"),
+    ]
+    cleaned = llm._clean_messages(messages)
+    assert len(cleaned) == 1, cleaned
+    assert cleaned[0].content == "hello", cleaned[0]
+    print("empty text blocks dropped:", len(messages), "->", len(cleaned))
+
+
 def main():
     test_every_provider_reports_tool_support()
     test_an_unrecognised_model_still_allows_tools()
     test_the_guard_names_the_agent()
     test_the_agent_that_used_to_fail_now_builds()
+    test_empty_text_blocks_are_dropped()
     print("\nMODEL INFO OK")
 
 

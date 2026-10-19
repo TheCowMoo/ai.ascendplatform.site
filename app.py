@@ -2085,6 +2085,21 @@ def cancel_job(job_id):
 
 
 # ---------------------------------------------------------------------------
+# Generated artifacts (images the team produced)
+#
+# Public on purpose: a published page or an email renders <img src> with no session
+# attached, so anything else would break the very thing the file exists for.
+# send_from_directory refuses traversal, and filenames are per-job.
+# ---------------------------------------------------------------------------
+ARTIFACTS_ROOT = os.path.abspath(os.environ.get("ARTIFACTS_DIR") or "artifacts")
+
+
+@app.route("/artifacts/<path:filename>", methods=["GET"])
+def artifact_file(filename):
+    return send_from_directory(ARTIFACTS_ROOT, filename, max_age=86400)
+
+
+# ---------------------------------------------------------------------------
 # Providers (agent model routing)
 # ---------------------------------------------------------------------------
 @app.route("/api/providers", methods=["GET"])
