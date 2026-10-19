@@ -225,9 +225,27 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
     try:
         if provider == "anthropic":
             # autogen-ext ships a dedicated Claude client.
+            from autogen_core.models import ModelInfo
             from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 
-            opts = {"model": model_name, "api_key": api_key}
+            opts = {
+                "model": model_name,
+                "api_key": api_key,
+                # Supply model_info ourselves. Without it this client falls back to
+                # autogen-ext's model registry, which answers function_calling=False
+                # for *any* model name it does not recognise - and AssistantAgent then
+                # refuses to attach tools at all ("The model does not support function
+                # calling"). A custom model string was enough to break the whole team
+                # build. Our PROVIDERS table already knows the truth. This client never
+                # reads `family`, so spec["family"] is safe here.
+                "model_info": ModelInfo(
+                    vision=spec["vision"],
+                    function_calling=spec["tools"],
+                    json_output=True,
+                    family=spec["family"],
+                    structured_output=False,
+                ),
+            }
             if temperature is not None:
                 opts["temperature"] = temperature
             opts.update(kwargs)

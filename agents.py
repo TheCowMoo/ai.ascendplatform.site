@@ -312,6 +312,32 @@ def _describe(message):
     return source, message_type, text
 
 
+def guard_tools_supported(row, model_client, tool_count):
+    """Refuse to attach tools to a model that cannot call them - naming the agent.
+
+    AutoGen raises "The model does not support function calling." from deep inside
+    ``AssistantAgent``, which says nothing about *which* agent or what to change. The
+    usual cause is a model name autogen-ext does not recognise: its registry answers
+    ``function_calling=False`` for anything unknown, and a single custom model string
+    then fails the whole team build.
+    """
+    info = getattr(model_client, "model_info", None) or {}
+    if info.get("function_calling") is not False:
+        return
+    raise ValueError(
+        "Agent %r (provider %r, model %r) is granted %d tool(s), but that model does "
+        "not support function calling - AutoGen does not recognise the model name. "
+        "Set a known model on the agent or in Settings, or clear the field to use the "
+        "provider's default."
+        % (
+            row.get("name"),
+            row.get("provider"),
+            row.get("model") or "(provider default)",
+            tool_count,
+        )
+    )
+
+
 async def build_team(job, emit, factory):
     """Construct the AutoGen team from the enabled roster (no execution)."""
     from autogen_agentchat.agents import AssistantAgent
@@ -333,12 +359,15 @@ async def build_team(job, emit, factory):
         client_kwargs = {}
         if row.get("temperature") is not None:
             client_kwargs["temperature"] = float(row["temperature"])
+        model_client = factory(row["provider"], row["model"] or None, **client_kwargs)
+        tools = tool_registry.resolve(granted, emit, job_id=job.get("id"))
+        if tools:
+            guard_tools_supported(row, model_client, len(tools))
         options = {
             "name": _safe_name(row["name"]),
-            "model_client": factory(row["provider"], row["model"] or None, **client_kwargs),
+            "model_client": model_client,
             "system_message": row["system_prompt"] or row["role"] or "You are a helpful assistant.",
         }
-        tools = tool_registry.resolve(granted, emit, job_id=job.get("id"))
         if tools:
             options["tools"] = tools
         participants.append(AssistantAgent(**options))

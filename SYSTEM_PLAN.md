@@ -1257,3 +1257,98 @@ because it selects the topology or is needed before the database exists: `SITE_R
 `SECRET_KEY`, `ADMIN_EMAIL/PASSWORD`. Those are already `readonly` in the panel.
 `AGENT_MAX_MESSAGES` / `AGENT_ROUTER_*` are `.env`-only by omission rather than by
 design, and could join the SPEC if the agent team should be tunable from the UI.
+
+## 28. "The model does not support function calling"
+
+**Symptom.** With keys finally reaching the agent layer, the first real job died with:
+
+```
+ValueError: The model does not support function calling.
+  ... autogen_agentchat/agents/_assistant_agent.py", line 774
+```
+
+No agent name, no model, no provider - just a refusal.
+
+**Cause.** `AssistantAgent.__init__` refuses to attach `tools` when the model client
+reports `model_info["function_calling"] is False`. The Anthropic branch of
+`llm.get_model_client()` passed no `model_info` at all:
+
+```python
+opts = {"model": model_name, "api_key": api_key}
+return AnthropicChatCompletionClient(**opts)
+```
+
+so autogen-ext filled it from **its own model registry**, which answers
+`function_calling=False` for *every* name it does not recognise. `claude-sonnet-4-5`,
+`claude-opus-4-5` and `claude-3-7-sonnet-latest` happen to be in it; anything else - a
+dated snapshot, a new release, a typo - is not. One custom model string on the
+`Operator` agent therefore failed the whole team build, because `Operator` is granted
+10 tools and `Planner`/`Copywriter` are Anthropic too. `deepseek` and `gemini` already
+built a client reporting `True`, which is why only some runs broke.
+
+**Fix, part one: stop asking a foreign registry.** `PROVIDERS` is our own table of what
+each provider can do (`tools`, `vision`, `family`), and it is the only thing that
+should decide. The Anthropic branch now hands over an explicit `ModelInfo`:
+
+```python
+model_info=ModelInfo(
+    vision=spec["vision"],
+    function_calling=spec["tools"],
+    json_output=True,
+    family=spec["family"],
+    structured_output=False,
+)
+```
+
+This is safe because the Anthropic client never reads `family`, and it never consults
+the registry once `model_info` is supplied. `structured_output` stays `False` to match
+what the registry reported for Claude, so nothing else changes behaviour.
+
+**Fix, part two: make the failure say which agent.** `agents.guard_tools_supported()`
+checks the client *before* constructing the agent and raises:
+
+```
+Agent 'Operator' (provider 'anthropic', model 'claude-xyz') is granted 10 tool(s), but
+that model does not support function calling - AutoGen does not recognise the model
+name. Set a known model on the agent or in Settings, or clear the field to use the
+provider's default.
+```
+
+The pre-check is deliberate: it runs before any network call, so the roster is
+validated without spending a token.
+
+**Fix, part three: pin the versions.** `requirements.txt` said `>=0.7.5`, so two builds
+months apart could resolve different registry data and silently change agent behaviour
+- which is exactly how a working install became a broken one. Both AutoGen packages are
+now `==0.7.5`.
+
+**A second mismatch found in the same test run.** While exercising the Anthropic path
+with a dummy key, the request died with:
+
+```
+TypeError: AsyncMessages.create() got an unexpected keyword argument 'temperature'
+```
+
+`autogen-ext` 0.7.5 forwards `temperature` straight into `messages.create()`, but the
+Anthropic SDK **1.x** removed that parameter from the signature (verified:
+`anthropic.resources.messages.AsyncMessages.create` has no `temperature`). The
+`autogen-ext[anthropic]` extra only requires `anthropic>=0.48`, so a fresh build
+installs 1.13 and any agent with a temperature set fails mid-request. `requirements.txt`
+now pins `anthropic>=0.48,<1.0`. Nothing is broken today - no seeded agent sets a
+temperature, and the column is `NULL` for all seven - but the Agents editor exposes the
+field, so the first person to type `0.2` would have hit it.
+
+**Test.** `tests/test_model_info.py` asserts the invariant rather than the symptom, and
+needs no network and no real key:
+
+1. every provider whose SPEC says `tools: True` reports `function_calling: True`;
+2. the same holds for a deliberately unrecognised model name on every provider;
+3. a real `AssistantAgent` builds with a custom model name **and** a tool - the exact
+   constructor that raised at `_assistant_agent.py:774`;
+4. `guard_tools_supported` refuses a `False` client naming the agent, model and tool
+   count, and allows both a capable client and one with no metadata at all.
+
+**Rule this establishes.** A capability flag that changes program flow must come from
+data we own, not from a third-party name lookup. `PROVIDERS` decides; the vendor SDK
+only executes.
+

@@ -13,7 +13,18 @@ arq>=0.26
 redis>=5.0
 
 # --- Agent platform (AutoGen multi-agent) ---
-autogen-agentchat>=0.7.5
-autogen-ext[anthropic,openai]>=0.7.5
+# Pinned exactly on purpose. autogen-ext ships a model-metadata registry that decides
+# whether a model supports tool calling, and these lines used to say ">=0.7.5" - so
+# two builds months apart could resolve different registry data and silently change
+# how agents behave. That is how an unrecognised Claude model string ended up unable
+# to call tools at all, failing the whole team build.
+autogen-agentchat==0.7.5
+autogen-ext[anthropic,openai]==0.7.5
+# autogen-ext 0.7.5 was built against the 0.x Anthropic SDK and forwards a
+# `temperature` argument that 1.x's messages.create() no longer accepts. The extra
+# only asks for ">=0.48", so an unpinned build installs 1.13 and any agent with a
+# temperature set dies mid-request with
+# "AsyncMessages.create() got an unexpected keyword argument 'temperature'".
+anthropic>=0.48,<1.0
 paramiko>=5.0
 google-genai>=2.0
