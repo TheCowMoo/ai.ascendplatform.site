@@ -1447,8 +1447,15 @@ def platform_email_status():
         "template": {
             "subject": settings.get("INVITE_SUBJECT"),
             "body": settings.get("INVITE_BODY_HTML") or invites_service.DEFAULT_BODY,
+            "default_body": invites_service.DEFAULT_BODY,
             "expires_days": settings.get_int("INVITE_EXPIRES_DAYS", 7),
         },
+        # The editor builds its chips and its preview from this, so the tokens it
+        # advertises are exactly the ones render() fills.
+        "tokens": [
+            {"key": key, "label": label, "sample": sample}
+            for key, label, sample in invites_service.TOKENS
+        ],
     })
 
 

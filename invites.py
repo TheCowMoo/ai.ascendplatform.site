@@ -22,13 +22,71 @@ from db import get_connection, now_str
 # privilege escalation delivered by email.
 ROLES = ("client_admin", "client_member")
 
-DEFAULT_BODY = (
-    "<h2>You've been invited</h2>"
-    "<p>Hello {{name}},</p>"
-    "<p>{{inviter}} invited you to {{org}} on AscendPlatform.</p>"
-    "<p><a href=\"{{link}}\">Choose your password</a></p>"
-    "<p>This link expires on {{expires}} and can be used once.</p>"
+# The merge values a template can use, in the order the editor offers them. The label
+# and sample are for the console (chips + live preview); the key is what `render`
+# replaces. Keeping them here means the UI cannot advertise a token the sender will not
+# fill, or miss one it will.
+TOKENS = (
+    ("name", "Invitee's name", "Alex Morgan"),
+    ("org", "Client name", "Acme Ltd"),
+    ("role", "Role", "client admin"),
+    ("inviter", "Who sent it", "The AscendPlatform team"),
+    ("link", "The invitation link", "https://example.com/admin/#/accept/sample-token"),
+    ("expires", "Expiry date", "2026-11-20"),
 )
+
+# The built-in template: a prebuilt, email-safe layout (tables and inline styles, no
+# <style> block - email clients strip it) with every merge value already in place.
+# Operators edit this in the console; this copy is what "Reset" restores.
+DEFAULT_BODY = """<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6f8;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#ffffff;border:1px solid #e6e8ec;border-radius:12px;overflow:hidden">
+      <tr>
+        <td style="background:#4f46e5;padding:22px 32px;color:#ffffff;font-size:18px;font-weight:600">
+          AscendPlatform
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:32px">
+          <h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;color:#111827">
+            You're invited, {{name}}
+          </h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#374151">
+            {{inviter}} has invited you to join <strong>{{org}}</strong> as a
+            <strong>{{role}}</strong>.
+          </p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0">
+            <tr>
+              <td style="background:#4f46e5;border-radius:8px">
+                <a href="{{link}}" style="display:inline-block;padding:13px 26px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none">Choose your password</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:#6b7280">
+            This link works once and expires on {{expires}}. If the button does not
+            work, copy this address into your browser:
+          </p>
+          <p style="margin:0 0 20px;font-size:12px;line-height:1.6;word-break:break-all;color:#4f46e5">{{link}}</p>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7280">
+            If you were not expecting this invitation you can ignore this email - no
+            account becomes active until that link is used.
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:18px 32px;background:#f9fafb;border-top:1px solid #e6e8ec;font-size:12px;line-height:1.5;color:#9ca3af">
+          Sent by AscendPlatform.
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>"""
+
+
+def token_samples():
+    """``{key: sample}`` - what the console uses to preview an unsent template."""
+    return {key: sample for key, _label, sample in TOKENS}
+
 
 
 class InviteError(Exception):

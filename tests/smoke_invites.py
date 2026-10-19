@@ -166,6 +166,30 @@ def test_invites_are_operator_only():
     print("invite list is not public")
 
 
+def test_the_template_carries_every_merge_value():
+    """The built-in body must use every token, and render must leave none behind."""
+    body = invites_service.DEFAULT_BODY
+    for key, _label, _sample in invites_service.TOKENS:
+        assert "{{%s}}" % key in body, "the built-in template is missing {{%s}}" % key
+
+    invite, token, _ = _make_invite()
+    _subject, html = invites_service.render(invite, token, base_url="https://example.test")
+    for key, _label, _sample in invites_service.TOKENS:
+        assert "{{%s}}" % key not in html, "render left {{%s}} unreplaced" % key
+    assert "https://example.test/admin/#/accept/" in html, html[:200]
+    print("template uses all %d merge values and render fills them" % len(invites_service.TOKENS))
+
+
+def test_the_api_offers_the_template_and_its_values():
+    client = _owner()
+    data = client.get("/api/platform/email").get_json()
+    keys = {token["key"] for token in data["tokens"]}
+    assert keys == {key for key, _label, _sample in invites_service.TOKENS}, keys
+    assert "{{link}}" in data["template"]["body"]
+    assert "{{link}}" in data["template"]["default_body"]
+    print("API template offers", len(keys), "merge values")
+
+
 def main():
     test_the_account_is_locked_until_accepted()
     test_accept_sets_the_password_and_spends_the_token()
@@ -174,6 +198,8 @@ def main():
     test_a_failed_send_still_leaves_a_usable_invitation()
     test_the_accept_route_sets_the_password_and_signs_in()
     test_the_preview_is_public_and_says_nothing_secret()
+    test_the_template_carries_every_merge_value()
+    test_the_api_offers_the_template_and_its_values()
     test_invites_are_operator_only()
     print("\nINVITES OK")
 

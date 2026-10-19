@@ -476,3 +476,18 @@ input[type=color] {
 .ai-composer .row-actions { justify-content: flex-start; align-items: center; margin-top: 10px; }
 .ai-composer .muted { font-size: var(--fs-sm); }
 
+/* ---------- Invitation template editor: HTML beside a live preview ---------- */
+.template-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: stretch; }
+.template-editor {
+  width: 100%;
+  min-height: 340px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.template-preview { height: 340px; margin: 0; }
+.token-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+@media (max-width: 900px) { .template-grid { grid-template-columns: 1fr; } }
+
+

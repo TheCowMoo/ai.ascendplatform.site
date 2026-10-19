@@ -2838,6 +2838,92 @@
     return wrap;
   }
 
+  // The invitation template: a prebuilt HTML body with the merge values already in it,
+  // edited as HTML beside a sandboxed live preview. The chips insert at the cursor, so
+  // a value cannot be mistyped into a literal "{{name}}" that never gets replaced.
+  function templateCard(data, onSaved) {
+    var template = data.template || {};
+    var tokens = data.tokens || [];
+    var card = el('div', 'form-card');
+    card.appendChild(el('h3', null, 'Invitation template'));
+    card.appendChild(el('p', 'muted',
+      'This is the email an invitation sends. Click a value to insert it at the cursor; ' +
+      'the preview fills them with sample data.'));
+
+    var subject = el('input');
+    subject.value = template.subject || '';
+    subject.placeholder = "You're invited to AscendPlatform";
+    card.appendChild(el('p', 'muted', 'Subject'));
+    card.appendChild(subject);
+
+    var chips = el('div', 'token-list');
+    tokens.forEach(function (token) {
+      var chip = el('button', 'btn btn-ghost btn-sm', '{{' + token.key + '}}');
+      chip.title = token.label + ' - e.g. ' + token.sample;
+      chip.onclick = function (event) {
+        event.preventDefault();
+        insertToken(body, '{{' + token.key + '}}');
+        draw();
+      };
+      chips.appendChild(chip);
+    });
+    card.appendChild(chips);
+
+    var body = el('textarea', 'template-editor');
+    body.value = template.body || '';
+    var frame = el('iframe', 'preview-frame template-preview');
+    frame.setAttribute('sandbox', '');
+    var grid = el('div', 'template-grid');
+    grid.appendChild(body);
+    grid.appendChild(frame);
+    card.appendChild(grid);
+
+    function fill(text) {
+      var out = text || '';
+      tokens.forEach(function (token) {
+        out = out.split('{{' + token.key + '}}').join(token.sample);
+      });
+      return out;
+    }
+
+    function draw() {
+      frame.srcdoc = fill(body.value) || '<p style="padding:16px">Nothing yet.</p>';
+    }
+
+    body.addEventListener('input', draw);
+    draw();
+
+    var row = el('div', 'row-actions');
+    var reset = el('button', 'btn btn-ghost', 'Reset to the built-in template');
+    reset.onclick = function () {
+      body.value = template.default_body || '';
+      draw();
+    };
+    var save = el('button', 'btn btn-primary', 'Save template');
+    save.onclick = function () {
+      save.disabled = true;
+      api('PUT', '/api/settings', {
+        values: { INVITE_SUBJECT: subject.value, INVITE_BODY_HTML: body.value }
+      }).then(function () {
+        toast('Invitation template saved', true);
+        onSaved();
+      }).catch(function (e) { toast(e.message, false); })
+        .finally(function () { save.disabled = false; });
+    };
+    row.appendChild(reset);
+    row.appendChild(save);
+    card.appendChild(row);
+    return card;
+  }
+
+  function insertToken(field, text) {
+    var start = field.selectionStart == null ? field.value.length : field.selectionStart;
+    var end = field.selectionEnd == null ? start : field.selectionEnd;
+    field.value = field.value.slice(0, start) + text + field.value.slice(end);
+    field.selectionStart = field.selectionEnd = start + text.length;
+    field.focus();
+  }
+
   // ---------- Platform: email and invitations ----------
   function viewPlatformEmail() {
     var container = el('div', 'container');
@@ -2850,9 +2936,11 @@
 
     var connection = el('div', 'form-card');
     var senderBox = el('div', 'mt');
+    var templateBox = el('div', 'mt');
     var invitesBox = el('div', 'mt');
     container.appendChild(connection);
     container.appendChild(senderBox);
+    container.appendChild(templateBox);
     container.appendChild(invitesBox);
 
     var state = { senders: [], fields: [] };
@@ -3109,6 +3197,8 @@
         state.fields = d.custom_fields || [];
         renderConnection(d);
         renderSenders();
+        templateBox.innerHTML = '';
+        templateBox.appendChild(templateCard(d, load));
         renderInvites(d.invites || []);
       }).catch(function (e) { toast(e.message, false); });
     }
