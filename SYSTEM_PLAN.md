@@ -1435,4 +1435,73 @@ the runtime requires an invariant - AutoGen needs unique participant names - the
 database should enforce it, so the failure is a clear validation message instead of an
 exception three layers into a library.
 
+## 30. "It generates it but it doesn't add it in"
+
+**Symptom.** Asked for an email, the team wrote one and it appeared in the job
+transcript - and nowhere else. The Emails tab stayed empty. The same for blogs, funnels
+and pages.
+
+**Cause.** No tool wrote to `deliverables` at all. The Operator could push HTML at a
+*provisioned site* (`write_site_content`), and `save_note` wrote one line to the
+transcript, but nothing turned agent output into a draft. The table had been given
+`job_id` and `created_by` columns for exactly this link and no caller ever set them.
+
+That is a design failure rather than a coding one: the console was built as a place to
+*review* content, and the agent was never given the means to put content there. A
+transcript is a log of work, not an artefact of it.
+
+**Fix, part one: persist.** `tools/deliverable.py` registers `save_deliverable(kind,
+title, content, summary)`. Ownership is read from the **job row** (`org_id`,
+`requester_id`), never from the model, so a tool call cannot write into another client's
+Library - the same rule the rest of the tenancy work follows. The reply names the tab
+("Saved email 'March offer' as draft #14 ... in the Emails tab") so the model tells the
+user where to look instead of describing the draft it cannot see.
+
+**Fix, part two: the rule travels with the tool.** `agents.CONTENT_RULE` is appended by
+`system_message_for()` to any agent holding `save_deliverable` - Copywriter and
+Operator. It lives in code rather than in `DEFAULT_ROSTER["system_prompt"]` because
+existing installs keep the prompt they were seeded with: `sync_default_tools()` only
+adds tools, never rewrites prose. A rule about a tool therefore has to be attached
+where the tool is, or half the deployments silently lack it.
+
+**Fix, part three: a website is a deliverable too.** `KINDS` gained `website`, so a
+generated page has a home in the Websites tab next to the provisioned domains rather
+than only existing as files on a server. `page_path()` decides where it lands:
+`index.html` for the home page, `<slug>.html` for anything else - publishing a landing
+page must not quietly replace a site's front page unless the slug says so.
+
+`publish_deliverable()` writes through `provisioner`'s target, so it meets the same
+policy check and the same approval table as an agent-initiated write. It cannot reuse
+`actions.gate()` directly, though: the gate **blocks** until an operator decides, which
+would hang the HTTP request for the whole approval timeout. The person clicking Publish
+*is* that operator, so the request records the decision first
+(`decide_approval(..., "approved", <signed-in user>)`) and lets the gate read it back as
+already-approved. One click, no hang, and the audit row still says who approved it.
+
+Publishing refuses: a non-website kind, an empty page, no site, a site belonging to
+another client, and a slug already live on that site. The last one matters most -
+silently overwriting a published page is the mistake nobody notices until a customer
+does.
+
+**Fix, part four: put the AI where the work is.** Each content tab carries an "Ask the
+team" box instead of sending people to Jobs to copy results back by hand. It posts a
+`agent_team` job with the tab's kind pinned in the brief, polls the job's events for a
+one-line progress readout, and refreshes the list when the run finishes. Deliverables
+gain a **Preview** (an `iframe` with `sandbox=""` - the markup came from a model, so it
+is rendered without executing any of it), **Copy HTML**, and for pages a **Publish**
+button that picks the site when a client owns more than one. The Library shows "from
+job #N" so a row can be traced back to the run that produced it.
+
+**Test.** `tests/smoke_deliverables.py`: the tool writes into the job's org and is
+invisible to another; an unknown kind is refused with nothing written; the house rule
+attaches only to agents holding the tool; page paths; and every publish refusal, plus
+the HTTP route's kind and session checks. The suite generates a per-run suffix for its
+clients and domains, because a test that only passes against a fresh database is a test
+nobody runs twice.
+
+**Rule this establishes.** If a user asks for work, the system has to put it where they
+will look for it - not only in a log - and the instructions for doing that must ship
+with the tool, not with whatever prompt a database happened to be seeded with.
+
+
 

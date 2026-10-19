@@ -16,8 +16,18 @@ import re
 
 from db import get_connection, now_str
 
-KINDS = ("blog", "funnel", "email", "asset")
+KINDS = ("blog", "funnel", "email", "website", "asset")
 STATUSES = ("draft", "scheduled", "published", "failed")
+
+# Kind -> the console tab it appears in. Used by the save_deliverable tool's reply so
+# the model can tell the user where to look.
+TABS = {
+    "blog": "Blogs",
+    "funnel": "Funnels",
+    "email": "Emails",
+    "website": "Websites",
+    "asset": "Library",
+}
 
 TEXT_FIELDS = ("title", "slug", "status", "summary", "content", "url")
 
@@ -170,3 +180,144 @@ def delete_deliverable(deliverable_id):
     with get_connection() as conn:
         conn.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
     return True
+
+
+# ---------------------------------------------------------------------------
+# Publishing a page onto a provisioned site
+# ---------------------------------------------------------------------------
+def page_path(slug):
+    """Where a page lives in a site's docroot.
+
+    ``index.html`` for the home page, ``<slug>.html`` for everything else - so
+    publishing a landing page never silently replaces the site's front page unless the
+    slug says so.
+    """
+    cleaned = slugify(slug)
+    if cleaned in ("", "home", "index"):
+        return "index.html"
+    return cleaned + ".html"
+
+
+def _resolve_site(item, site_id):
+    """The site to publish to, or DeliverableError explaining what to do about it."""
+    import sites as sites_service
+
+    if site_id in (None, ""):
+        site_id = item.get("site_id")
+    if site_id not in (None, ""):
+        try:
+            site = sites_service.get_site(int(site_id))
+        except (TypeError, ValueError):
+            raise DeliverableError("site_id must be a number")
+        if not site:
+            raise DeliverableError("No site with id %r." % (site_id,))
+        if item.get("org_id") is not None and site.get("org_id") != item.get("org_id"):
+            # A page belongs to the client whose console holds it; publishing it onto
+            # another client's server would be a cross-tenant write.
+            raise DeliverableError("That site belongs to another client.")
+        return site
+
+    candidates = sites_service.list_sites(item.get("org_id"))
+    if not candidates:
+        raise DeliverableError(
+            "There is no site to publish to yet. Add a domain in the Websites tab first."
+        )
+    if len(candidates) > 1:
+        raise DeliverableError(
+            "This client has %d sites; pick one to publish to." % len(candidates)
+        )
+    return candidates[0]
+
+
+def _slug_conflict(item, site):
+    """Another published page already occupying the same file on the same site.
+
+    Two drafts can share a slug while they are drafts; only publishing collides, and
+    overwriting someone else's live page silently is exactly what this prevents.
+    """
+    wanted = page_path(item.get("slug"))
+    for other in list_deliverables("website", item.get("org_id")):
+        if other["id"] == item["id"] or other["status"] != "published":
+            continue
+        if page_path(other.get("slug")) != wanted:
+            continue
+        if other.get("site_id") in (None, site["id"]):
+            return other
+    return None
+
+
+def publish_deliverable(deliverable_id, site_id=None, actor=""):
+    """Write a ``website`` deliverable to a site's docroot and mark it published.
+
+    Returns ``{ok, url, path, dry_run, output, deliverable}`` and raises
+    ``DeliverableError`` for anything the operator can fix (wrong kind, no site, a
+    slug already live).
+    """
+    import actions
+    import provisioner
+
+    item = get_deliverable(deliverable_id)
+    if not item:
+        raise DeliverableError("Deliverable not found")
+    if item["kind"] != "website":
+        raise DeliverableError(
+            "Only website pages can be published to a site; %r has kind %r."
+            % (item["title"], item["kind"])
+        )
+    if not (item.get("content") or "").strip():
+        raise DeliverableError("This page has no content to publish yet.")
+
+    site = _resolve_site(item, site_id)
+    conflict = _slug_conflict(item, site)
+    if conflict:
+        raise DeliverableError(
+            "%r is already published at that address on %s. Change the slug, or unpublish "
+            "that page first." % (conflict["title"], site["domain"])
+        )
+
+    target, docroot = provisioner.target_docroot(site)
+    path = provisioner.join_path(docroot, page_path(item.get("slug")))
+    summary = "publish %r to %s" % (item["title"], site["domain"])
+
+    # actions.gate() blocks until an operator decides, which would hang this request
+    # until the approval times out. The person clicking Publish *is* that operator, so
+    # record the decision first and let the gate read it back as approved: the audit
+    # row ends up identical to an agent-initiated write, with this user's name on it.
+    if not actions.is_dry_run():
+        approval_id = actions.request_approval(
+            "file_write", summary, {"path": path, "bytes": len(item["content"])}, None
+        )
+        actions.decide_approval(approval_id, "approved", actor or "operator")
+
+    result = target.write_file(path, item["content"], None, None, summary=summary)
+    if not result.get("ok"):
+        raise DeliverableError(result.get("output") or "The write failed.")
+
+    if result.get("dry_run"):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "path": path,
+            "url": "",
+            "output": result.get("output") or "",
+            "deliverable": item,
+        }
+
+    relative = page_path(item.get("slug"))
+    url = "https://%s/%s" % (site["domain"], "" if relative == "index.html" else relative)
+    updated = update_deliverable(
+        item["id"], {"status": "published", "url": url, "site_id": site["id"]}
+    )
+    if relative == "index.html":
+        # Mirror what write_site_content does, so the site row and the page agree.
+        import sites as sites_service
+
+        sites_service.update_site(site["id"], {"content_html": item["content"]})
+    return {
+        "ok": True,
+        "dry_run": False,
+        "path": path,
+        "url": url,
+        "output": result.get("output") or "",
+        "deliverable": updated,
+    }

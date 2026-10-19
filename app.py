@@ -1394,6 +1394,29 @@ def delete_deliverable(deliverable_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/deliverables/<int:deliverable_id>/publish", methods=["POST"])
+@client_admin_required
+def publish_deliverable(deliverable_id):
+    """Push a website page onto one of this client's sites.
+
+    The write itself goes through ``provisioner``'s target, so it hits the same policy
+    check and approval table as an agent-initiated write - the difference is only that
+    this request records the decision instead of waiting for it.
+    """
+    if not _deliverable_for_request(deliverable_id):
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        result = deliverables_service.publish_deliverable(
+            deliverable_id,
+            site_id=data.get("site_id"),
+            actor=session.get("email") or session.get("name") or "operator",
+        )
+    except deliverables_service.DeliverableError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
 # ---------------------------------------------------------------------------
 # Settings (operator-managed configuration)
 #

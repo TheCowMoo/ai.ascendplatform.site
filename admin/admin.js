@@ -1653,6 +1653,7 @@
     }
 
     refresh();
+    container.appendChild(pagesCard());
     return container;
   }
 
@@ -2468,6 +2469,205 @@
     library: { kind: null, title: 'Library', blurb: 'Everything the team has produced for you, in one place.' }
   };
 
+  // ---------- AI inside the builder tabs ----------
+  // The output has to land in the tab it belongs to, so each content view carries its
+  // own prompt box - otherwise people run a job, read the transcript, and copy the
+  // result back by hand, which is what "it generates it but doesn't add it in" meant.
+  var KIND_BRIEF = {
+    email: 'Write an email. When it is finished, save it with save_deliverable using kind "email".',
+    blog: 'Write a blog post. When it is finished, save it with save_deliverable using kind "blog".',
+    funnel: 'Write a funnel page. When it is finished, save it with save_deliverable using kind "funnel".',
+    website: 'Build a website page as one complete HTML document. When it is finished, save it with save_deliverable using kind "website".'
+  };
+
+  function watchJob(jobId, statusEl, onFinish) {
+    var lastSeq = 0;
+    var lastText = '';
+    var timer = setInterval(function () {
+      api('GET', '/api/jobs/' + jobId + '/events?after=' + lastSeq).then(function (d) {
+        (d.events || []).forEach(function (ev) {
+          lastSeq = Math.max(lastSeq, ev.seq);
+          if (ev.content) lastText = String(ev.content).replace(/\s+/g, ' ').slice(0, 120);
+        });
+        var job = d.job || {};
+        statusEl.textContent = (job.status || 'running') + ' · job #' + jobId +
+          (lastText ? ' · ' + lastText : '');
+        if (['done', 'failed', 'cancelled'].indexOf(job.status) !== -1) {
+          clearInterval(timer);
+          if (job.status === 'done') toast('Finished - the new draft is listed below', true);
+          else toast((job.error || ('Job ' + job.status)).slice(0, 200), false);
+          onFinish();
+        }
+      }).catch(function () { /* keep polling through a blip */ });
+    }, 2000);
+    onCleanup(function () { clearInterval(timer); });
+  }
+
+  function aiComposer(kind, blurb, onFinish) {
+    var card = el('div', 'form-card ai-composer');
+    card.appendChild(el('h3', null, 'Ask the team'));
+    card.appendChild(el('p', 'muted', blurb));
+    var prompt = el('textarea', 'prompt-box');
+    prompt.placeholder = kind === 'website'
+      ? 'e.g. a one-page site for the spring offer: headline, three benefits, a sign-up form'
+      : 'e.g. a launch email for our new pricing, warm tone, one clear call to action';
+    card.appendChild(prompt);
+    var actions = el('div', 'row-actions');
+    var btn = el('button', 'btn btn-primary', 'Generate');
+    var status = el('span', 'muted', '');
+    btn.onclick = function () {
+      var text = prompt.value.trim();
+      if (!text) { toast('Describe what you want first', false); return; }
+      btn.disabled = true;
+      status.textContent = 'Starting…';
+      var brief = KIND_BRIEF[kind];
+      api('POST', '/api/jobs', {
+        prompt: (brief ? brief + '\n\n' : '') + text,
+        task: 'agent_team',
+        team_mode: 'selector'
+      }).then(function (d) {
+        status.textContent = 'Running as job #' + d.job.id + '…';
+        watchJob(d.job.id, status, function () {
+          btn.disabled = false;
+          prompt.value = '';
+          onFinish();
+        });
+      }).catch(function (e) {
+        btn.disabled = false;
+        status.textContent = '';
+        toast(e.message, false);
+      });
+    };
+    actions.appendChild(btn);
+    actions.appendChild(status);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function copyText(text, button) {
+    if (!(navigator.clipboard && navigator.clipboard.writeText)) {
+      toast('Clipboard is not available here', false);
+      return;
+    }
+    navigator.clipboard.writeText(text || '').then(function () {
+      toast('HTML copied', true);
+      if (button) button.textContent = 'Copied';
+    }).catch(function () { toast('Could not copy', false); });
+  }
+
+  function previewDeliverable(item) {
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal modal-wide');
+    modal.appendChild(el('h3', null, item.title || 'Preview'));
+    // sandbox="" - no scripts, no forms, no same-origin access. This markup came from
+    // a model, so the console renders it without trusting or executing any of it.
+    var frame = el('iframe', 'preview-frame');
+    frame.setAttribute('sandbox', '');
+    frame.srcdoc = item.content ||
+      '<p style="font-family:system-ui;padding:24px;color:#667">Nothing to preview yet.</p>';
+    modal.appendChild(frame);
+    var actions = el('div', 'row-actions');
+    var copy = el('button', 'btn btn-ghost', 'Copy HTML');
+    copy.onclick = function () { copyText(item.content, copy); };
+    var close = el('button', 'btn btn-primary', 'Close');
+    close.onclick = function () { document.body.removeChild(backdrop); };
+    actions.appendChild(copy);
+    actions.appendChild(close);
+    modal.appendChild(actions);
+    backdrop.appendChild(modal);
+    backdrop.onclick = function (e) { if (e.target === backdrop) document.body.removeChild(backdrop); };
+    document.body.appendChild(backdrop);
+  }
+
+  function sendPublish(item, siteId, onDone) {
+    api('POST', '/api/deliverables/' + item.id + '/publish', { site_id: siteId })
+      .then(function (res) {
+        if (res.dry_run) {
+          toast('Dry-run: would write ' + res.path + ' (set ALLOW_LIVE_ACTIONS=1)', true);
+        } else {
+          toast('Published to ' + res.url, true);
+        }
+        if (onDone) onDone(res);
+      })
+      .catch(function (e) { toast(e.message, false); });
+  }
+
+  function publishDeliverable(item, onDone) {
+    api('GET', '/api/sites').then(function (d) {
+      var sites = d.sites || [];
+      if (!sites.length) {
+        toast('Add a domain in the Websites tab first - a page needs somewhere to live', false);
+        return;
+      }
+      if (sites.length === 1) {
+        sendPublish(item, sites[0].id, onDone);
+        return;
+      }
+      // The API refuses to guess when a client owns several sites.
+      formModal('Publish "' + (item.title || 'page') + '"', [
+        { name: 'domain', label: 'Site', type: 'select', options: sites.map(function (s) { return s.domain; }) }
+      ], function (data, fail, ok) {
+        var chosen = sites.filter(function (s) { return s.domain === data.domain; })[0];
+        if (!chosen) { fail('Choose a site'); return; }
+        api('POST', '/api/deliverables/' + item.id + '/publish', { site_id: chosen.id })
+          .then(function () { ok(); sendPublish(item, chosen.id, onDone); })
+          .catch(function (e) { fail(e.message); });
+      });
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function pagesCard() {
+    var card = el('div', 'mt');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Pages</h2><p>Full pages the team has written. Preview one, then publish it to a site above.</p></div>';
+    var newBtn = el('button', 'btn btn-ghost', '+ New page');
+    newBtn.onclick = function () { showDeliverableForm('website', null, load); };
+    head.appendChild(newBtn);
+    card.appendChild(head);
+    card.appendChild(aiComposer('website',
+      'Describe the page you want. It is saved as a draft here, and you choose when to publish it.', load));
+    var body = el('div');
+    card.appendChild(body);
+
+    function load() {
+      api('GET', '/api/deliverables?kind=website').then(function (d) {
+        var items = d.deliverables || [];
+        body.innerHTML = '';
+        if (!items.length) {
+          body.appendChild(el('p', 'muted', 'No pages yet. Ask the team above.'));
+          return;
+        }
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Title</th><th>Slug</th><th>Status</th><th></th></tr></thead>';
+        var tbody = el('tbody');
+        items.forEach(function (item) {
+          var tr = el('tr');
+          tr.innerHTML = '<td>' + esc(item.title) +
+            (item.url ? '<div class="muted">' + esc(item.url) + '</div>' : '') +
+            '</td><td class="muted">' + esc(item.slug || '') + '</td>' +
+            '<td>' + statusBadge(item.status) + '</td>';
+          var td = el('td', 'row-actions');
+          var prev = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          prev.onclick = function () { previewDeliverable(item); };
+          var pub = el('button', 'btn btn-primary btn-sm', 'Publish');
+          pub.onclick = function () { publishDeliverable(item, load); };
+          var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+          edit.onclick = function () { showDeliverableForm('website', item, load); };
+          td.appendChild(prev);
+          td.appendChild(pub);
+          td.appendChild(edit);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    load();
+    return card;
+  }
+
   function viewDeliverables(tab) {
     var meta = CONTENT_TABS[tab] || CONTENT_TABS.library;
     var container = el('div', 'container');
@@ -2478,6 +2678,11 @@
     head.appendChild(add);
     container.appendChild(head);
     container.appendChild(el('p', 'muted', meta.blurb));
+    if (meta.kind) {
+      container.appendChild(aiComposer(meta.kind,
+        'Describe what you want. The team saves it straight into this tab as a draft, so you can read and edit it without leaving the page.',
+        refresh));
+    }
     var body = el('div');
     container.appendChild(body);
 
@@ -2489,7 +2694,8 @@
         var counts = d.counts || {};
         body.appendChild(el('p', 'muted',
           'Blogs ' + (counts.blog || 0) + ' · Funnels ' + (counts.funnel || 0) +
-          ' · Emails ' + (counts.email || 0) + ' · Everything ' + (counts.all || 0)));
+          ' · Emails ' + (counts.email || 0) + ' · Websites ' + (counts.website || 0) +
+          ' · Everything ' + (counts.all || 0)));
         if (!items.length) {
           body.appendChild(el('p', 'muted',
             'Nothing here yet. The team writes these, and you can add a draft yourself.'));
@@ -2502,15 +2708,24 @@
         items.forEach(function (item) {
           var tr = el('tr');
           tr.innerHTML = '<td>' + esc(item.title) +
-            (item.slug ? '<div class="muted">/' + esc(item.slug) + '</div>' : '') + '</td>' +
+            (item.slug ? '<div class="muted">/' + esc(item.slug) + '</div>' : '') +
+            (item.job_id ? '<div class="muted">from job #' + esc(item.job_id) + '</div>' : '') + '</td>' +
             '<td><span class="badge">' + esc(item.kind) + '</span></td>' +
             '<td><span class="badge badge-' + (item.status === 'published' ? 'admin' : 'member') + '">' +
             esc(item.status) + '</span></td>' +
             '<td class="muted">' + esc((item.updated_at || '').slice(0, 16)) + '</td>';
           var td = el('td', 'row-actions');
+          var preview = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          preview.onclick = function () { previewDeliverable(item); };
+          td.appendChild(preview);
           var open = el('button', 'btn btn-ghost btn-sm', 'Open');
           open.onclick = function () { showDeliverableForm(item.kind, item, refresh); };
           td.appendChild(open);
+          if (item.kind === 'website') {
+            var pub = el('button', 'btn btn-primary btn-sm', 'Publish');
+            pub.onclick = function () { publishDeliverable(item, refresh); };
+            td.appendChild(pub);
+          }
           var del = el('button', 'btn btn-danger btn-sm', 'Delete');
           del.onclick = function () {
             if (!confirm('Delete "' + item.title + '"?')) return;
@@ -2534,7 +2749,7 @@
     var isNew = !item;
     formModal(isNew ? 'New ' + kind : item.title, [
       { name: 'title', label: 'Title', value: item ? item.title : '' },
-      { name: 'kind', label: 'Kind', type: 'select', options: ['blog', 'funnel', 'email', 'asset'],
+      { name: 'kind', label: 'Kind', type: 'select', options: ['blog', 'funnel', 'email', 'website', 'asset'],
         value: item ? item.kind : kind },
       { name: 'status', label: 'Status', type: 'select',
         options: ['draft', 'scheduled', 'published', 'failed'], value: item ? item.status : 'draft' },

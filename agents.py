@@ -57,7 +57,7 @@ DEFAULT_ROSTER = [
             "benefit-led voice. Use the Business Profile for brand voice and facts. "
             "Return ready-to-publish text, not descriptions of it."
         ),
-        "tools": [],
+        "tools": ["save_deliverable"],
         "turn_order": 3,
     },
     {
@@ -114,7 +114,7 @@ DEFAULT_ROSTER = [
         ),
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
                   "search_photos", "fetch_photo", "generate_image", "send_email",
-                  "save_note", "current_time"],
+                  "save_deliverable", "save_note", "current_time"],
         "turn_order": 7,
     },
 ]
@@ -353,6 +353,26 @@ def unique_name(name, taken):
     return candidate
 
 
+# Appended to the instructions of any agent holding save_deliverable. It lives in code
+# rather than in DEFAULT_ROSTER's system_prompt because an existing install keeps the
+# prompt it was seeded with - sync_default_tools only ever adds tools, never rewrites
+# prose - so a rule about a tool has to travel with the tool.
+CONTENT_RULE = (
+    "\n\nWhen the user asks for content - an email, a blog post, a funnel step or a "
+    "website page - finish by calling save_deliverable(kind, title, content) so it "
+    "appears in their console. Pass the complete document as content, then summarise "
+    "what you made in a sentence or two instead of pasting the whole thing."
+)
+
+
+def system_message_for(row):
+    """An agent's instructions, plus the rules that come with the tools it holds."""
+    message = row.get("system_prompt") or row.get("role") or "You are a helpful assistant."
+    if "save_deliverable" in (row.get("tools") or []):
+        message += CONTENT_RULE
+    return message
+
+
 def _event_type(message_type):
     if message_type == "ToolCallRequestEvent":
         return "tool_call"
@@ -453,7 +473,7 @@ async def build_team(job, emit, factory):
         options = {
             "name": participant_name,
             "model_client": model_client,
-            "system_message": row["system_prompt"] or row["role"] or "You are a helpful assistant.",
+            "system_message": system_message_for(row),
         }
         if tools:
             options["tools"] = tools
