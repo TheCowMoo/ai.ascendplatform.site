@@ -248,7 +248,7 @@ def _build_fetch_photo(emit, job_id=None):
         if not path_decision.allowed:
             return "Refused to save the photo: %s" % path_decision.reason
 
-        authorisation = {"dry_run": actions.is_dry_run()}
+        authorisation = {"allowed": True, "dry_run": actions.is_dry_run()}
         if not authorisation["allowed"]:
             return "Not downloaded: %s" % authorisation["reason"]
         if authorisation["dry_run"]:

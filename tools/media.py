@@ -66,7 +66,7 @@ def _build_generate_image(emit, job_id=None):
         # Generating into the artifacts directory is internal work, like a download, so
         # it is not approval-gated. Approvals are for actions that leave the box:
         # sending mail, publishing a page, provisioning a server.
-        authorisation = {"dry_run": actions.is_dry_run()}
+        authorisation = {"allowed": True, "dry_run": actions.is_dry_run()}
         if not authorisation["allowed"]:
             return "Not generated: %s" % authorisation["reason"]
         if authorisation["dry_run"]:
