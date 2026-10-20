@@ -2136,6 +2136,22 @@ def save_data_source():
     return jsonify({"source": source}), 200 if data.get("id") else 201
 
 
+@app.route("/api/data-sources/sync", methods=["POST"])
+@client_admin_required
+def sync_data_sources():
+    """Pull the site logs now, instead of waiting for the daily run.
+
+    Operator-only even though the data it writes is attributed per client: reading the
+    whole log is a deployment-level action, and a client triggering it repeatedly would
+    just burn the same work for everyone.
+    """
+    if not is_owner():
+        return jsonify({"error": "Forbidden"}), 403
+    import site_logs
+
+    return jsonify(site_logs.sync())
+
+
 @app.route("/api/data-sources/<int:source_id>", methods=["DELETE"])
 @client_admin_required
 def delete_data_source(source_id):

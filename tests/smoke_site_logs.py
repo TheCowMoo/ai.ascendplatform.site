@@ -112,11 +112,20 @@ def test_no_ip_address_or_pii_is_stored():
     print("metrics carry no IP: %s" % sorted(set(r["metric"] for r in rows)))
 
 
+def test_the_sync_route_is_operator_only():
+    import app as appmod
+
+    anon = appmod.app.test_client()
+    assert anon.post("/api/data-sources/sync").status_code in (302, 401, 403)
+    print("sync route is not public")
+
+
 def main():
     test_requests_are_attributed_to_the_owning_org()
     test_rerunning_the_same_file_does_not_double_count()
     test_a_missing_log_explains_what_to_configure()
     test_no_ip_address_or_pii_is_stored()
+    test_the_sync_route_is_operator_only()
     print("\nSITE LOGS OK")
 
 
