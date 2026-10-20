@@ -42,6 +42,15 @@ def _job_context(job_id):
     return row["org_id"], row["requester_id"]
 
 
+def _placeholders(content):
+    """Fill-in markers a model leaves when it does not have the value yet."""
+    import re
+
+    found = re.findall(r"\[(?:INSERT|Insert|insert|YOUR|Your|your|UNSUBSCRIBE|Company)[^\]]{0,60}\]",
+                       content or "")
+    return [match.strip() for match in dict.fromkeys(found)]
+
+
 def _draft_from_this_job(job_id, org_id, kind, title):
     """This job's earlier draft with the same kind and title, if there is one."""
     if not job_id:
@@ -62,6 +71,17 @@ def _build_save_deliverable(emit, job_id=None):
             return (
                 "Nothing was saved: content is required. Pass the complete document as "
                 "content - self-contained HTML for an email or a website page."
+            )
+        placeholders = _placeholders(content)
+        if placeholders:
+            # A draft full of [INSERT IMAGE URL] is worse than no draft: it looks
+            # finished and ships broken. Refuse it so the model fixes it while it still
+            # has the tool results in context.
+            return (
+                "Nothing was saved: content still contains placeholders (%s). Replace "
+                "each one with a real absolute https URL - call search_photos and use "
+                "the download_url it returns, or remove that <img> entirely - then call "
+                "save_deliverable again." % ", ".join(placeholders[:4])
             )
         org_id, requester = _job_context(job_id)
         # The team often saves before the images are chosen, then again once they are.
