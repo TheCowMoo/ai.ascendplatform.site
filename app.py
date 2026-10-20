@@ -2265,6 +2265,11 @@ agent_roster.ensure_roster()
 # app enqueues onto the arq worker instead; the runner stays idle.
 jobs.get_runner().start()
 
+# Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
+import scheduler as scheduler_mod
+
+scheduler_mod.start()
+
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
