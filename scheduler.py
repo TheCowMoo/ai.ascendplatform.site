@@ -23,18 +23,53 @@ def sync_interval_hours():
         return 0.0
 
 
-def _loop(hours):
+def sync_all():
+    """Pull every enabled source, one sync_runs row each, so failures are attributable."""
+    import analytics
+
+    results = []
+    for source in analytics.sources(None):
+        if not source["enabled"]:
+            continue
+        kind = source["kind"]
+        try:
+            if kind == "caddy":
+                results.append(("caddy", site_logs_sync()))
+            elif kind == "ga4":
+                import ga4
+
+                run = analytics.start_sync(source["id"])
+                try:
+                    summary = ga4.sync(source)
+                except Exception as exc:
+                    analytics.finish_sync(run, "error", 0, str(exc))
+                    results.append((kind, {"ok": False, "error": str(exc)}))
+                    continue
+                analytics.finish_sync(run, "ok", summary.get("rows", 0))
+                results.append((kind, summary))
+            else:
+                # ghl and meta adapters are not written yet; say so rather than
+                # pretending a sync happened.
+                results.append((kind, {"ok": False, "error": "no adapter for %r yet" % kind}))
+        except Exception as exc:  # pragma: no cover - defensive
+            results.append((kind, {"ok": False, "error": str(exc)}))
+    return results
+
+
+def site_logs_sync():
     import site_logs
 
+    return site_logs.sync()
+
+
+def _loop(hours):
     while True:
         try:
-            result = site_logs.sync()
-            if not result.get("ok"):
-                # Log once per cycle rather than raising: a missing Caddy log must not
-                # kill the thread and silently stop all future runs.
-                print("[scheduler] site-log sync:", result.get("error", "unknown error"))
+            for kind, result in sync_all():
+                if not result.get("ok"):
+                    print("[scheduler] %s sync: %s" % (kind, result.get("error", "unknown")))
         except Exception as exc:  # pragma: no cover - defensive
-            print("[scheduler] site-log sync crashed: %s: %s" % (type(exc).__name__, exc))
+            print("[scheduler] sync cycle crashed: %s: %s" % (type(exc).__name__, exc))
         time.sleep(hours * 3600)
 
 
