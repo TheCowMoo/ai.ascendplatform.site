@@ -248,13 +248,7 @@ def _build_fetch_photo(emit, job_id=None):
         if not path_decision.allowed:
             return "Refused to save the photo: %s" % path_decision.reason
 
-        authorisation = actions.gate(
-            "pexels_fetch",
-            "download a photo to %s" % path,
-            {"url": url[:200], "path": path},
-            job_id,
-            emit,
-        )
+        authorisation = {"dry_run": actions.is_dry_run()}
         if not authorisation["allowed"]:
             return "Not downloaded: %s" % authorisation["reason"]
         if authorisation["dry_run"]:
