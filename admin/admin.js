@@ -44,6 +44,7 @@
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
         { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
+        { id: 'sources', label: 'Data sources', icon: 'dashboard', hash: '#/platform/sources' },
         { id: 'servers', label: 'Servers', icon: 'server', hash: '#/platform/servers' },
         { id: 'agents', label: 'Agents', icon: 'cpu', hash: '#/platform/agents' },
         { id: 'settings', label: 'Platform settings', icon: 'sliders', hash: '#/platform/settings' }
@@ -3207,6 +3208,126 @@
     return container;
   }
 
+  // ---------- Platform: data sources ----------
+  // A page of its own rather than a card inside viewClient: sources are per-org data
+  // with their own sync state, and this keeps the client detail view untouched.
+  function viewDataSources() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Data sources</h2><p>Where each client&apos;s numbers ' +
+      'come from. Site logs are ours; GA4 and Meta belong to the client.</p></div>';
+    container.appendChild(head);
+
+    var picker = el('div', 'form-card');
+    var body = el('div', 'mt');
+    container.appendChild(picker);
+    container.appendChild(body);
+
+    var state = { orgs: [], org: '' };
+
+    function loadOrgs() {
+      return api('GET', '/api/orgs').then(function (d) {
+        state.orgs = d.orgs || [];
+        picker.innerHTML = '';
+        picker.appendChild(el('h3', null, 'Client'));
+        var select = el('select');
+        select.innerHTML = state.orgs.map(function (org) {
+          return '<option value="' + org.id + '">' + esc(org.name) + '</option>';
+        }).join('');
+        if (state.org) select.value = String(state.org);
+        select.onchange = function () { state.org = select.value; loadSources(); };
+        picker.appendChild(select);
+        if (!state.org && state.orgs.length) state.org = String(state.orgs[0].id);
+        var row = el('div', 'row-actions');
+        var sync = el('button', 'btn btn-ghost', 'Sync site logs now');
+        sync.onclick = function () {
+          sync.disabled = true;
+          api('POST', '/api/data-sources/sync', {}).then(function (r) {
+            toast(r.ok ? 'Synced ' + r.rows + ' rows across ' + r.orgs + ' client(s)'
+                       : r.error, r.ok);
+            loadSources();
+          }).catch(function (e) { toast(e.message, false); })
+            .finally(function () { sync.disabled = false; });
+        };
+        row.appendChild(sync);
+        picker.appendChild(row);
+        loadSources();
+      });
+    }
+
+    function loadSources() {
+      api('GET', '/api/data-sources?org_id=' + encodeURIComponent(state.org))
+        .then(function (d) {
+          body.innerHTML = '';
+          var add = el('button', 'btn btn-primary', '+ Add source');
+          add.onclick = function () { sourceForm(d.kinds, null); };
+          body.appendChild(add);
+          var sources = d.sources || [];
+          if (!sources.length) {
+            body.appendChild(el('p', 'muted', 'Nothing configured. Add the client\'s ' +
+              'GHL sub-account, or their GA4 property, or read our own site logs.'));
+            return;
+          }
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Kind</th><th>Account</th><th>Status</th>' +
+            '<th>Last sync</th><th></th></tr></thead>';
+          var tbody = el('tbody');
+          sources.forEach(function (source) {
+            var tr = el('tr');
+            var problem = source.last_error
+              ? '<div class="form-error">' + esc(source.last_error.slice(0, 90)) + '</div>'
+              : '';
+            tr.innerHTML = '<td><span class="badge">' + esc(source.kind) + '</span>' +
+              '<div class="muted">' + esc(source.label) + '</div></td>' +
+              '<td class="muted">' + esc(source.external_id || '—') + problem + '</td>' +
+              '<td>' + (source.enabled ? 'enabled' : 'disabled') + '</td>' +
+              '<td class="muted">' + esc((source.last_sync_at || 'never').slice(0, 16)) + '</td>';
+            var td = el('td', 'row-actions');
+            var del = el('button', 'btn btn-danger btn-sm', 'Remove');
+            del.onclick = function () {
+              api('DELETE', '/api/data-sources/' + source.id).then(loadSources)
+                .catch(function (e) { toast(e.message, false); });
+            };
+            td.appendChild(del);
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          body.appendChild(table);
+        }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function sourceForm(kinds, source) {
+      formModal(source ? 'Edit source' : 'Add a data source', [
+        { name: 'kind', label: 'Kind', type: 'select',
+          options: kinds.map(function (k) { return k.kind; }) },
+        { name: 'external_id', label: 'Account / property / location id',
+          value: source ? source.external_id : '',
+          help: 'GHL: the location id. GA4: properties/123456789. Meta: act_1234567890.' },
+        { name: 'label', label: 'Label (optional)', value: source ? source.label : '' },
+        { name: 'credential_ref', label: 'Credential reference',
+          value: source ? source.credential_ref : '',
+          help: 'Path to a mounted key file. Secrets are references here, not values.' }
+      ], function (data, fail, ok) {
+        var payload = {
+          kind: data.kind,
+          external_id: data.external_id,
+          label: data.label,
+          credential_ref: data.credential_ref
+        };
+        if (state.org) payload.org_id = Number(state.org);
+        api('POST', '/api/data-sources', payload).then(function () {
+          ok();
+          toast('Source saved', true);
+          loadSources();
+        }).catch(function (e) { fail(e.message); });
+      });
+    }
+
+    loadOrgs();
+    return container;
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
@@ -3259,6 +3380,7 @@
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
       else if (tab === 'servers') view = viewServers();
       else if (tab === 'email') view = viewPlatformEmail();
+      else if (tab === 'sources') view = viewDataSources();
       else if (tab === 'agents') view = viewAgents();
       else if (tab === 'settings') view = viewSettings();
       else view = viewClients();
