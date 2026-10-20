@@ -71,7 +71,8 @@ def prompt_for(brief_data, domain):
         "Propose at most three concrete changes to the site. Each one must name the "
         "metric that justifies it. Do not rewrite the whole page, do not invent traffic "
         "figures, and if the data is too thin to justify a change, say so and propose "
-        "nothing."
+        "nothing. Save the proposals with save_deliverable using kind \"proposal\", "
+        "not \"website\" - nothing you write here is published automatically."
         % (
             domain,
             brief_data["days"],
@@ -81,3 +82,25 @@ def prompt_for(brief_data, domain):
             top,
         )
     )
+
+
+async def site_review(job, emit):
+    """Run one weekly review for a job. Registered in jobs.py as task ``site_review``."""
+    import agents
+    import sites as sites_service
+
+    org_id = job.get("org_id")
+    site = sites_service.get_site(job["site_id"]) if job.get("site_id") else None
+    if not site:
+        emit("system", "error", "This review has no site to look at.")
+        return "failed: no site"
+    data = brief(org_id, days=int(job.get("days") or 7))
+    if not data["current"]["pageviews"] and not data["current"]["sessions"]:
+        # A review with no data would invent advice, which is worse than none.
+        emit("system", "system",
+             "No metrics for the last %d days - nothing to review yet." % data["days"])
+        return "finished: no data"
+    task = dict(job)
+    task["prompt"] = prompt_for(data, site["domain"])
+    return await agents.run_team(task, emit)
+

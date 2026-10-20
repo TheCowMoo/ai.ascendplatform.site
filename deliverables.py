@@ -16,7 +16,7 @@ import re
 
 from db import get_connection, now_str
 
-KINDS = ("blog", "funnel", "email", "website", "asset")
+KINDS = ("blog", "funnel", "email", "website", "proposal", "asset")
 STATUSES = ("draft", "scheduled", "published", "failed")
 
 # Kind -> the console tab it appears in. Used by the save_deliverable tool's reply so
@@ -26,6 +26,7 @@ TABS = {
     "funnel": "Funnels",
     "email": "Emails",
     "website": "Websites",
+    "proposal": "Library",
     "asset": "Library",
 }
 
