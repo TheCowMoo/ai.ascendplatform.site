@@ -469,6 +469,22 @@ sync_runs = Table(
     Column("error", Text, nullable=False, server_default=_literal("")),
 )
 
+# Every published version of a site's content, so an autonomous edit is reversible.
+# Written on each publish, restored in one call: without this, a weekly agent editing a
+# live page has no undo, and the first bad run is unrecoverable.
+site_versions = Table(
+    "site_versions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("site_id", Integer, nullable=False),
+    Column("org_id", Integer),
+    Column("content_html", Text, nullable=False, server_default=_literal("")),
+    Column("source", Text, nullable=False, server_default=_literal("")),
+    Column("deliverable_id", Integer),
+    _created_at(),
+    Index("ix_site_versions_site", "site_id"),
+)
+
 # Operator-managed configuration, written from the admin Settings tab. Values
 # here are layered over the process environment by ``settings.get`` (panel wins),
 # which is also what lets a change take effect without a restart. Only keys
