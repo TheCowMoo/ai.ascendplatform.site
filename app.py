@@ -2292,8 +2292,11 @@ agent_roster.ensure_roster()
 # app enqueues onto the arq worker instead; the runner stays idle.
 jobs.get_runner().start()
 
-# Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
-import scheduler as scheduler_mod
+# Weekly reviews run through the same job machinery as everything else, so the
+# transcript, tools and approvals behave identically.
+import review as review_mod
+
+jobs.TASKS.setdefault("site_review", review_mod.site_review)
 
 scheduler_mod.start()
 

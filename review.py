@@ -91,6 +91,11 @@ async def site_review(job, emit):
 
     org_id = job.get("org_id")
     site = sites_service.get_site(job["site_id"]) if job.get("site_id") else None
+    if not site and org_id is not None:
+        # Jobs do not carry a site id, and most clients have exactly one site, so the
+        # org's first site is the review target.
+        candidates = sites_service.list_sites(org_id)
+        site = candidates[0] if candidates else None
     if not site:
         emit("system", "error", "This review has no site to look at.")
         return "failed: no site"
