@@ -2136,6 +2136,33 @@ def save_data_source():
     return jsonify({"source": source}), 200 if data.get("id") else 201
 
 
+@app.route("/api/sites/<int:site_id>/versions", methods=["GET"])
+@client_admin_required
+def list_site_versions(site_id):
+    import versions as versions_mod
+
+    if not sites_service.get_site(site_id) or not can_access_org(
+        sites_service.get_site(site_id).get("org_id")
+    ):
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"versions": versions_mod.versions(site_id)})
+
+
+@app.route("/api/versions/<int:version_id>/restore", methods=["POST"])
+@client_admin_required
+def restore_site_version(version_id):
+    import versions as versions_mod
+
+    version = versions_mod.get(version_id)
+    if not version or not can_access_org(version.get("org_id")):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        site = versions_mod.restore(version_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "site": site})
+
+
 @app.route("/api/data-sources/sync", methods=["POST"])
 @client_admin_required
 def sync_data_sources():

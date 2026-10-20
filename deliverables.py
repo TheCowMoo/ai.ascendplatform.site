@@ -305,6 +305,14 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
 
     relative = page_path(item.get("slug"))
     url = "https://%s/%s" % (site["domain"], "" if relative == "index.html" else relative)
+    # Snapshot before the write lands: an autonomous edit needs an undo, and the row
+    # records what the page said immediately before this publish.
+    import versions as versions_mod
+
+    versions_mod.record(
+        site["id"], site.get("content_html") or "", source="publish",
+        deliverable_id=item["id"], org_id=item.get("org_id"),
+    )
     updated = update_deliverable(
         item["id"], {"status": "published", "url": url, "site_id": site["id"]}
     )
