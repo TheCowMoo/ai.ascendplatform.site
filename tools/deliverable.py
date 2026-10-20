@@ -42,13 +42,47 @@ def _job_context(job_id):
     return row["org_id"], row["requester_id"]
 
 
-def _placeholders(content):
-    """Fill-in markers a model leaves when it does not have the value yet."""
+def _artifact_images(job_id):
+    """The images this job saved, as URLs the browser can actually load."""
+    import os
+
+    root = (os.environ.get("ARTIFACTS_DIR") or "artifacts").rstrip("/\\")
+    folder = os.path.join(root, "images", "job-%s" % (job_id or "manual"))
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    return [
+        "/artifacts/images/job-%s/%s" % (job_id or "manual", name)
+        for name in names
+        if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    ]
+
+
+def _fill_image_placeholders(content, job_id):
+    """Substitute real URLs for [INSERT IMAGE URL] markers, in order.
+
+    Instructions alone do not stop a model leaving fill-in markers, and a draft full of
+    them looks finished while shipping broken. The job has already downloaded the
+    photos, so the server can finish the document itself.
+    """
     import re
 
-    found = re.findall(r"\[(?:INSERT|Insert|insert|YOUR|Your|your|UNSUBSCRIBE|Company)[^\]]{0,60}\]",
+    images = _artifact_images(job_id)
+    if not images:
+        return content
+    marker = re.compile(r"\[(?:INSERT|Insert|insert)[^\]]{0,60}(?:URL|Url|url)[^\]]{0,20}\]")
+    counter = iter(images + images * 5)  # reuse the pool if there are more markers
+    return marker.sub(lambda _match: next(counter, ""), content or "")
+
+
+def _placeholders(content):
+    """Image URL markers still left, i.e. the document is not publishable."""
+    import re
+
+    found = re.findall(r"\[(?:INSERT|Insert|insert)[^\]]{0,60}(?:URL|Url|url)[^\]]{0,20}\]",
                        content or "")
-    return [match.strip() for match in dict.fromkeys(found)]
+    return list(dict.fromkeys(found))
 
 
 def _draft_from_this_job(job_id, org_id, kind, title):
@@ -72,16 +106,16 @@ def _build_save_deliverable(emit, job_id=None):
                 "Nothing was saved: content is required. Pass the complete document as "
                 "content - self-contained HTML for an email or a website page."
             )
+        content = _fill_image_placeholders(content, job_id)
         placeholders = _placeholders(content)
         if placeholders:
-            # A draft full of [INSERT IMAGE URL] is worse than no draft: it looks
-            # finished and ships broken. Refuse it so the model fixes it while it still
-            # has the tool results in context.
+            # Only reachable when the job has no downloaded images to substitute: a
+            # draft full of markers looks finished and ships broken.
             return (
-                "Nothing was saved: content still contains placeholders (%s). Replace "
-                "each one with a real absolute https URL - call search_photos and use "
-                "the download_url it returns, or remove that <img> entirely - then call "
-                "save_deliverable again." % ", ".join(placeholders[:4])
+                "Nothing was saved: content still contains %s and this job has no "
+                "downloaded images. Call search_photos, then fetch_photo with a "
+                "download_url, or remove that <img> entirely, then save again."
+                % ", ".join(placeholders[:4])
             )
         org_id, requester = _job_context(job_id)
         # The team often saves before the images are chosen, then again once they are.
