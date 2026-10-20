@@ -416,6 +416,59 @@ invites = Table(
     Index("ix_invites_token", "token_hash"),
 )
 
+# Where a client's numbers come from. GHL is always ours (a sub-account); GA4 and Meta
+# belong to the client when they have them - which is why the credential is a
+# *reference* (a path to a mounted key, or a token encrypted at rest) rather than a
+# secret sitting in a column beside the data it unlocks.
+data_sources = Table(
+    "data_sources",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),  # NULL = the platform's own sources
+    Column("kind", Text, nullable=False, server_default=_literal("caddy")),
+    Column("external_id", Text, nullable=False, server_default=_literal("")),
+    Column("label", Text, nullable=False, server_default=_literal("")),
+    Column("credential_ref", Text, nullable=False, server_default=_literal("")),
+    Column("enabled", Integer, nullable=False, server_default=text("1")),
+    Column("last_sync_at", Text),
+    Column("last_error", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    Index("ix_data_sources_org", "org_id"),
+)
+
+# One row per metric per day per dimension: long and narrow so every source answers the
+# same questions. Aggregates only - no user-level rows, so no PII can accumulate here.
+metrics_daily = Table(
+    "metrics_daily",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),
+    Column("source", Text, nullable=False, server_default=_literal("")),
+    Column("metric", Text, nullable=False, server_default=_literal("")),
+    Column("dimension", Text, nullable=False, server_default=_literal("")),
+    Column("day", Text, nullable=False, server_default=_literal("")),
+    Column("value", Float, nullable=False, server_default=text("0")),
+    UniqueConstraint("org_id", "source", "metric", "dimension", "day",
+                     name="uq_metrics_point"),
+    Index("ix_metrics_org_day", "org_id", "day"),
+)
+
+# One row per attempt to pull a source. GA4 quotas, expired Meta tokens and wrong
+# property ids all fail *quietly*, and stale numbers look exactly like fresh ones - so
+# every sync says whether it worked.
+sync_runs = Table(
+    "sync_runs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("source_id", Integer),
+    Column("started_at", Text, nullable=False, server_default=_now_default()),
+    Column("finished_at", Text),
+    Column("status", Text, nullable=False, server_default=_literal("running")),
+    Column("rows", Integer, nullable=False, server_default=text("0")),
+    Column("error", Text, nullable=False, server_default=_literal("")),
+)
+
 # Operator-managed configuration, written from the admin Settings tab. Values
 # here are layered over the process environment by ``settings.get`` (panel wins),
 # which is also what lets a change take effect without a restart. Only keys

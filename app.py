@@ -42,6 +42,7 @@ import agents as agent_roster
 import settings
 import orgs as orgs_service
 import deliverables as deliverables_service
+import analytics as analytics_service
 import invites as invites_service
 import tools as tool_registry
 import actions
@@ -2097,6 +2098,52 @@ ARTIFACTS_ROOT = os.path.abspath(os.environ.get("ARTIFACTS_DIR") or "artifacts")
 @app.route("/artifacts/<path:filename>", methods=["GET"])
 def artifact_file(filename):
     return send_from_directory(ARTIFACTS_ROOT, filename, max_age=86400)
+
+
+@app.route("/api/data-sources", methods=["GET"])
+@client_admin_required
+def list_data_sources():
+    """Where this client's numbers come from. The operator may pass ?org_id=."""
+    org = current_org()
+    if org is None and is_owner() and request.args.get("org_id"):
+        try:
+            org = int(request.args["org_id"])
+        except ValueError:
+            return jsonify({"error": "org_id must be a number"}), 400
+    return jsonify({
+        "sources": analytics_service.sources(org),
+        "kinds": [
+            {"kind": kind, "label": analytics_service.LABELS[kind]}
+            for kind in analytics_service.KINDS
+        ],
+    })
+
+
+@app.route("/api/data-sources", methods=["POST"])
+@client_admin_required
+def save_data_source():
+    data = request.get_json(silent=True) or {}
+    org = current_org()
+    if org is None:
+        org = data.get("org_id")
+        org = int(org) if org not in (None, "") else None
+    try:
+        source = analytics_service.save_source(
+            data, source_id=data.get("id") or None, org_id=org
+        )
+    except analytics_service.SourceError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"source": source}), 200 if data.get("id") else 201
+
+
+@app.route("/api/data-sources/<int:source_id>", methods=["DELETE"])
+@client_admin_required
+def delete_data_source(source_id):
+    existing = analytics_service.get_source(source_id)
+    if not existing or not can_access_org(existing.get("org_id")):
+        return jsonify({"error": "Not found"}), 404
+    analytics_service.delete_source(source_id)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
