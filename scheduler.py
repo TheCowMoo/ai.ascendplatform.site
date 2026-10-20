@@ -16,6 +16,13 @@ import time
 _started = False
 
 
+def sync_interval_hours():
+    try:
+        return max(0.0, float(os.environ.get("SITE_LOG_SYNC_HOURS") or 0))
+    except ValueError:
+        return 0.0
+
+
 def review_weekday():
     """Weekday to run weekly reviews on, 0 = Monday. 7 or unset = off."""
     try:
