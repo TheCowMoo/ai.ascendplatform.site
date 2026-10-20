@@ -2298,6 +2298,9 @@ import review as review_mod
 
 jobs.TASKS.setdefault("site_review", review_mod.site_review)
 
+# Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
+import scheduler as scheduler_mod
+
 scheduler_mod.start()
 
 if __name__ == "__main__":
