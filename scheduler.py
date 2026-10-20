@@ -16,7 +16,24 @@ import time
 _started = False
 
 
-def sync_interval_hours():
+def review_weekday():
+    """Weekday to run weekly reviews on, 0 = Monday. 7 or unset = off."""
+    try:
+        value = int(os.environ.get("SITE_REVIEW_WEEKDAY", "7"))
+    except ValueError:
+        return 7
+    return value if 0 <= value <= 6 else 7
+
+
+def due_today(now=None):
+    """Is a weekly review due? Kept pure so the schedule can be tested without waiting."""
+    import datetime as _dt
+
+    wanted = review_weekday()
+    if wanted > 6:
+        return False
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    return now.weekday() == wanted
     try:
         return max(0.0, float(os.environ.get("SITE_LOG_SYNC_HOURS") or 0))
     except ValueError:
