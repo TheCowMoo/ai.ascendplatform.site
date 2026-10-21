@@ -69,9 +69,17 @@ def _fill_image_placeholders(content, job_id):
     import re
 
     images = _artifact_images(job_id)
-    if not images:
-        return content
     marker = re.compile(r"\[(?:INSERT|Insert|insert)[^\]]{0,60}(?:URL|Url|url)[^\]]{0,20}\]")
+    if not images:
+        # No photo to substitute. A saved email without that picture beats no email at
+        # all, so drop the <img> that was waiting for it, then any marker left over.
+        stripped = re.sub(
+            r"<img\b[^>]*\[(?:INSERT|Insert|insert)[^\]]*\][^>]*>",
+            "",
+            content or "",
+            flags=re.IGNORECASE,
+        )
+        return marker.sub("", stripped)
     counter = iter(images + images * 5)  # reuse the pool if there are more markers
     return marker.sub(lambda _match: next(counter, ""), content or "")
 
