@@ -238,6 +238,18 @@ def without_empty_blocks(messages):
     up empty is dropped.
     """
     cleaned = []
+    # Every tool_use id still present in the payload. A tool_result whose id is not in
+    # here has had its parent trimmed out of the history (AutoGen drops old messages
+    # first), and the API rejects the whole request: "unexpected tool_use_id found in
+    # tool_result blocks". The orphan is removed, not the parent.
+    known_uses = set()
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                    known_uses.add(block["id"])
+
     for message in messages or []:
         if not isinstance(message, dict):
             continue
@@ -253,15 +265,18 @@ def without_empty_blocks(messages):
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "text":
+                kind = block.get("type")
+                if kind == "text":
                     if str(block.get("text") or "").strip():
                         blocks.append(block)
+                elif kind == "tool_result":
+                    if block.get("tool_use_id") in known_uses:
+                        blocks.append(block)
                 else:
-                    blocks.append(block)  # tool_use, tool_result, image
+                    blocks.append(block)  # tool_use, image
             # Never drop a message: a tool_result must sit in the message immediately
             # after the tool_use that produced it, so removing an "empty" turn in
-            # between orphans the result and the API rejects the request with
-            # "Each tool_result block must have a corresponding tool_use block".
+            # between orphans the result.
             cleaned.append({"role": role, "content": blocks or "(no content)"})
 
     if not cleaned:
