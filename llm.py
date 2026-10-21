@@ -238,23 +238,22 @@ def without_empty_blocks(messages):
     up empty is dropped.
     """
     cleaned = []
-    # Every tool_use id still present in the payload. A tool_result whose id is not in
-    # here has had its parent trimmed out of the history (AutoGen drops old messages
-    # first), and the API rejects the whole request: "unexpected tool_use_id found in
-    # tool_result blocks". The orphan is removed, not the parent.
-    known_uses = set()
-    for message in messages or []:
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
-                    known_uses.add(block["id"])
-
-    for message in messages or []:
+    for index, message in enumerate(messages or []):
         if not isinstance(message, dict):
             continue
         role = message.get("role") or "user"
         content = message.get("content")
+
+        # The rule is adjacency, not existence: a tool_result must reference a tool_use
+        # in the *immediately previous* message. Checking the whole payload let through
+        # results whose tool_use sat somewhere else, which the API rejects with
+        # "unexpected tool_use_id found in tool_result blocks".
+        previous = messages[index - 1] if index else None
+        usable = set()
+        if isinstance(previous, dict) and isinstance(previous.get("content"), list):
+            for block in previous["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                    usable.add(block["id"])
 
         if isinstance(content, str):
             cleaned.append({"role": role, "content": content.strip() or "(no content)"})
@@ -270,7 +269,7 @@ def without_empty_blocks(messages):
                     if str(block.get("text") or "").strip():
                         blocks.append(block)
                 elif kind == "tool_result":
-                    if block.get("tool_use_id") in known_uses:
+                    if block.get("tool_use_id") in usable:
                         blocks.append(block)
                 else:
                     blocks.append(block)  # tool_use, image
