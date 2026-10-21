@@ -84,6 +84,41 @@ def prompt_for(brief_data, domain):
     )
 
 
+def digest(brief_data, domain, proposals=None):
+    """``(subject, html)`` for the weekly note. Plain, factual, one screen long."""
+    block = brief_data["current"]
+    change = brief_data["change"]
+
+    def delta(value):
+        return "%+d" % value
+
+    rows = "".join(
+        "<tr><td style='padding:4px 12px 4px 0'>%s</td><td>%s</td>"
+        "<td style='color:#6b7280'>%s</td></tr>" % (label, value, delta(value2))
+        for label, value, value2 in (
+            ("Pageviews", block["pageviews"], change["pageviews"]),
+            ("Sessions", block["sessions"], change["sessions"]),
+            ("Errors", block["errors"], change["errors"]),
+        )
+    )
+    items = "".join(
+        "<li><strong>%s</strong> - %s</li>" % (p.get("title", "Untitled"), p.get("summary", ""))
+        for p in (proposals or [])
+    ) or "<li>No changes worth proposing this week.</li>"
+    html = (
+        "<div style='font-family:system-ui,sans-serif;color:#111827;max-width:560px'>"
+        "<h2 style='margin:0 0 4px'>Weekly review: %s</h2>"
+        "<p style='color:#6b7280;margin:0 0 16px'>Last %d days, against the %d before.</p>"
+        "<table style='border-collapse:collapse;font-size:14px'>%s</table>"
+        "<h3 style='margin:20px 0 8px;font-size:15px'>Proposals</h3>"
+        "<ul style='padding-left:18px;font-size:14px;line-height:1.6'>%s</ul>"
+        "<p style='color:#6b7280;font-size:13px;margin-top:20px'>Nothing has been "
+        "published. Open the Library to read, edit or discard each proposal.</p></div>"
+        % (domain, brief_data["days"], brief_data["days"], rows, items)
+    )
+    return "Weekly review: %s" % domain, html
+
+
 async def site_review(job, emit):
     """Run one weekly review for a job. Registered in jobs.py as task ``site_review``."""
     import agents
@@ -107,5 +142,26 @@ async def site_review(job, emit):
         return "finished: no data"
     task = dict(job)
     task["prompt"] = prompt_for(data, site["domain"])
-    return await agents.run_team(task, emit)
+    result = await agents.run_team(task, emit)
+
+    # The proposals are the product; the email is only the notification, so a mail
+    # failure is reported and never fails an otherwise successful review.
+    try:
+        import deliverables as deliverables_service
+        import platform_mail
+
+        proposals = [
+            item for item in deliverables_service.list_deliverables("proposal", org_id)
+            if item.get("job_id") == job.get("id")
+        ]
+        recipient = (site.get("contact_email") or "").strip()
+        if recipient:
+            subject, html = digest(data, site["domain"], proposals)
+            platform_mail.send(recipient, subject, html)
+            emit("system", "system", "Digest sent to %s." % recipient)
+        else:
+            emit("system", "system", "No digest sent: the site has no contact email.")
+    except Exception as exc:
+        emit("system", "system", "Review finished, digest not sent: %s" % exc)
+    return result
 

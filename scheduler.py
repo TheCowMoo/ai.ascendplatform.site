@@ -92,6 +92,9 @@ def _loop(hours):
             for kind, result in sync_all():
                 if not result.get("ok"):
                     print("[scheduler] %s sync: %s" % (kind, result.get("error", "unknown")))
+            queued = queue_reviews()
+            if queued:
+                print("[scheduler] queued %d weekly review(s)" % queued)
         except Exception as exc:  # pragma: no cover - defensive
             print("[scheduler] sync cycle crashed: %s: %s" % (type(exc).__name__, exc))
         time.sleep(hours * 3600)
