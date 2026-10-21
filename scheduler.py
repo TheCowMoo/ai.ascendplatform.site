@@ -97,6 +97,48 @@ def _loop(hours):
         time.sleep(hours * 3600)
 
 
+def queue_reviews(now=None):
+    """Queue one review per client, guarded by the jobs table itself.
+
+    The guard is a query rather than new state: if a ``site_review`` job already exists
+    for that org in the last six days, this week has been done. That survives restarts,
+    which a 'last run' variable in memory would not.
+    """
+    import datetime as _dt
+
+    import jobs
+    import sites
+    from db import get_connection
+
+    if not due_today(now):
+        return 0
+    since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=6)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    queued = 0
+    for site in sites.list_sites():
+        org_id = site.get("org_id")
+        if org_id is None:
+            continue
+        with get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM jobs WHERE task = ? AND org_id = ? AND created_at >= ?",
+                ("site_review", org_id, since),
+            ).fetchone()
+        if existing:
+            continue
+        jobs.create_job(
+            "Weekly review: %s" % site["domain"],
+            "Weekly site review",
+            None,
+            "selector",
+            "site_review",
+            org_id=org_id,
+        )
+        queued += 1
+    return queued
+
+
 def start():
     """Begin the recurring sync if one is configured. Idempotent per process."""
     global _started
