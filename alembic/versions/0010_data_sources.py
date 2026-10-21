@@ -27,7 +27,10 @@ def upgrade():
 
     bind = op.get_bind()
     for name in TABLES:
-        metadata.tables[name].create(bind=bind)
+        # checkfirst: the worker's init_db() runs create_all() against the same
+        # metadata, so on a cold start these tables may already exist. Without this the
+        # upgrade dies on "relation already exists" and the app crash-loops.
+        metadata.tables[name].create(bind=bind, checkfirst=True)
 
 
 def downgrade():

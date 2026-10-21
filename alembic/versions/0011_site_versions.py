@@ -19,7 +19,9 @@ depends_on = None
 def upgrade():
     from db import metadata
 
-    metadata.tables["site_versions"].create(bind=op.get_bind())
+    # checkfirst: init_db()'s create_all() builds this table from the same metadata, so
+    # whichever starts first must not make the other fail.
+    metadata.tables["site_versions"].create(bind=op.get_bind(), checkfirst=True)
 
 
 def downgrade():

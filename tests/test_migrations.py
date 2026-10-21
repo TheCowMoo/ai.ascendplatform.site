@@ -140,9 +140,32 @@ def test_downgrade_is_clean():
     print("downgrade to base: no application tables left")
 
 
+def test_an_upgrade_survives_tables_that_already_exist():
+    """The production outage, reproduced.
+
+    ``init_db()`` calls ``metadata.create_all()`` and the worker runs it at startup, so
+    on a cold start the tables can exist before Alembic arrives. The upgrade must skip
+    them rather than die on 'relation "data_sources" already exists' - which crash-looped
+    the app and served 502s.
+    """
+    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    # The production state: everything up to 0009 already applied, then the worker's
+    # create_all() lands the new tables before the app's upgrade runs.
+    result, output = _alembic("upgrade", "0009_platform_email")
+    assert result.returncode == 0, output[-1500:]
+    db.metadata.create_all(bind=engine)
+
+    result, output = _alembic("upgrade", "head")
+    if result.returncode != 0:
+        print(output[-2000:])
+    assert result.returncode == 0, "upgrade failed against pre-created tables"
+    print("upgrade over create_all'd tables: OK")
+
+
 if __name__ == "__main__":
     test_upgrade_head_on_an_empty_database()
     test_schema_matches_metadata()
     test_upgrade_dedupes_a_raced_roster()
     test_downgrade_is_clean()
+    test_an_upgrade_survives_tables_that_already_exist()
     print("MIGRATIONS OK")
