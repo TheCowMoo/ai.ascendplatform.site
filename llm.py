@@ -245,8 +245,7 @@ def without_empty_blocks(messages):
         content = message.get("content")
 
         if isinstance(content, str):
-            if content.strip():
-                cleaned.append({"role": role, "content": content})
+            cleaned.append({"role": role, "content": content.strip() or "(no content)"})
             continue
 
         if isinstance(content, list):
@@ -259,8 +258,11 @@ def without_empty_blocks(messages):
                         blocks.append(block)
                 else:
                     blocks.append(block)  # tool_use, tool_result, image
-            if blocks:
-                cleaned.append({"role": role, "content": blocks})
+            # Never drop a message: a tool_result must sit in the message immediately
+            # after the tool_use that produced it, so removing an "empty" turn in
+            # between orphans the result and the API rejects the request with
+            # "Each tool_result block must have a corresponding tool_use block".
+            cleaned.append({"role": role, "content": blocks or "(no content)"})
 
     if not cleaned:
         raise RuntimeError("No usable messages: every message was empty.")
