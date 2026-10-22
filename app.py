@@ -2220,6 +2220,18 @@ def run_automation(automation_id):
     return jsonify(queued), 202
 
 
+@app.route("/api/automations/<int:automation_id>/resume", methods=["POST"])
+@login_required
+def resume_automation(automation_id):
+    """Continue the run that is parked at a gate, from the node after it."""
+    try:
+        queued = automations_service.resume(automation_id, current_org(),
+                                            session.get("user_id"))
+    except automations_service.AutomationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(queued), 202
+
+
 @app.route("/api/manager/chat", methods=["POST"])
 @login_required
 def manager_chat():

@@ -3572,6 +3572,17 @@
           toast(e.message, false);
         });
       };
+      if (a.last_run && a.last_run.status === 'awaiting_approval') {
+        var go = el('button', 'btn btn-primary', 'Approve and continue');
+        go.onclick = function () {
+          go.disabled = true;
+          api('POST', '/api/automations/' + a.id + '/resume').then(function (d) {
+            toast('Resumed run #' + d.run_id);
+            watchJob(d.job_id, go, function () { go.disabled = false; refresh(); });
+          }).catch(function (e) { go.disabled = false; toast(e.message, false); });
+        };
+        actions.appendChild(go);
+      }
       actions.appendChild(toggle); actions.appendChild(run);
       actions.appendChild(edit); actions.appendChild(del);
       box.appendChild(actions);

@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import automations  # noqa: E402
 
+OTHER_ORG = 999999      # not a real client: these rows are cleaned up as they are made
+
 
 def _chain(*kinds):
     steps = []
@@ -114,6 +116,32 @@ def test_the_walk_cannot_hang_on_a_cycle():
              {"id": "b", "type": "agent", "title": "B", "next": ["a"]}]
     assert automations.walk(steps) == ["a", "b"]      # visited set stops it, no timeout
     assert automations.walk([]) == []
+
+
+def test_resume_picks_up_after_the_gate_and_never_reruns_earlier_work():
+    steps = [{"id": "a", "type": "agent", "title": "A", "next": ["g"]},
+             {"id": "g", "type": "gate", "title": "G", "next": ["z"]},
+             {"id": "z", "type": "notify", "title": "Z", "next": ["s"]},
+             {"id": "s", "type": "stop", "title": "S", "next": []}]
+    assert automations.walk(steps) == ["a", "g"]
+    assert automations.walk(steps, resume_after="g") == ["z", "s"]
+    assert automations.walk(steps, resume_after="z") == ["s"]
+    # An unknown or stale gate id must not replay the whole graph.
+    assert automations.walk(steps, resume_after="gone") == ["a", "g"]
+
+
+def test_resuming_with_nothing_parked_is_refused():
+    mine = automations.create(OTHER_ORG, "No runs", [
+        {"id": "s", "type": "stop", "title": "S", "next": []}])
+    try:
+        automations.resume(mine, OTHER_ORG)
+    except automations.AutomationError as exc:
+        assert "waiting" in str(exc).lower(), exc
+    else:
+        raise AssertionError("resume accepted an automation with no parked run")
+    finally:
+        automations.delete(mine, OTHER_ORG)
+    print("resume refused when nothing is parked")
 
 
 if __name__ == "__main__":

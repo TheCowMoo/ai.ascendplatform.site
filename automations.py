@@ -262,7 +262,7 @@ def start(automation_id, org_id, requester_id=None):
     return {"run_id": run_id, "job_id": job_id}
 
 
-def _finish(run_id, status, error=""):
+def _finish(run_id, status, error="", resume_at=None):
     from db import get_connection
 
     with get_connection() as conn:
@@ -270,6 +270,39 @@ def _finish(run_id, status, error=""):
             "UPDATE automation_runs SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP "
             "WHERE id = ?", (status, error, run_id),
         )
+        if resume_at is not None:
+            # Where to pick up: the gate node, so resume does not re-run earlier work.
+            conn.execute("UPDATE automation_runs SET resume_at = ? WHERE id = ?",
+                         (resume_at, run_id))
+
+
+def resume(automation_id, org_id, requester_id=None):
+    """Continue the newest run that is parked at a gate. Returns the new job id."""
+    import jobs
+    from db import get_connection
+
+    automation = get(automation_id, org_id)
+    if not automation:
+        raise AutomationError("Not found")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, resume_at FROM automation_runs WHERE automation_id = ? "
+            "AND status = 'awaiting_approval' ORDER BY id DESC LIMIT 1", (automation_id,)
+        ).fetchone()
+        if not row:
+            raise AutomationError("Nothing is waiting for approval.")
+        run_id, gate = row["id"], row["resume_at"]
+        conn.execute("UPDATE automation_runs SET status = 'queued' WHERE id = ?", (run_id,))
+    job_id = jobs.create_job(
+        "Automation: %s (resumed)" % automation["name"],
+        json.dumps({"automation_id": automation_id, "run_id": run_id,
+                    "resume_after": gate}),
+        requester_id, "selector", "automation", org_id,
+    )
+    jobs.submit(job_id)
+    with get_connection() as conn:
+        conn.execute("UPDATE automation_runs SET job_id = ? WHERE id = ?", (job_id, run_id))
+    return {"run_id": run_id, "job_id": job_id}
 
 
 def _execute(step, automation, emit):
@@ -300,27 +333,38 @@ def _execute(step, automation, emit):
     return "Gate." if kind == "gate" else "Nothing to do."
 
 
-def walk(steps):
-    """The order the walker visits nodes: follow edges from the first step.
-
-    Pure, so the branch behaviour is testable without a model or a database. A cycle
-    cannot hang it - the visited set is the guard, not the validator's word.
-    """
+def _chain(steps):
+    """Every node reachable by following edges, gates included. No side effects."""
     if not steps:
         return []
     by_id = {s["id"]: s for s in steps}
-    order, visited = [], set()
-    current = steps[0]["id"]
-    while current and current in by_id and current not in visited:
-        step = by_id[current]
-        visited.add(current)
+    order, seen, current = [], set(), steps[0]["id"]
+    while current and current in by_id and current not in seen:
+        seen.add(current)
         order.append(current)
-        if step.get("type") in ("stop", "gate"):
-            # A gate ends this job: anything past it runs on resume, after approval.
+        if by_id[current].get("type") == "stop":
             break
-        links = step.get("next") or []
+        links = by_id[current].get("next") or []
         current = links[0] if links else None
     return order
+
+
+def walk(steps, resume_after=None):
+    """The nodes this job runs, in order, stopping at the next gate.
+
+    ``resume_after`` is the gate a parked run stopped at: the walk picks up at the node
+    its edge points to, so a resumed job never re-runs the work before the approval.
+    """
+    order = _chain(steps)
+    if resume_after in order:
+        order = order[order.index(resume_after) + 1:]
+    by_id = {s["id"]: s for s in steps}
+    out = []
+    for node_id in order:
+        out.append(node_id)
+        if by_id[node_id].get("type") in ("stop", "gate"):
+            break
+    return out
 
 
 async def run_task(job, emit):
@@ -337,7 +381,7 @@ async def run_task(job, emit):
 
     steps = {s["id"]: s for s in automation["steps"]}
     emit("message", "Automation", "Running “%s”." % automation["name"])
-    for node_id in walk(automation["steps"]):
+    for node_id in walk(automation["steps"], payload.get("resume_after")):
         step = steps[node_id]
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "running"}))
@@ -346,7 +390,7 @@ async def run_task(job, emit):
             {"node": node_id, "type": step.get("type"), "status": "done", "note": note}))
         emit("message", "Automation", "%s — %s" % (step.get("title") or node_id, note))
         if step.get("type") == "gate":
-            _finish(run_id, "awaiting_approval")
+            _finish(run_id, "awaiting_approval", resume_at=node_id)
             return "Parked at the approval gate “%s”." % (step.get("title") or node_id)
     _finish(run_id, "done")
     return "Ran %d steps." % len(walk(automation["steps"]))
