@@ -2141,9 +2141,9 @@ def refine_deliverable(deliverable_id):
     return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
 
 
-@app.route("/api/chat", methods=["POST"])
+@app.route("/api/manager/chat", methods=["POST"])
 @login_required
-def chat():
+def manager_chat():
     """One manager turn, as a job so it has a transcript and the usual tenancy rules.
 
     Bounded history: the last ten turns, capped per turn, so a long conversation cannot
