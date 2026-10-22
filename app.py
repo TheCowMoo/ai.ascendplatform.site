@@ -2141,6 +2141,64 @@ def refine_deliverable(deliverable_id):
     return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
 
 
+import automations as automations_service
+
+
+@app.route("/api/automations", methods=["GET"])
+@login_required
+def list_automations():
+    return jsonify({"automations": automations_service.list_for_org(current_org())})
+
+
+@app.route("/api/automations", methods=["POST"])
+@login_required
+def create_automation():
+    """A graph is validated before it is stored, so a bad one is rejected with reasons."""
+    data = request.get_json(silent=True) or {}
+    try:
+        new_id = automations_service.create(
+            current_org(), data.get("name"), data.get("steps") or [],
+            layout=data.get("layout"), trigger_type=data.get("trigger_type") or "manual",
+            trigger_config=data.get("trigger_config"),
+            description=data.get("description"), created_by=session.get("user_id"),
+        )
+    except automations_service.AutomationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"automation": automations_service.get(new_id, current_org())}), 201
+
+
+@app.route("/api/automations/<int:automation_id>", methods=["GET"])
+@login_required
+def get_automation(automation_id):
+    automation = automations_service.get(automation_id, current_org())
+    if not automation:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"automation": automation})
+
+
+@app.route("/api/automations/<int:automation_id>", methods=["PUT"])
+@login_required
+def update_automation(automation_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        automation = automations_service.update(automation_id, current_org(), **{
+            key: data[key] for key in
+            ("name", "description", "enabled", "trigger_type", "trigger_config",
+             "steps", "layout") if key in data
+        })
+    except automations_service.AutomationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"automation": automation})
+
+
+@app.route("/api/automations/<int:automation_id>", methods=["DELETE"])
+@login_required
+def delete_automation(automation_id):
+    if not automations_service.delete(automation_id, current_org()):
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": automation_id})
+
+
 @app.route("/api/manager/chat", methods=["POST"])
 @login_required
 def manager_chat():

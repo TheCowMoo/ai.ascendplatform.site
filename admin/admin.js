@@ -26,6 +26,7 @@
       nav: [
         { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
+        { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
@@ -3513,6 +3514,122 @@
     return container;
   }
 
+  // ---------- Automations: a graph that runs as a job ----------
+  function viewAutomations() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Automations</h2><p class="muted">A named graph of steps ' +
+      'that runs as a job. Nothing outward-facing runs without an approval gate.</p></div>';
+    var add = el('button', 'btn btn-primary', 'New automation');
+    head.appendChild(add);
+    container.appendChild(head);
+    var body = el('div');
+    container.appendChild(body);
+
+    var STARTER = [
+      { id: 'draft', type: 'agent', title: 'Draft the work',
+        config: { prompt: 'Write a short launch email for this client.' }, next: ['approve'] },
+      { id: 'approve', type: 'gate', title: 'Approve before anything leaves', next: ['report'] },
+      { id: 'report', type: 'notify', title: 'Report back to the client', next: [] }
+    ];
+
+    function card(a) {
+      var box = el('div', 'panel-card auto-card');
+      var steps = (a.steps || []).length;
+      var trigger = a.trigger_type === 'schedule'
+        ? 'On a schedule'
+        : (a.trigger_type === 'event' ? 'When something happens' : 'Run by hand');
+      box.innerHTML =
+        '<div class="auto-head"><div><div class="auto-name">' + esc(a.name) + '</div>' +
+        '<div class="auto-meta">' + esc(trigger) + ' · ' + steps +
+        (steps === 1 ? ' step' : ' steps') + (a.last_run_at ? ' · last run ' +
+        esc(String(a.last_run_at).slice(0, 16)) : ' · never run') + '</div></div></div>';
+      var actions = el('div', 'auto-actions');
+      var toggle = el('button', 'btn', a.enabled ? 'Enabled' : 'Disabled');
+      toggle.onclick = function () {
+        api('PUT', '/api/automations/' + a.id, { enabled: !a.enabled })
+          .then(refresh).catch(function (e) { toast(e.message, false); });
+      };
+      var edit = el('button', 'btn', 'Open');
+      edit.onclick = function () { openEditor(a); };
+      var del = el('button', 'btn', 'Delete');
+      del.onclick = function () {
+        if (!confirm('Delete "' + a.name + '"?')) return;
+        api('DELETE', '/api/automations/' + a.id).then(refresh)
+          .catch(function (e) { toast(e.message, false); });
+      };
+      actions.appendChild(toggle); actions.appendChild(edit); actions.appendChild(del);
+      box.appendChild(actions);
+      return box;
+    }
+
+    function refresh() {
+      api('GET', '/api/automations').then(function (d) {
+        body.innerHTML = '';
+        var rows = d.automations || [];
+        if (!rows.length) {
+          var blank = el('div', 'panel-card empty-state');
+          blank.innerHTML = '<div class="empty-icon">⌘</div>' +
+            '<p><strong>No automations yet.</strong></p>' +
+            '<p class="muted">Start from a template: draft with the team, approve, ' +
+            'then report.</p>';
+          body.appendChild(blank);
+          return;
+        }
+        rows.forEach(function (a) { body.appendChild(card(a)); });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    // The editor is a step list for now; the canvas arrives next, reading this same shape.
+    function openEditor(a) {
+      var modal = el('div', 'auto-modal');
+      var panel = el('div', 'auto-panel');
+      var head = el('div', 'auto-panel-head');
+      head.appendChild(el('h3', 'card-title', a ? a.name : 'New automation'));
+      var close = el('button', 'btn', 'Close');
+      close.onclick = function () { modal.parentNode.removeChild(modal); };
+      head.appendChild(close);
+      panel.appendChild(head);
+
+      var nameField = el('input');
+      nameField.placeholder = 'Name, e.g. Weekly launch email';
+      nameField.value = a ? a.name : '';
+      panel.appendChild(nameField);
+
+      var steps = a ? a.steps : STARTER;
+      var list = el('div', 'auto-steps');
+      list.innerHTML = '<div class="auto-step-head">Steps</div>';
+      steps.forEach(function (step, index) {
+        var row = el('div', 'auto-step');
+        row.innerHTML = '<span class="auto-step-num">' + (index + 1) + '</span>' +
+          '<span class="auto-step-title">' + esc(step.title || step.id) + '</span>' +
+          '<span class="auto-step-type">' + esc(step.type) + '</span>';
+        list.appendChild(row);
+      });
+      panel.appendChild(list);
+
+      var save = el('button', 'btn btn-primary', 'Save');
+      save.onclick = function () {
+        var payload = { name: nameField.value, steps: steps, trigger_type: 'manual' };
+        var req = a ? api('PUT', '/api/automations/' + a.id, payload)
+                    : api('POST', '/api/automations', payload);
+        req.then(function () {
+          toast('Saved');
+          modal.parentNode.removeChild(modal);
+          refresh();
+        }).catch(function (e) { toast(e.message, false); });
+      };
+      panel.appendChild(save);
+      modal.appendChild(panel);
+      modal.onclick = function (ev) { if (ev.target === modal) close.onclick(); };
+      document.body.appendChild(modal);
+    }
+
+    add.onclick = function () { openEditor(null); };
+    refresh();
+    return container;
+  }
+
   // ---------- Floating manager ----------
   // Lives outside the router so it survives navigation: a manager you have to find a
   // tab for is not a manager.
@@ -3663,6 +3780,7 @@
     else if (tab === 'bots') view = viewBots();
     else if (tab === 'conversations') view = viewConversationsIndex();
     else if (tab === 'analytics') view = viewAnalytics();
+    else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();
     else if (tab === 'jobs' && rest[0]) view = viewJob(rest[0]);
     else if (tab === 'jobs') view = viewJobs();
