@@ -513,6 +513,157 @@ input[type=color] {
 .mgr-msg { font-size: 14px; line-height: 1.5; padding: 8px 10px; border-radius: 8px; background: var(--line-soft, #f3f4f6); }
 .mgr-msg.mine { background: #eef2ff; align-self: flex-end; }
 
+/* ============================================================================
+   Design tokens. Every rule below references these; nothing hard-codes a shade,
+   a radius or a shadow. That consistency is what reads as expensive.
+   ========================================================================== */
+:root {
+  --accent: #4338ca;
+  --accent-hover: #3730a3;
+  --accent-soft: #eef2ff;
+  --accent-ring: rgba(67, 56, 202, .18);
+
+  --ink: #111827;
+  --ink-2: #4b5563;
+  --ink-3: #9ca3af;
+
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+  --s-4: 16px; --s-5: 24px; --s-6: 32px;
+
+  --t-1: 11px; --t-2: 12px; --t-3: 14px;
+  --t-4: 16px; --t-5: 20px; --t-6: 26px; --t-7: 32px;
+
+  --r-1: 6px; --r-2: 10px; --r-3: 16px; --r-4: 999px;
+
+  --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
+  --sh-2: 0 2px 8px rgba(16, 24, 40, .07), 0 1px 2px rgba(16, 24, 40, .04);
+  --sh-3: 0 16px 48px rgba(16, 24, 40, .16), 0 2px 8px rgba(16, 24, 40, .06);
+
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --fast: 140ms; --med: 200ms;
+}
+
+/* ---------- Controls: no browser defaults survive this ---------- */
+input[type="text"], input[type="email"], input[type="password"], input[type="number"],
+input[type="url"], input[type="search"], input:not([type]), textarea, select {
+  height: 40px; padding: 0 var(--s-3);
+  font: 400 var(--t-3)/1.5 inherit; color: var(--ink);
+  background: #fff; border: 1px solid var(--line); border-radius: var(--r-2);
+  box-shadow: var(--sh-1); outline: none;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+textarea { height: auto; min-height: 84px; padding: var(--s-3); resize: vertical; }
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input:hover, textarea:hover, select:hover { border-color: #cbd5e1; }
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+}
+input:focus-visible, textarea:focus-visible { outline: none; }
+input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cursor: not-allowed; }
+
+.btn {
+  height: 40px; padding: 0 var(--s-4);
+  font: 600 var(--t-3)/1 inherit; letter-spacing: -.01em;
+  border-radius: var(--r-2); border: 1px solid var(--line);
+  background: #fff; color: var(--ink); cursor: pointer;
+  box-shadow: var(--sh-1);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.btn:hover { background: #f9fafb; box-shadow: var(--sh-2); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); border-color: var(--accent); }
+.btn-primary {
+  background: var(--accent); border-color: transparent; color: #fff;
+  box-shadow: 0 1px 2px rgba(67, 56, 202, .3);
+}
+.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 4px 14px rgba(67, 56, 202, .34); }
+.btn-primary:disabled { background: #a5b4fc; box-shadow: none; cursor: progress; }
+
+/* ---------- The manager panel ---------- */
+.mgr-fab {
+  right: var(--s-5); bottom: var(--s-5);
+  padding: 13px 20px; font: 600 var(--t-3)/1 inherit; letter-spacing: -.01em;
+  background: var(--accent); box-shadow: 0 8px 24px rgba(67, 56, 202, .32);
+  transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.mgr-fab:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(67, 56, 202, .38); }
+.mgr-fab:focus-visible { box-shadow: 0 0 0 4px var(--accent-ring), 0 8px 24px rgba(67,56,202,.3); }
+.mgr-fab::before { content: "✦"; margin-right: 8px; opacity: .85; }
+
+.mgr-panel {
+  right: var(--s-5); bottom: 84px; width: 380px; max-height: 66vh; gap: 0;
+  padding: 0; border-radius: var(--r-3); background: #fff;
+  border: 1px solid var(--line); box-shadow: var(--sh-3);
+  animation: mgr-in var(--med) var(--ease);
+}
+@keyframes mgr-in { from { opacity: 0; transform: translateY(6px) scale(.985); } }
+
+.mgr-head {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-4); border-bottom: 1px solid var(--line);
+}
+.mgr-mark {
+  width: 30px; height: 30px; flex: 0 0 30px; border-radius: var(--r-1);
+  display: grid; place-items: center; color: #fff;
+  font: 700 var(--t-3)/1 inherit; background: var(--accent);
+  box-shadow: 0 2px 6px rgba(67, 56, 202, .3);
+}
+.mgr-title { font: 600 var(--t-3)/1.2 inherit; color: var(--ink); }
+.mgr-sub { font: 400 var(--t-2)/1.3 inherit; color: var(--ink-3); margin-top: 2px; }
+.mgr-sub .dot {
+  display: inline-block; width: 6px; height: 6px; margin-right: 6px;
+  border-radius: var(--r-4); background: #10b981; vertical-align: 1px;
+}
+
+.mgr-log { padding: var(--s-4); gap: var(--s-2); background: #fcfcfd; }
+.mgr-msg {
+  font: 400 var(--t-3)/1.55 inherit; color: var(--ink);
+  padding: 10px var(--s-3); border-radius: 14px 14px 14px 4px;
+  background: #fff; border: 1px solid var(--line); box-shadow: var(--sh-1);
+  max-width: 88%; white-space: pre-wrap;
+}
+.mgr-msg.mine {
+  background: var(--accent-soft); border-color: #dfe3fb; color: #1e1b4b;
+  border-radius: 14px 14px 4px 14px; align-self: flex-end; box-shadow: none;
+}
+.mgr-empty { text-align: center; padding: var(--s-5) var(--s-3); }
+.mgr-empty p { font: 400 var(--t-3)/1.5 inherit; color: var(--ink-2); margin: 0 0 var(--s-4); }
+.mgr-chips { display: flex; flex-direction: column; gap: var(--s-2); }
+.mgr-chip {
+  font: 500 var(--t-3)/1.3 inherit; color: var(--ink);
+  text-align: left; padding: 10px var(--s-3); cursor: pointer;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--r-2);
+  box-shadow: var(--sh-1);
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.mgr-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+.mgr-composer {
+  display: flex; gap: var(--s-2); padding: var(--s-3); align-items: center;
+  border-top: 1px solid var(--line); background: #fff;
+  border-radius: 0 0 var(--r-3) var(--r-3);
+}
+.mgr-composer input { flex: 1; height: 38px; box-shadow: none; background: #f9fafb; }
+.mgr-composer input:focus { background: #fff; }
+.mgr-send {
+  width: 38px; height: 38px; flex: 0 0 38px; border: 0; cursor: pointer;
+  border-radius: var(--r-2); background: var(--accent); color: #fff;
+  font: 600 15px/1 inherit; display: grid; place-items: center;
+  transition: background var(--fast) var(--ease);
+}
+.mgr-send:hover { background: var(--accent-hover); }
+.mgr-send:disabled { background: #c7d2fe; cursor: progress; }
+
+@media (max-width: 520px) {
+  .mgr-panel { left: var(--s-3); right: var(--s-3); bottom: 76px; width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mgr-panel { animation: none; }
+  .mgr-fab, .btn, input, textarea { transition: none; }
+}
+
+
 /* ---------- Job activity: honest motion while we cannot know a percentage ---------- */
 .activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .activity-dot {

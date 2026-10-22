@@ -3484,17 +3484,40 @@
     var panel = el('div', 'mgr-panel hidden');
     var log = el('div', 'mgr-log');
     var say = el('input');
-    say.placeholder = 'Ask about traffic, sites, drafts… or start a job';
-    var send = el('button', 'btn btn-primary', 'Send');
-    var row = el('div', 'refine-box');
+    say.placeholder = 'Ask about traffic, sites or drafts…';
+    var send = el('button', 'mgr-send', '↑');
+    send.setAttribute('aria-label', 'Send');
+    var row = el('div', 'mgr-composer');
     row.appendChild(say); row.appendChild(send);
-    panel.appendChild(el('h3', null, 'Manager'));
+
+    var head = el('div', 'mgr-head');
+    var mark = el('div', 'mgr-mark', (BRAND || 'A').trim().charAt(0).toUpperCase());
+    var titles = el('div', null);
+    titles.appendChild(el('div', 'mgr-title', 'Manager'));
+    var sub = el('div', 'mgr-sub');
+    sub.innerHTML = '<span class="dot"></span>ready';
+    titles.appendChild(sub);
+    head.appendChild(mark); head.appendChild(titles);
+
+    var empty = el('div', 'mgr-empty');
+    empty.appendChild(el('p', null, 'Ask me anything about the account — or hand off some work.'));
+    var chips = el('div', 'mgr-chips');
+    ['How is traffic this week?', 'Write a launch email', 'Review my site'].forEach(function (t) {
+      var chip = el('button', 'mgr-chip', t);
+      chip.onclick = function () { say.value = t; send.onclick(); };
+      chips.appendChild(chip);
+    });
+    empty.appendChild(chips);
+
+    log.appendChild(empty);
+    panel.appendChild(head);
     panel.appendChild(log);
     panel.appendChild(row);
     document.body.appendChild(panel);
     document.body.appendChild(fab);
 
     function line(text, cls) {
+      if (empty.parentNode) empty.parentNode.removeChild(empty);
       log.appendChild(el('div', cls || 'mgr-msg', text));
       log.scrollTop = log.scrollHeight;
     }
