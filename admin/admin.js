@@ -3543,7 +3543,10 @@
         '<div class="auto-head"><div><div class="auto-name">' + esc(a.name) + '</div>' +
         '<div class="auto-meta">' + esc(trigger) + ' · ' + steps +
         (steps === 1 ? ' step' : ' steps') + (a.last_run_at ? ' · last run ' +
-        esc(String(a.last_run_at).slice(0, 16)) : ' · never run') + '</div></div></div>';
+        esc(String(a.last_run_at).slice(0, 16)) : ' · never run') +
+        (a.last_run ? ' · <span class="run-status ' + esc(a.last_run.status) + '">' +
+          esc(String(a.last_run.status).replace('_', ' ')) + '</span>' : '') +
+        '</div></div></div>';
       var actions = el('div', 'auto-actions');
       var toggle = el('button', 'btn', a.enabled ? 'Enabled' : 'Disabled');
       toggle.onclick = function () {

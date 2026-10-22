@@ -183,7 +183,17 @@ def list_for_org(org_id):
         rows = conn.execute(
             "SELECT * FROM automations WHERE org_id = ? ORDER BY id DESC", (org_id,)
         ).fetchall()
-    return [_one(r) for r in rows]
+        out = []
+        for row in rows:
+            item = _one(row)
+            # Last run, so a card can say "parked at a gate" instead of only a timestamp.
+            last = conn.execute(
+                "SELECT status, error, finished_at FROM automation_runs "
+                "WHERE automation_id = ? ORDER BY id DESC LIMIT 1", (item["id"],)
+            ).fetchone()
+            item["last_run"] = dict(last) if last else None
+            out.append(item)
+    return out
 
 
 def get(automation_id, org_id):

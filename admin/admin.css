@@ -691,6 +691,14 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .auto-step-type { font: 400 var(--t-2)/1 inherit; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
 .auto-graph { background: #fcfcfd; border: 1px solid var(--line); border-radius: var(--r-2); padding: var(--s-2); }
 .auto-svg { display: block; max-height: 320px; }
+.run-status {
+  font: 600 var(--t-2)/1 inherit; padding: 2px 7px; border-radius: var(--r-4);
+  background: #f3f4f6; color: var(--ink-2); text-transform: capitalize;
+}
+.run-status.done { background: #ecfdf5; color: #047857; }
+.run-status.failed { background: #fef2f2; color: #b91c1c; }
+.run-status.awaiting_approval { background: var(--accent-soft); color: var(--accent); }
+.run-status.queued, .run-status.running { background: #fffbeb; color: #b45309; }
 .kpi-grid { display: grid; gap: var(--s-4); grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: var(--s-4); }
 .kpi { padding: var(--s-5); }
 .kpi-label { font: 600 var(--t-1)/1 inherit; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
