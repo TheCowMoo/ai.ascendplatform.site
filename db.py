@@ -215,6 +215,44 @@ job_events = Table(
 
 Index("idx_job_events_job", job_events.c.job_id, job_events.c.seq)
 
+# Automations: a named graph of steps, plus one row per run. The graph is JSON because a
+# graph is a graph - normalising nodes and edges buys nothing and makes every read a join.
+automations = Table(
+    "automations", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("description", Text, nullable=False, server_default=_literal("")),
+    Column("enabled", Integer, nullable=False, server_default=_literal("0")),
+    Column("trigger_type", Text, nullable=False, server_default=_literal("manual")),
+    Column("trigger_config", Text, nullable=False, server_default=_literal("{}")),
+    Column("steps", Text, nullable=False, server_default=_literal("[]")),
+    Column("layout", Text, nullable=False, server_default=_literal("{}")),
+    Column("created_by", Integer),
+    _created_at(),
+    Column("updated_at", Text),
+    Column("last_run_at", Text),
+    Column("next_run_at", Text),
+)
+
+Index("idx_automations_org", automations.c.org_id)
+
+# resume_at is where a run parks when it reaches an approval gate, instead of blocking a
+# worker for the length of the gate's timeout.
+automation_runs = Table(
+    "automation_runs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("automation_id", Integer, nullable=False),
+    Column("job_id", Integer),
+    Column("status", Text, nullable=False, server_default=_literal("queued")),
+    Column("resume_at", Text),
+    _created_at(),
+    Column("finished_at", Text),
+    Column("error", Text, nullable=False, server_default=_literal("")),
+)
+
+Index("idx_automation_runs_automation", automation_runs.c.automation_id)
+
 # Files/images produced by a job.
 job_artifacts = Table(
     "job_artifacts", metadata,

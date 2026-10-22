@@ -18,6 +18,8 @@ sys.path.insert(0, ROOT)
 FAST_SUITES = (
     "test_model_info",
     "test_db_dialect",
+    "test_migrations",
+    "test_automation_graph",
     "smoke_analytics",
     "smoke_deliverables",
     "smoke_review",
@@ -33,10 +35,12 @@ def check_imports():
     import deliverables
     import scheduler
     import review  # noqa: F401
+    import automations
 
     assert "site_review" in jobs.TASKS, jobs.TASKS
     assert "proposal" in deliverables.KINDS, deliverables.KINDS
     assert callable(scheduler.queue_reviews)
+    assert callable(automations.validate_graph)
     print("imports OK | tasks:", sorted(jobs.TASKS))
 
 

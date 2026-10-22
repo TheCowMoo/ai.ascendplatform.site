@@ -31,6 +31,9 @@ This file is the map: what exists, where it lives, and what is still open.
   never submitted sits in `queued` forever — this is what silently broke refine.
 - **Flask endpoint names are one namespace.** A second `def chat()` raises
   "overwriting an existing endpoint function" and the app will not boot at all.
+- **Alembic revision ids are descriptive** (`0011_site_versions`), and a migration creates
+  tables from `db.metadata` with `checkfirst=True` rather than retyping DDL. `test_migrations`
+  verifies the whole chain from empty and now runs in preflight.
 
 
 ## Runtime shape

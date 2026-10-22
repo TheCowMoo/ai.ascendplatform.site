@@ -117,6 +117,7 @@ def test_sqlite_schema():
         "ssh_hosts", "sites", "action_approvals", "settings", "settings_events",
         "orgs", "client_settings", "deliverables", "mail_senders", "invites",
         "data_sources", "metrics_daily", "sync_runs", "site_versions",
+        "automations", "automation_runs",
     }
     assert tables == expected, tables
     print("tables:", sorted(tables))
