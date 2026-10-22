@@ -140,7 +140,8 @@
     var tab = parts[1] || '';
     var aside = el('aside', 'sidebar');
     var brand = el('div', 'side-brand');
-    brand.innerHTML = '<span class="dot"></span>' + esc(BRAND);
+    brand.innerHTML = '<span class="brand-mark">' +
+      esc((BRAND || 'A').trim().charAt(0).toUpperCase()) + '</span>' + esc(BRAND);
     aside.appendChild(brand);
 
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
