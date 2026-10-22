@@ -2500,6 +2500,31 @@
     'Polishing the buttons…'
   ];
 
+  // The artifact's own loading state: a skeleton shaped like the document, with the
+  // activity strip underneath. Mounted over the region the result will occupy, so the
+  // page stays usable and the overlay never traps the cursor.
+  function documentCurtain(host, jobId, onDone) {
+    if (!host) return null;
+    host.classList.add('curtain-host');
+    var curtain = el('div', 'doc-curtain');
+    curtain.innerHTML =
+      '<div class="doc-skel" aria-hidden="true">' +
+      '<i class="h"></i><i class="t"></i><i class="t t2"></i><i class="t t3"></i>' +
+      '<i class="img"></i><i class="t"></i><i class="t t2"></i><i class="f"></i></div>';
+    var strip = el('span', 'activity running');
+    curtain.appendChild(strip);
+    host.appendChild(curtain);
+
+    watchJob(jobId, strip, function () {
+      curtain.classList.add('leaving');
+      setTimeout(function () {
+        if (curtain.parentNode) curtain.parentNode.removeChild(curtain);
+        if (onDone) onDone();
+      }, 220);
+    });
+    return curtain;
+  }
+
   function watchJob(jobId, statusEl, onFinish) {
     var lastSeq = 0;
     var lastText = '';
@@ -2534,7 +2559,7 @@
     onCleanup(function () { clearInterval(timer); });
   }
 
-  function aiComposer(kind, blurb, onFinish) {
+  function aiComposer(kind, blurb, onFinish, host) {
     var card = el('div', 'form-card ai-composer');
     card.appendChild(el('h3', null, 'Ask the team'));
     card.appendChild(el('p', 'muted', blurb));
@@ -2558,11 +2583,14 @@
         team_mode: 'selector'
       }).then(function (d) {
         status.textContent = 'Running as job #' + d.job.id + '…';
-        watchJob(d.job.id, status, function () {
+        var finish = function () {
           btn.disabled = false;
           prompt.value = '';
           onFinish();
-        });
+        };
+        var target = typeof host === 'function' ? host() : host;
+        if (target) documentCurtain(target, d.job.id, finish);
+        else watchJob(d.job.id, status, finish);
       }).catch(function (e) {
         btn.disabled = false;
         status.textContent = '';
@@ -2689,7 +2717,8 @@
     head.appendChild(newBtn);
     card.appendChild(head);
     card.appendChild(aiComposer('website',
-      'Describe the page you want. It is saved as a draft here, and you choose when to publish it.', load));
+      'Describe the page you want. It is saved as a draft here, and you choose when to publish it.',
+      load));
     var body = el('div');
     card.appendChild(body);
 
@@ -2745,7 +2774,7 @@
     if (meta.kind) {
       container.appendChild(aiComposer(meta.kind,
         'Describe what you want. The team saves it straight into this tab as a draft, so you can read and edit it without leaving the page.',
-        refresh));
+        refresh, function () { return body; }));
     }
     var body = el('div');
     container.appendChild(body);
