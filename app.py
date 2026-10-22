@@ -2155,9 +2155,14 @@ def list_automations():
 def create_automation():
     """A graph is validated before it is stored, so a bad one is rejected with reasons."""
     data = request.get_json(silent=True) or {}
+    org = current_org()
+    # org_id is NOT NULL: an automation belongs to a client. The operator has no org of
+    # their own, so without a picked client this used to reach the database and 500.
+    if org is None:
+        return jsonify({"error": "Pick a client first - automations belong to a client."}), 400
     try:
         new_id = automations_service.create(
-            current_org(), data.get("name"), data.get("steps") or [],
+            org, data.get("name"), data.get("steps") or [],
             layout=data.get("layout"), trigger_type=data.get("trigger_type") or "manual",
             trigger_config=data.get("trigger_config"),
             description=data.get("description"), created_by=session.get("user_id"),
@@ -2180,6 +2185,10 @@ def get_automation(automation_id):
 @login_required
 def update_automation(automation_id):
     data = request.get_json(silent=True) or {}
+    # 404 before validation: a missing row and a bad graph are different answers, and
+    # GET/DELETE already say 404 for the first.
+    if not automations_service.get(automation_id, current_org()):
+        return jsonify({"error": "Not found"}), 404
     try:
         automation = automations_service.update(automation_id, current_org(), **{
             key: data[key] for key in
