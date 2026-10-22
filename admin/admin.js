@@ -3623,12 +3623,22 @@
       // Read-only graph: the same steps JSON, drawn. Drag and live states come next; this
       // already makes the shape legible, which is the part that was missing.
       var graph = el('div', 'auto-graph');
-      graph.innerHTML = graphSvg(steps, a ? a.layout : null);
+      var layout = {};
+      steps.forEach(function (step, index) {
+        var saved = (a && a.layout && a.layout[step.id]) || null;
+        layout[step.id] = saved
+          ? { x: saved.x, y: saved.y }
+          : { x: 20, y: 20 + index * 84 };
+      });
+      function draw() { graph.innerHTML = graphSvg(steps, layout); attachDrag(graph, layout, draw); }
+      draw();
       panel.appendChild(graph);
+      panel.appendChild(el('p', 'fine-print', 'Drag a step to move it.'));
 
       var save = el('button', 'btn btn-primary', 'Save');
       save.onclick = function () {
-        var payload = { name: nameField.value, steps: steps, trigger_type: 'manual' };
+        var payload = { name: nameField.value, steps: steps, trigger_type: 'manual',
+                        layout: layout };
         var req = a ? api('PUT', '/api/automations/' + a.id, payload)
                     : api('POST', '/api/automations', payload);
         req.then(function () {
@@ -3682,7 +3692,7 @@
     });
     steps.forEach(function (step) {
       var p = pos[step.id];
-      out.push('<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' +
+      out.push('<g data-node="' + esc(step.id) + '"><rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' +
         NODE_H + '" rx="10" fill="#fff" stroke="' +
         (step.type === 'gate' ? '#4338ca' : '#e2e8f0') + '" stroke-width="' +
         (step.type === 'gate' ? 2 : 1) + '"/>' +
@@ -3695,6 +3705,43 @@
     });
     out.push('</svg>');
     return out.join('');
+  }
+
+  // Pointer drag on an SVG group. The scale factor matters: the SVG scales to the panel
+  // width, so pixels of mouse travel are not pixels of viewBox.
+  function attachDrag(container, layout, redraw) {
+    var svg = container.querySelector('svg');
+    if (!svg) return;
+    var vb = svg.viewBox.baseVal;
+    Array.prototype.forEach.call(svg.querySelectorAll('[data-node]'), function (g) {
+      g.style.cursor = 'grab';
+      g.addEventListener('pointerdown', function (ev) {
+        var id = g.getAttribute('data-node');
+        ev.preventDefault();
+        var rect = svg.getBoundingClientRect();
+        var scale = vb.width ? rect.width / vb.width : 1;
+        var startX = ev.clientX, startY = ev.clientY;
+        var from = { x: layout[id].x, y: layout[id].y };
+        g.style.cursor = 'grabbing';
+        function move(e) {
+          var next = {
+            x: Math.max(0, Math.round(from.x + (e.clientX - startX) / scale)),
+            y: Math.max(0, Math.round(from.y + (e.clientY - startY) / scale))
+          };
+          g.setAttribute('transform', 'translate(' + (next.x - from.x) + ',' +
+            (next.y - from.y) + ')');
+          layout[id] = next;
+        }
+        function up() {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          g.style.cursor = 'grab';
+          redraw();
+        }
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    });
   }
 
   // ---------- Floating manager ----------
