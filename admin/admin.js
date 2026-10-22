@@ -3474,6 +3474,68 @@
     return container;
   }
 
+  // ---------- Floating manager ----------
+  // Lives outside the router so it survives navigation: a manager you have to find a
+  // tab for is not a manager.
+  function managerWidget() {
+    if (document.getElementById('mgr-fab')) return;
+    var fab = el('button', 'mgr-fab', 'Ask');
+    fab.id = 'mgr-fab';
+    var panel = el('div', 'mgr-panel hidden');
+    var log = el('div', 'mgr-log');
+    var say = el('input');
+    say.placeholder = 'Ask about traffic, sites, drafts… or start a job';
+    var send = el('button', 'btn btn-primary', 'Send');
+    var row = el('div', 'refine-box');
+    row.appendChild(say); row.appendChild(send);
+    panel.appendChild(el('h3', null, 'Manager'));
+    panel.appendChild(log);
+    panel.appendChild(row);
+    document.body.appendChild(panel);
+    document.body.appendChild(fab);
+
+    function line(text, cls) {
+      log.appendChild(el('div', cls || 'mgr-msg', text));
+      log.scrollTop = log.scrollHeight;
+    }
+
+    fab.onclick = function () {
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) say.focus();
+    };
+
+    send.onclick = function () {
+      var text = (say.value || '').trim();
+      if (!text) return;
+      say.value = '';
+      line(text, 'mgr-msg mine');
+      var thinking = el('span', 'activity running');
+      log.appendChild(thinking);
+      send.disabled = true;
+      api('POST', '/api/manager/chat', { message: text })
+        .then(function (d) {
+          watchJob(d.job_id, thinking, function () {
+            api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
+              if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+              var said = (r.events || []).filter(function (ev) {
+                return ev.source === 'Manager' && ev.type === 'message';
+              }).pop();
+              line(said ? said.content : 'No answer - open job #' + d.job_id + ' to see why.',
+                   'mgr-msg');
+              send.disabled = false;
+            }).catch(function () { send.disabled = false; });
+          });
+        })
+        .catch(function (e) {
+          if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+          line(e.message, 'form-error');
+          send.disabled = false;
+        });
+    };
+
+    say.onkeydown = function (ev) { if (ev.key === 'Enter') send.onclick(); };
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
@@ -3560,6 +3622,7 @@
     return api('GET', '/api/auth/me');
   }).then(function (d) {
     state.user = d.user;
+    managerWidget();
     render();
   }).catch(function () {
     state.user = null;
