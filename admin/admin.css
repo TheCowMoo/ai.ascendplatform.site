@@ -522,6 +522,9 @@ input[type=color] {
   --accent-hover: #3730a3;
   --accent-soft: #eef2ff;
   --accent-ring: rgba(67, 56, 202, .18);
+  /* The brand row's own surface. The rail is near-black; the logo's ink is mid-blue,
+     so the row is a light band rather than a chip behind the mark. */
+  --brand-band: #f8fafc;
 
   --ink: #111827;
   --ink-2: #4b5563;
@@ -677,16 +680,18 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .empty-state p { margin: 0 0 var(--s-1); font: 400 var(--t-3)/1.5 inherit; color: var(--ink-2); }
 .empty-icon { font-size: 28px; color: var(--ink-3); margin-bottom: var(--s-3); }
 
-/* ---------- The real artwork: logo.png (wordmark) + favicon.png (app icon) ---------- */
-.logo-plate {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 6px 10px; border-radius: var(--r-1);
-  /* A white plate, because the logo's own ink is mid-luminance: on the dark sidebar it
-     would either disappear or need tinting, and tinting someone's mark is worse. */
-  background: #fff; box-shadow: var(--sh-1);
+/* ---------- The real artwork: logo.png (wordmark) + favicon.png (app icon) ----------
+   The brand row is a full-width band, not a chip behind the mark: the rail is one
+   material, and the logo gets a surface of its own at the top of it. */
+.side-brand {
+  background: var(--brand-band);
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(15, 23, 42, .10);
+  gap: 0;
 }
 .logo-img { height: 22px; width: auto; display: block; }
 .auth-logo { height: 30px; width: auto; display: block; margin: 0 0 var(--s-4); }
+.topbar .logo-img { height: 20px; }
 .mgr-mark img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--r-1); display: block; }
 .mgr-mark { overflow: hidden; }
 .brand-mark, .mgr-mark {

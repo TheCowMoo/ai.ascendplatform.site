@@ -140,8 +140,8 @@
     var tab = parts[1] || '';
     var aside = el('aside', 'sidebar');
     var brand = el('div', 'side-brand');
-    brand.innerHTML = '<span class="logo-plate"><img class="logo-img" src="/admin/logo.png" alt="' +
-      esc(BRAND) + '" /></span>';
+    brand.innerHTML = '<img class="logo-img" src="/admin/logo-trim.png" alt="' +
+      esc(BRAND) + '" />';
     aside.appendChild(brand);
 
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
@@ -199,7 +199,8 @@
     burger.onclick = function () { document.body.classList.toggle('nav-open'); };
     inner.appendChild(burger);
     var brand = el('div', 'brand');
-    brand.innerHTML = '<span class="dot"></span>' + esc(BRAND);
+    brand.innerHTML = '<img class="logo-img" src="/admin/logo-trim.png" alt="' +
+      esc(BRAND) + '" />';
     inner.appendChild(brand);
     inner.appendChild(el('div', 'spacer'));
     return bar;
@@ -209,7 +210,7 @@
   function viewLogin() {
     var wrap = el('div', 'auth-wrap');
     var card = el('div', 'auth-card');
-    card.innerHTML = '<img class="auth-logo" src="/admin/logo.png" alt="' +
+    card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
       esc(BRAND) + '" /><h1>' + esc(BRAND) +
       '</h1><p class="sub">Sign in to your growth platform</p>';
     var err = el('div', 'error');
