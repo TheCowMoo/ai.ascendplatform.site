@@ -130,7 +130,7 @@ def queue_reviews(now=None):
             ).fetchone()
         if existing:
             continue
-        jobs.create_job(
+        job_id = jobs.create_job(
             "Weekly review: %s" % site["domain"],
             "Weekly site review",
             None,
@@ -138,6 +138,9 @@ def queue_reviews(now=None):
             "site_review",
             org_id=org_id,
         )
+        # A created job that is never submitted stays queued forever - the same defect
+        # this endpoint was written to avoid.
+        jobs.submit(job_id)
         queued += 1
     return queued
 

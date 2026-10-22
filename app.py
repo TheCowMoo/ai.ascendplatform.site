@@ -2135,6 +2135,9 @@ def refine_deliverable(deliverable_id):
         task_name="agent_team",
         org_id=item.get("org_id"),
     )
+    # Without this the row exists, the UI polls it, and nothing ever picks it up -
+    # which is exactly how a refine job sat "queued" forever.
+    jobs.submit(job_id)
     return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
 
 

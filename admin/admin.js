@@ -2540,11 +2540,16 @@
         var job = d.job || {};
         var quip = QUOTES[Math.floor(ticks / 2) % QUOTES.length];
         var running = ['done', 'failed', 'cancelled'].indexOf(job.status) === -1;
+        var stuck = job.status === 'queued' && ticks > 45;
         statusEl.className = running ? 'activity running' : 'activity';
         statusEl.innerHTML =
           '<i class="activity-dot"></i>' +
-          '<span class="activity-text">' + esc((job.status || 'running') + ' · job #' + jobId +
-            (lastText ? ' · ' + lastText : ' · ' + quip)) + '</span>' +
+          '<span class="activity-text">' +
+            esc(stuck
+              ? 'Still queued after 90s - is the worker running? (job #' + jobId + ')'
+              : (job.status || 'running') + ' · job #' + jobId +
+                (lastText ? ' · ' + lastText : ' · ' + quip)) +
+          '</span>' +
           (running ? '<span class="activity-bar"><b></b></span>' : '');
         if (['done', 'failed', 'cancelled'].indexOf(job.status) !== -1) {
           clearInterval(timer);          // stop before onFinish, so a re-render cannot
