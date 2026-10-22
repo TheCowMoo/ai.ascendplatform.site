@@ -300,6 +300,29 @@ def _execute(step, automation, emit):
     return "Gate." if kind == "gate" else "Nothing to do."
 
 
+def walk(steps):
+    """The order the walker visits nodes: follow edges from the first step.
+
+    Pure, so the branch behaviour is testable without a model or a database. A cycle
+    cannot hang it - the visited set is the guard, not the validator's word.
+    """
+    if not steps:
+        return []
+    by_id = {s["id"]: s for s in steps}
+    order, visited = [], set()
+    current = steps[0]["id"]
+    while current and current in by_id and current not in visited:
+        step = by_id[current]
+        visited.add(current)
+        order.append(current)
+        if step.get("type") in ("stop", "gate"):
+            # A gate ends this job: anything past it runs on resume, after approval.
+            break
+        links = step.get("next") or []
+        current = links[0] if links else None
+    return order
+
+
 async def run_task(job, emit):
     """Registered as task ``automation``: walks the graph, one event per node."""
     try:
@@ -312,19 +335,21 @@ async def run_task(job, emit):
     if not automation:
         raise RuntimeError("Automation %r not found" % (automation_id,))
 
+    steps = {s["id"]: s for s in automation["steps"]}
     emit("message", "Automation", "Running “%s”." % automation["name"])
-    for step in automation["steps"]:
+    for node_id in walk(automation["steps"]):
+        step = steps[node_id]
         emit("node", "Automation", json.dumps(
-            {"node": step["id"], "type": step.get("type"), "status": "running"}))
+            {"node": node_id, "type": step.get("type"), "status": "running"}))
         note = _execute(step, automation, emit)
         emit("node", "Automation", json.dumps(
-            {"node": step["id"], "type": step.get("type"), "status": "done", "note": note}))
-        emit("message", "Automation", "%s — %s" % (step.get("title") or step["id"], note))
+            {"node": node_id, "type": step.get("type"), "status": "done", "note": note}))
+        emit("message", "Automation", "%s — %s" % (step.get("title") or node_id, note))
         if step.get("type") == "gate":
             _finish(run_id, "awaiting_approval")
-            return "Parked at the approval gate “%s”." % (step.get("title") or step["id"])
+            return "Parked at the approval gate “%s”." % (step.get("title") or node_id)
     _finish(run_id, "done")
-    return "Ran %d steps." % len(automation["steps"])
+    return "Ran %d steps." % len(walk(automation["steps"]))
 
 
 def delete(automation_id, org_id):

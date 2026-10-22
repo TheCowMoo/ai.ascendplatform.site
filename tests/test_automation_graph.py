@@ -87,6 +87,35 @@ def test_clean_graph_rejects_before_saving():
         raise AssertionError("invalid graph was accepted")
 
 
+def test_the_walk_follows_edges_not_list_order():
+    """List order and graph order must agree only by coincidence."""
+    steps = [
+        {"id": "d", "type": "notify", "title": "D", "next": ["e"]},
+        {"id": "e", "type": "stop", "title": "E", "next": []},
+        {"id": "a", "type": "agent", "title": "A", "next": ["b"]},
+        {"id": "b", "type": "gate", "title": "B", "next": ["d"]},
+    ]
+    assert automations.walk(steps) == ["d", "e"], automations.walk(steps)
+
+
+def test_the_walk_stops_at_a_gate_and_a_stop():
+    gated = [{"id": "a", "type": "agent", "title": "A", "next": ["g"]},
+             {"id": "g", "type": "gate", "title": "G", "next": ["z"]},
+             {"id": "z", "type": "notify", "title": "Z", "next": ["s"]},
+             {"id": "s", "type": "stop", "title": "S", "next": []}]
+    assert automations.walk(gated) == ["a", "g"]
+    stopped = [{"id": "a", "type": "agent", "title": "A", "next": ["s"]},
+               {"id": "s", "type": "stop", "title": "S", "next": []}]
+    assert automations.walk(stopped) == ["a", "s"]
+
+
+def test_the_walk_cannot_hang_on_a_cycle():
+    steps = [{"id": "a", "type": "agent", "title": "A", "next": ["b"]},
+             {"id": "b", "type": "agent", "title": "B", "next": ["a"]}]
+    assert automations.walk(steps) == ["a", "b"]      # visited set stops it, no timeout
+    assert automations.walk([]) == []
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
