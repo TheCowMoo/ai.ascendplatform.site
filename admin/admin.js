@@ -3805,6 +3805,7 @@
     fab.id = 'mgr-fab';
     var panel = el('div', 'mgr-panel hidden');
     var log = el('div', 'mgr-log');
+    var history = [];   // last few turns, so a follow-up question has something to follow
     var say = el('input');
     say.placeholder = 'Ask about traffic, sites or drafts…';
     var send = el('button', 'mgr-send', '↑');
@@ -3855,10 +3856,11 @@
       if (!text) return;
       say.value = '';
       line(text, 'mgr-msg mine');
+      history.push({ role: 'user', content: text });
       var thinking = el('span', 'activity running');
       log.appendChild(thinking);
       send.disabled = true;
-      api('POST', '/api/manager/chat', { message: text })
+      api('POST', '/api/manager/chat', { message: text, history: history.slice(-8) })
         .then(function (d) {
           watchJob(d.job_id, thinking, function () {
             api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
@@ -3866,8 +3868,10 @@
               var said = (r.events || []).filter(function (ev) {
                 return ev.source === 'Manager' && ev.type === 'message';
               }).pop();
-              line(said ? said.content : 'No answer - open job #' + d.job_id + ' to see why.',
-                   'mgr-msg');
+              var answer = said ? said.content
+                : 'No answer - open job #' + d.job_id + ' to see why.';
+              line(answer, 'mgr-msg');
+              history.push({ role: 'assistant', content: answer });
               send.disabled = false;
             }).catch(function () { send.disabled = false; });
           });
