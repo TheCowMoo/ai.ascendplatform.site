@@ -3633,10 +3633,38 @@
           ? { x: saved.x, y: saved.y }
           : { x: 20, y: 20 + index * 84 };
       });
-      function draw() { graph.innerHTML = graphSvg(steps, layout); attachDrag(graph, layout, draw); }
+      var nodeStates = {};
+      function draw() {
+        graph.innerHTML = graphSvg(steps, layout, nodeStates);
+        attachDrag(graph, layout, draw);
+      }
       draw();
       panel.appendChild(graph);
       panel.appendChild(el('p', 'fine-print', 'Drag a step to move it.'));
+
+      // Live states: the job already emits {"node": id, "status": ...} per step, so this
+      // only has to recolour boxes - no new backend, no websocket.
+      function followRun(jobId, runBtn) {
+        var after = 0;
+        var timer = setInterval(function () {
+          api('GET', '/api/jobs/' + jobId + '/events?after=' + after).then(function (res) {
+            (res.events || []).forEach(function (ev) {
+              after = Math.max(after, ev.seq || 0);
+              if (ev.type !== 'node') return;
+              var data = null;
+              try { data = JSON.parse(ev.content || '{}'); } catch (e) { return; }
+              if (data && data.node) nodeStates[data.node] = String(data.status || '');
+            });
+            draw();
+            var status = (res.job || {}).status;
+            if (['done', 'failed', 'cancelled'].indexOf(status) !== -1) {
+              clearInterval(timer);
+              runBtn.disabled = false;
+              refresh();
+            }
+          }).catch(function () { clearInterval(timer); runBtn.disabled = false; });
+        }, 1500);
+      }
 
       var save = el('button', 'btn btn-primary', 'Save');
       save.onclick = function () {
@@ -3651,6 +3679,26 @@
         }).catch(function (e) { toast(e.message, false); });
       };
       panel.appendChild(save);
+
+      if (a) {
+        var runBtn = el('button', 'btn', 'Run and watch');
+        runBtn.onclick = function () {
+          panel.querySelectorAll('.auto-node.done, .auto-node.running').forEach(function () {
+            this.classList.remove('done', 'running');
+          });
+          nodeStates = {};
+          draw();
+          runBtn.disabled = true;
+          api('POST', '/api/automations/' + a.id + '/run').then(function (d) {
+            toast('Queued run #' + d.run_id);
+            followRun(d.job_id, runBtn);
+          }).catch(function (e) {
+            runBtn.disabled = false;
+            toast(e.message, false);
+          });
+        };
+        panel.appendChild(runBtn);
+      }
       modal.appendChild(panel);
       modal.onclick = function (ev) { if (ev.target === modal) close.onclick(); };
       document.body.appendChild(modal);
@@ -3663,7 +3711,7 @@
 
   // One SVG, no library: boxes and bezier links. Positions come from the saved layout, or
   // fall back to a vertical stack so a graph is never unreadable.
-  function graphSvg(steps, layout) {
+  function graphSvg(steps, layout, states) {
     var NODE_W = 210, NODE_H = 44, GAP = 40, pos = {}, i;
     for (i = 0; i < steps.length; i++) {
       var saved = layout && layout[steps[i].id];
@@ -3695,7 +3743,8 @@
     });
     steps.forEach(function (step) {
       var p = pos[step.id];
-      out.push('<g data-node="' + esc(step.id) + '"><rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' +
+      out.push('<g data-node="' + esc(step.id) + '" class="auto-node ' +
+        esc((states && states[step.id]) || '') + '"><rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' +
         NODE_H + '" rx="10" fill="#fff" stroke="' +
         (step.type === 'gate' ? '#4338ca' : '#e2e8f0') + '" stroke-width="' +
         (step.type === 'gate' ? 2 : 1) + '"/>' +

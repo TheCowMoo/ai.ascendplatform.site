@@ -699,6 +699,14 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .run-status.failed { background: #fef2f2; color: #b91c1c; }
 .run-status.awaiting_approval { background: var(--accent-soft); color: var(--accent); }
 .run-status.queued, .run-status.running { background: #fffbeb; color: #b45309; }
+
+/* Live node states. CSS overrides the presentation attributes set in the SVG string,
+   which is why these read as classes rather than inline strokes. */
+.auto-node.running rect { stroke: var(--accent); stroke-width: 2.5; }
+.auto-node.running { animation: node-pulse 1.1s var(--ease) infinite; }
+@keyframes node-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.auto-node.done rect { stroke: #10b981; stroke-width: 2; }
+.auto-node.done text { fill: #065f46; }
 .kpi-grid { display: grid; gap: var(--s-4); grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: var(--s-4); }
 .kpi { padding: var(--s-5); }
 .kpi-label { font: 600 var(--t-1)/1 inherit; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
