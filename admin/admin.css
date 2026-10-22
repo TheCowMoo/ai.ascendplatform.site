@@ -688,7 +688,6 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
   font: 600 var(--t-2)/1 inherit;
 }
 .auto-step-title { flex: 1; font: 500 var(--t-3)/1.4 inherit; color: var(--ink); }
-.auto-step-title { flex: 1; font: 500 var(--t-3)/1.4 inherit; color: var(--ink); }
 .auto-step-type { font: 400 var(--t-2)/1 inherit; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
 .auto-graph { background: #fcfcfd; border: 1px solid var(--line); border-radius: var(--r-2); padding: var(--s-2); }
 .auto-svg { display: block; max-height: 320px; }
