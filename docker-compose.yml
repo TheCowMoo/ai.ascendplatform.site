@@ -69,6 +69,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      # app is the service that runs `alembic upgrade head` before serving, so waiting for
+      # its healthcheck means the worker cannot pick up a job against a half-migrated
+      # schema. Without this the worker is healthy seconds before the tables exist.
+      app:
+        condition: service_healthy
     volumes:
       - ./artifacts:/app/artifacts
     command: ["python", "-m", "worker"]
