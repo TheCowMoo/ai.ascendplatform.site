@@ -140,8 +140,8 @@
     var tab = parts[1] || '';
     var aside = el('aside', 'sidebar');
     var brand = el('div', 'side-brand');
-    brand.innerHTML = '<span class="brand-mark">' +
-      esc((BRAND || 'A').trim().charAt(0).toUpperCase()) + '</span>' + esc(BRAND);
+    brand.innerHTML = '<span class="logo-plate"><img class="logo-img" src="/admin/logo.png" alt="' +
+      esc(BRAND) + '" /></span>';
     aside.appendChild(brand);
 
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
@@ -209,7 +209,9 @@
   function viewLogin() {
     var wrap = el('div', 'auth-wrap');
     var card = el('div', 'auth-card');
-    card.innerHTML = '<h1>' + esc(BRAND) + '</h1><p class="sub">Sign in to your growth platform</p>';
+    card.innerHTML = '<img class="auth-logo" src="/admin/logo.png" alt="' +
+      esc(BRAND) + '" /><h1>' + esc(BRAND) +
+      '</h1><p class="sub">Sign in to your growth platform</p>';
     var err = el('div', 'error');
     var emailField = el('div', 'field');
     emailField.innerHTML = '<label>Email</label>';
@@ -3527,7 +3529,8 @@
     row.appendChild(say); row.appendChild(send);
 
     var head = el('div', 'mgr-head');
-    var mark = el('div', 'mgr-mark', (BRAND || 'A').trim().charAt(0).toUpperCase());
+    var mark = el('div', 'mgr-mark');
+    mark.innerHTML = '<img src="/admin/favicon-64.png" alt="" />';
     var titles = el('div', null);
     titles.appendChild(el('div', 'mgr-title', 'Manager'));
     var sub = el('div', 'mgr-sub');
