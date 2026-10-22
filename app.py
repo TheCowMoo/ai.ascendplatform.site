@@ -2364,6 +2364,12 @@ import review as review_mod
 
 jobs.TASKS.setdefault("site_review", review_mod.site_review)
 
+# The floating manager: one agent, registered like any other task so its replies get a
+# transcript, the activity UI and the same tenancy rules.
+import manager as manager_mod
+
+jobs.TASKS.setdefault("chat", manager_mod.chat_task)
+
 # Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
 import scheduler as scheduler_mod
 
