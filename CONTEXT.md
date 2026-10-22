@@ -8,6 +8,31 @@ and email. Two consoles: the operator's `#/platform/*` and the client's `#/app/*
 Read `SYSTEM_PLAN.md` for the reasoning behind each fix (§25-33 are the recent ones).
 This file is the map: what exists, where it lives, and what is still open.
 
+## Working rules (read this before opening a source file)
+
+**Files too large to read whole — grep first, then read a range:**
+
+| File | Size | Why it matters |
+|---|---|---|
+| `admin/admin.js` | ~3,700 lines / 163 KB | every console screen in one file; a whole read is ~41k tokens |
+| `app.py` | ~2,400 lines / 94 KB | all routes; ~24k tokens |
+| `SYSTEM_PLAN.md` | ~1,600 lines / 94 KB | search a section number, do not read it whole |
+| `tests/*.py` | ~4,200 lines combined | search for the suite you need |
+
+- Read **ranges** (`start_line`/`end_line`); never a whole file above ~300 lines.
+- Locate with a bare pattern first; add context lines only once the line number is known.
+- Do not re-read a file to verify an edit — the edit diff already showed the change.
+- Keep replies short deep into a session; design rationale belongs in the first message.
+- Commit at phase boundaries and start a fresh session per phase.
+
+**Two mistakes already paid for, do not repeat them:**
+
+- **`jobs.create_job()` must be followed by `jobs.submit(job_id)`.** A created job that is
+  never submitted sits in `queued` forever — this is what silently broke refine.
+- **Flask endpoint names are one namespace.** A second `def chat()` raises
+  "overwriting an existing endpoint function" and the app will not boot at all.
+
+
 ## Runtime shape
 
 ```
