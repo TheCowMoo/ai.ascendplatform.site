@@ -25,6 +25,7 @@
       home: '#/app/',
       nav: [
         { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
+        { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
@@ -3412,6 +3413,62 @@
     return container;
   }
 
+  // ---------- Analytics: the brief, for humans ----------
+  function viewAnalytics() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Analytics</h2><p class="muted">This window against the ' +
+      'one before it. Same numbers the weekly review reads.</p></div>';
+    container.appendChild(head);
+    var body = el('div');
+    container.appendChild(body);
+
+    function card(label, value, delta) {
+      var box = el('div', 'panel-card');
+      var sign = delta > 0 ? '+' : '';
+      var colour = delta === 0 ? 'muted' : (delta > 0 ? '' : 'form-error');
+      box.innerHTML = '<div class="muted">' + esc(label) + '</div>' +
+        '<div style="font-size:26px;font-weight:600">' + esc(String(value)) + '</div>' +
+        '<div class="' + colour + '">' + sign + esc(String(delta)) + ' vs previous</div>';
+      return box;
+    }
+
+    api('GET', '/api/analytics/summary?days=7').then(function (d) {
+      body.innerHTML = '';
+      var now = d.current || {};
+      var change = d.change || {};
+      if (!now.pageviews && !now.sessions) {
+        body.appendChild(el('p', 'muted',
+          'No metrics for the last ' + (d.days || 7) + ' days. Data sources -> ' +
+          'Sync site logs now, or add a GA4 property for this client.'));
+        return;
+      }
+      var grid = el('div', 'grid');
+      grid.appendChild(card('Pageviews', now.pageviews, change.pageviews));
+      grid.appendChild(card('Sessions', now.sessions, change.sessions));
+      grid.appendChild(card('Errors', now.errors, change.errors));
+      body.appendChild(grid);
+      body.appendChild(el('p', 'muted', 'Sources: ' + (d.sources || []).join(', ') +
+        ' · since ' + esc(d.since)));
+
+      if ((now.top_pages || []).length) {
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Page</th><th>Views</th></tr></thead>';
+        var tbody = el('tbody');
+        now.top_pages.forEach(function (page) {
+          var tr = el('tr');
+          tr.innerHTML = '<td>' + esc(page.path) + '</td><td>' + page.views + '</td>';
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(el('h3', null, 'Top pages'));
+        body.appendChild(table);
+      }
+    }).catch(function (e) { toast(e.message, false); });
+
+    return container;
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
@@ -3475,6 +3532,7 @@
     else if (tab === 'profile') view = viewProfile();
     else if (tab === 'bots') view = viewBots();
     else if (tab === 'conversations') view = viewConversationsIndex();
+    else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'sites') view = viewSites();
     else if (tab === 'jobs' && rest[0]) view = viewJob(rest[0]);
     else if (tab === 'jobs') view = viewJobs();

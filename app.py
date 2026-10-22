@@ -2138,6 +2138,31 @@ def refine_deliverable(deliverable_id):
     return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
 
 
+@app.route("/api/analytics/summary", methods=["GET"])
+@client_admin_required
+def analytics_summary():
+    """The weekly brief as data: current vs previous window, deltas, pages, errors.
+
+    Same function the review job reads, so the dashboard and the digest can never
+    disagree about what happened.
+    """
+    import review
+
+    org = current_org()
+    if org is None and is_owner() and request.args.get("org_id"):
+        try:
+            org = int(request.args["org_id"])
+        except ValueError:
+            return jsonify({"error": "org_id must be a number"}), 400
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days") or 7)))
+    except ValueError:
+        days = 7
+    return jsonify(review.brief(org, days=days))
+
+
 @app.route("/api/data-sources", methods=["GET"])
 @client_admin_required
 def list_data_sources():
