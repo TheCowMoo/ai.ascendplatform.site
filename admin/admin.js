@@ -2489,18 +2489,32 @@
     website: 'Build a website page as one complete HTML document. When it is finished, save it with save_deliverable using kind "website".'
   };
 
+  var QUOTES = [
+    'Herding the ducks…',
+    'Negotiating with the cows…',
+    'Teaching the pixels to behave…',
+    'Untangling semicolons…',
+    'Feeding the hamsters that power this…',
+    'Asking the reviewer to be nice…',
+    'Counting to three, twice…',
+    'Polishing the buttons…'
+  ];
+
   function watchJob(jobId, statusEl, onFinish) {
     var lastSeq = 0;
     var lastText = '';
+    var ticks = 0;
     var timer = setInterval(function () {
       api('GET', '/api/jobs/' + jobId + '/events?after=' + lastSeq).then(function (d) {
         (d.events || []).forEach(function (ev) {
           lastSeq = Math.max(lastSeq, ev.seq);
-          if (ev.content) lastText = String(ev.content).replace(/\s+/g, ' ').slice(0, 120);
+          if (ev.content) lastText = String(ev.content).replace(/\s+/g, ' ').slice(0, 100);
         });
+        ticks += 1;
         var job = d.job || {};
+        var quip = QUOTES[Math.floor(ticks / 2) % QUOTES.length];
         statusEl.textContent = (job.status || 'running') + ' · job #' + jobId +
-          (lastText ? ' · ' + lastText : '');
+          (lastText ? ' · ' + lastText : ' · ' + quip);
         if (['done', 'failed', 'cancelled'].indexOf(job.status) !== -1) {
           clearInterval(timer);
           if (job.status === 'done') toast('Finished - the new draft is listed below', true);
@@ -2583,6 +2597,39 @@
     actions.appendChild(copy);
     actions.appendChild(close);
     modal.appendChild(actions);
+
+    // Refine in place: the job updates this same draft, so the preview reloads rather
+    // than spawning a second version to compare by hand.
+    var refineBox = el('div', 'refine-box');
+    var say = el('input');
+    say.placeholder = 'Ask for a change - "make the subject shorter", "warmer tone"…';
+    var go = el('button', 'btn btn-primary', 'Refine');
+    var note = el('div', 'muted', '');
+    go.onclick = function () {
+      var text = (say.value || '').trim();
+      if (!text) { toast('Say what to change', false); return; }
+      go.disabled = true;
+      note.textContent = 'Sending to the team…';
+      api('POST', '/api/deliverables/' + item.id + '/refine', { instruction: text })
+        .then(function (d) {
+          watchJob(d.job_id, note, function () {
+            api('GET', '/api/deliverables/' + item.id).then(function (fresh) {
+              var updated = fresh.deliverable || {};
+              frame.srcdoc = updated.content || frame.srcdoc;
+              item.content = updated.content || item.content;
+              say.value = '';
+              go.disabled = false;
+              toast('Draft updated', true);
+            }).catch(function () { go.disabled = false; });
+          });
+        })
+        .catch(function (e) { go.disabled = false; note.textContent = e.message; });
+    };
+    refineBox.appendChild(say);
+    refineBox.appendChild(go);
+    modal.appendChild(refineBox);
+    modal.appendChild(note);
+
     backdrop.appendChild(modal);
     backdrop.onclick = function (e) { if (e.target === backdrop) document.body.removeChild(backdrop); };
     document.body.appendChild(backdrop);

@@ -490,4 +490,9 @@ input[type=color] {
 .token-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
 @media (max-width: 900px) { .template-grid { grid-template-columns: 1fr; } }
 
+/* ---------- Refine-in-place row inside the preview modal ---------- */
+.refine-box { display: flex; gap: 8px; margin-top: 10px; }
+.refine-box input { flex: 1; }
+
+
 

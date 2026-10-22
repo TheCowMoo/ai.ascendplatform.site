@@ -2100,6 +2100,44 @@ def artifact_file(filename):
     return send_from_directory(ARTIFACTS_ROOT, filename, max_age=86400)
 
 
+@app.route("/api/deliverables/<int:deliverable_id>/refine", methods=["POST"])
+@client_admin_required
+def refine_deliverable(deliverable_id):
+    """Ask the team to change an existing draft, in a job of its own.
+
+    The job is given the draft's id, so its ``save_deliverable`` call updates this row
+    instead of creating a second one - the same draft comes back, changed.
+    """
+    item = _deliverable_for_request(deliverable_id)
+    if not item:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    instruction = (data.get("instruction") or "").strip()
+    if not instruction:
+        return jsonify({"error": "Say what to change"}), 400
+
+    prompt = (
+        "Refine an existing %s titled %r (deliverable #%d).\n\n"
+        "Current content:\n%s\n\n"
+        "The user asks: %s\n\n"
+        "Return the complete updated document - not a description, not a diff - and save "
+        "it with save_deliverable(kind=%r, title=%r, content=<the whole updated "
+        "document>, deliverable_id=%d) so it replaces the existing draft. Keep the "
+        "existing styling and every image URL that still works."
+        % (item["kind"], item["title"], item["id"], (item.get("content") or "")[:12000],
+           instruction, item["kind"], item["title"], item["id"])
+    )
+    job_id = jobs.create_job(
+        "Refine: %s" % item["title"],
+        prompt,
+        requester_id=session.get("user_id"),
+        team_mode="selector",
+        task_name="agent_team",
+        org_id=item.get("org_id"),
+    )
+    return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
+
+
 @app.route("/api/data-sources", methods=["GET"])
 @client_admin_required
 def list_data_sources():

@@ -105,7 +105,8 @@ def _draft_from_this_job(job_id, org_id, kind, title):
 
 
 def _build_save_deliverable(emit, job_id=None):
-    async def save_deliverable(kind: str, title: str, content: str = "", summary: str = "") -> str:
+    async def save_deliverable(kind: str, title: str, content: str = "", summary: str = "",
+                               deliverable_id: int = 0) -> str:
         """Save content you have written as a draft the user can open in the console."""
         if not (content or "").strip():
             # A missing content argument used to surface as a pydantic validation error,
@@ -126,9 +127,13 @@ def _build_save_deliverable(emit, job_id=None):
                 % ", ".join(placeholders[:4])
             )
         org_id, requester = _job_context(job_id)
+        # A refinement names an existing draft; anything else is a new one.
+        target = deliverables_service.get_deliverable(int(deliverable_id)) if deliverable_id else None
+        if target and org_id is not None and target.get("org_id") not in (None, org_id):
+            target = None  # never write into another client's draft
         # The team often saves before the images are chosen, then again once they are.
         # Updating this job's own draft keeps one row instead of a duplicate per pass.
-        existing = _draft_from_this_job(job_id, org_id, kind, title)
+        existing = target or _draft_from_this_job(job_id, org_id, kind, title)
         try:
             if existing:
                 item = deliverables_service.update_deliverable(
