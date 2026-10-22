@@ -225,6 +225,98 @@ def update(automation_id, org_id, **fields):
     return get(automation_id, org_id)
 
 
+def start(automation_id, org_id, requester_id=None):
+    """Queue one run. Returns the run row and the job that will walk the graph."""
+    import jobs
+    from db import get_connection
+
+    automation = get(automation_id, org_id)
+    if not automation:
+        raise AutomationError("Not found")
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO automation_runs (automation_id, status) VALUES (?, 'queued')",
+            (automation_id,),
+        )
+        run_id = cur.lastrowid
+    job_id = jobs.create_job(
+        "Automation: %s" % automation["name"],
+        json.dumps({"automation_id": automation_id, "run_id": run_id}),
+        requester_id, "selector", "automation", org_id,
+    )
+    jobs.submit(job_id)          # mandatory: a created job that is never submitted queues forever
+    with get_connection() as conn:
+        conn.execute("UPDATE automation_runs SET job_id = ? WHERE id = ?", (job_id, run_id))
+        conn.execute("UPDATE automations SET last_run_at = CURRENT_TIMESTAMP WHERE id = ?",
+                     (automation_id,))
+    return {"run_id": run_id, "job_id": job_id}
+
+
+def _finish(run_id, status, error=""):
+    from db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE automation_runs SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?", (status, error, run_id),
+        )
+
+
+def _execute(step, automation, emit):
+    """Do one node's work and return a short human note for the transcript.
+
+    Agent nodes dispatch a job and move on: the automation orchestrates, it does not sit
+    waiting for a write to finish. A gate stops the walk - the run parks as
+    awaiting_approval rather than holding a worker for the length of an approval timeout.
+    """
+    import jobs
+
+    kind = step.get("type")
+    config = step.get("config") or {}
+    if kind == "agent":
+        child = jobs.create_job(
+            "%s: %s" % (automation["name"], step.get("title") or "step"),
+            config.get("prompt") or automation.get("description") or automation["name"],
+            automation.get("created_by"), "selector", "agent_team", automation["org_id"],
+        )
+        jobs.submit(child)
+        return "Started job #%d." % child
+    if kind == "notify":
+        return "Would report: %s" % (config.get("message") or step.get("title") or "done")
+    if kind == "condition":
+        return "Condition noted; branch taken on the graph's first link."
+    if kind == "tool":
+        return "Tool '%s' is not executed by the walker yet." % config.get("tool", "unknown")
+    return "Gate." if kind == "gate" else "Nothing to do."
+
+
+async def run_task(job, emit):
+    """Registered as task ``automation``: walks the graph, one event per node."""
+    try:
+        payload = json.loads(job.get("prompt") or "{}")
+    except ValueError:
+        payload = {}
+    automation_id = payload.get("automation_id")
+    run_id = payload.get("run_id")
+    automation = get(automation_id, job.get("org_id"))
+    if not automation:
+        raise RuntimeError("Automation %r not found" % (automation_id,))
+
+    emit("message", "Automation", "Running “%s”." % automation["name"])
+    for step in automation["steps"]:
+        emit("node", "Automation", json.dumps(
+            {"node": step["id"], "type": step.get("type"), "status": "running"}))
+        note = _execute(step, automation, emit)
+        emit("node", "Automation", json.dumps(
+            {"node": step["id"], "type": step.get("type"), "status": "done", "note": note}))
+        emit("message", "Automation", "%s — %s" % (step.get("title") or step["id"], note))
+        if step.get("type") == "gate":
+            _finish(run_id, "awaiting_approval")
+            return "Parked at the approval gate “%s”." % (step.get("title") or step["id"])
+    _finish(run_id, "done")
+    return "Ran %d steps." % len(automation["steps"])
+
+
 def delete(automation_id, org_id):
     from db import get_connection
 

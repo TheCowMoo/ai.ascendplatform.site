@@ -2199,6 +2199,18 @@ def delete_automation(automation_id):
     return jsonify({"deleted": automation_id})
 
 
+@app.route("/api/automations/<int:automation_id>/run", methods=["POST"])
+@login_required
+def run_automation(automation_id):
+    """Queue a run. The walk happens in a job, so it is watchable like anything else."""
+    try:
+        queued = automations_service.start(automation_id, current_org(),
+                                           session.get("user_id"))
+    except automations_service.AutomationError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify(queued), 202
+
+
 @app.route("/api/manager/chat", methods=["POST"])
 @login_required
 def manager_chat():
@@ -2452,6 +2464,12 @@ jobs.TASKS.setdefault("site_review", review_mod.site_review)
 import manager as manager_mod
 
 jobs.TASKS.setdefault("chat", manager_mod.chat_task)
+
+# Automations run as ordinary jobs, so a run gets a transcript, live node events and the
+# same tenancy rules as everything else.
+import automations as automations_mod
+
+jobs.TASKS.setdefault("automation", automations_mod.run_task)
 
 # Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
 import scheduler as scheduler_mod

@@ -3558,7 +3558,19 @@
         api('DELETE', '/api/automations/' + a.id).then(refresh)
           .catch(function (e) { toast(e.message, false); });
       };
-      actions.appendChild(toggle); actions.appendChild(edit); actions.appendChild(del);
+      var run = el('button', 'btn', 'Run now');
+      run.onclick = function () {
+        run.disabled = true;
+        api('POST', '/api/automations/' + a.id + '/run').then(function (d) {
+          toast('Queued run #' + d.run_id);
+          watchJob(d.job_id, run, function () { run.disabled = false; });
+        }).catch(function (e) {
+          run.disabled = false;
+          toast(e.message, false);
+        });
+      };
+      actions.appendChild(toggle); actions.appendChild(run);
+      actions.appendChild(edit); actions.appendChild(del);
       box.appendChild(actions);
       return box;
     }
