@@ -2141,6 +2141,31 @@ def refine_deliverable(deliverable_id):
     return jsonify({"job_id": job_id, "deliverable_id": item["id"]}), 201
 
 
+@app.route("/api/chat", methods=["POST"])
+@login_required
+def chat():
+    """One manager turn, as a job so it has a transcript and the usual tenancy rules.
+
+    Bounded history: the last ten turns, capped per turn, so a long conversation cannot
+    quietly become an expensive prompt.
+    """
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Say something first"}), 400
+    lines = []
+    for turn in (data.get("history") or [])[-10:]:
+        if isinstance(turn, dict) and turn.get("content"):
+            lines.append("%s: %s" % (turn.get("role", "user"), str(turn["content"])[:800]))
+    prompt = ("%s\n\n%s" % ("\n".join(lines), message)) if lines else message
+    job_id = jobs.create_job(
+        "Manager chat", prompt, session.get("user_id"), "selector", "chat",
+        org_id=current_org(),
+    )
+    jobs.submit(job_id)
+    return jsonify({"job_id": job_id}), 201
+
+
 @app.route("/api/analytics/summary", methods=["GET"])
 @client_admin_required
 def analytics_summary():
