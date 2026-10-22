@@ -494,5 +494,31 @@ input[type=color] {
 .refine-box { display: flex; gap: 8px; margin-top: 10px; }
 .refine-box input { flex: 1; }
 
+/* ---------- Job activity: honest motion while we cannot know a percentage ---------- */
+.activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.activity-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #4f46e5;
+  flex: 0 0 auto; opacity: .35;
+}
+.activity.running .activity-dot { animation: pulse 1.2s ease-in-out infinite; }
+.activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-bar {
+  position: relative; display: block; width: 88px; height: 3px; overflow: hidden;
+  border-radius: 999px; background: var(--line); flex: 0 0 auto;
+}
+.activity-bar b {
+  position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+  border-radius: 999px; background: #4f46e5;
+  animation: sweep 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: .25; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+@keyframes sweep { 0% { left: -40%; } 100% { left: 100%; } }
+/* Motion is decoration here, not information: turn it off for anyone who asked. */
+@media (prefers-reduced-motion: reduce) {
+  .activity.running .activity-dot, .activity-bar b { animation: none; }
+  .activity.running .activity-dot { opacity: 1; }
+  .activity-bar b { left: 0; width: 100%; opacity: .35; }
+}
+
 
 

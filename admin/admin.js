@@ -2513,12 +2513,20 @@
         ticks += 1;
         var job = d.job || {};
         var quip = QUOTES[Math.floor(ticks / 2) % QUOTES.length];
-        statusEl.textContent = (job.status || 'running') + ' · job #' + jobId +
-          (lastText ? ' · ' + lastText : ' · ' + quip);
+        var running = ['done', 'failed', 'cancelled'].indexOf(job.status) === -1;
+        statusEl.className = running ? 'activity running' : 'activity';
+        statusEl.innerHTML =
+          '<i class="activity-dot"></i>' +
+          '<span class="activity-text">' + esc((job.status || 'running') + ' · job #' + jobId +
+            (lastText ? ' · ' + lastText : ' · ' + quip)) + '</span>' +
+          (running ? '<span class="activity-bar"><b></b></span>' : '');
         if (['done', 'failed', 'cancelled'].indexOf(job.status) !== -1) {
-          clearInterval(timer);
-          if (job.status === 'done') toast('Finished - the new draft is listed below', true);
-          else toast((job.error || ('Job ' + job.status)).slice(0, 200), false);
+          clearInterval(timer);          // stop before onFinish, so a re-render cannot
+          if (job.status === 'done') {   // leave this timer polling a finished job
+            toast('Finished - the new draft is listed below', true);
+          } else {
+            toast((job.error || ('Job ' + job.status)).slice(0, 200), false);
+          }
           onFinish();
         }
       }).catch(function () { /* keep polling through a blip */ });
