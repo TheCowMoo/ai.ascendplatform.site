@@ -309,6 +309,9 @@ def _patch_anthropic_client(client):
 
     async def create(*args, **kwargs):
         kwargs["messages"] = without_empty_blocks(kwargs.get("messages"))
+        # Fail here, with the index, rather than paying for a 400 that names only a
+        # message position and leaves us guessing at the shape.
+        assert_valid(kwargs["messages"])
         return await original(*args, **kwargs)
 
     try:
@@ -316,6 +319,44 @@ def _patch_anthropic_client(client):
     except (AttributeError, TypeError):  # pragma: no cover - slotted resource
         return client
     return client
+
+
+def assert_valid(messages):
+    """Raise with the offending index instead of letting Anthropic answer 400.
+
+    ``without_empty_blocks`` repairs the payload, so anything this catches is a shape it
+    does not know about yet. Failing here costs nothing and names the message and block;
+    the API's version of the same complaint arrives after a job has burned tokens and
+    reads like "messages.0.content.3: unexpected tool_use_id" with no context.
+    """
+    if not messages:
+        raise ValueError("payload has no messages")
+    # A leading system message is legitimate - AutoGen includes one when the system
+    # prompt is passed as a message rather than a client argument - so it is not checked.
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not content:
+            raise ValueError("message %d (%s) has empty content" % (index, message.get("role")))
+        if not isinstance(content, list):
+            continue
+        previous = messages[index - 1] if index else None
+        usable = set()
+        if isinstance(previous, dict) and isinstance(previous.get("content"), list):
+            usable = {block.get("id") for block in previous["content"]
+                      if isinstance(block, dict) and block.get("type") == "tool_use"}
+        for position, block in enumerate(content):
+            if not isinstance(block, dict):
+                raise ValueError("message %d block %d is not an object" % (index, position))
+            if block.get("type") == "text" and not str(block.get("text") or "").strip():
+                raise ValueError("message %d block %d is an empty text block"
+                                 % (index, position))
+            if block.get("type") == "tool_result" and block.get("tool_use_id") not in usable:
+                raise ValueError(
+                    "message %d block %d is a tool_result for %r with no matching "
+                    "tool_use in message %d"
+                    % (index, position, block.get("tool_use_id"), index - 1)
+                )
+    return True
 
 
 def get_model_client(provider, model=None, temperature=None, **kwargs):
