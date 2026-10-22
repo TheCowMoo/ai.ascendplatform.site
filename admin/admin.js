@@ -3620,6 +3620,12 @@
       });
       panel.appendChild(list);
 
+      // Read-only graph: the same steps JSON, drawn. Drag and live states come next; this
+      // already makes the shape legible, which is the part that was missing.
+      var graph = el('div', 'auto-graph');
+      graph.innerHTML = graphSvg(steps, a ? a.layout : null);
+      panel.appendChild(graph);
+
       var save = el('button', 'btn btn-primary', 'Save');
       save.onclick = function () {
         var payload = { name: nameField.value, steps: steps, trigger_type: 'manual' };
@@ -3640,6 +3646,55 @@
     add.onclick = function () { openEditor(null); };
     refresh();
     return container;
+  }
+
+  // One SVG, no library: boxes and bezier links. Positions come from the saved layout, or
+  // fall back to a vertical stack so a graph is never unreadable.
+  function graphSvg(steps, layout) {
+    var NODE_W = 210, NODE_H = 44, GAP = 40, pos = {}, i;
+    for (i = 0; i < steps.length; i++) {
+      var saved = layout && layout[steps[i].id];
+      pos[steps[i].id] = {
+        x: saved ? saved.x : 20,
+        y: saved ? saved.y : 20 + i * (NODE_H + GAP)
+      };
+    }
+    var width = 20, height = 20;
+    Object.keys(pos).forEach(function (id) {
+      width = Math.max(width, pos[id].x + NODE_W + 20);
+      height = Math.max(height, pos[id].y + NODE_H + 20);
+    });
+    var out = ['<svg class="auto-svg" viewBox="0 0 ' + width + ' ' + height + '" ' +
+      'width="100%" role="img" aria-label="Automation flow">',
+      '<defs><marker id="auto-arrow" viewBox="0 0 10 10" refX="9" refY="5" ' +
+      'markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" ' +
+      'fill="#94a3b8"/></marker></defs>'];
+    steps.forEach(function (step) {
+      (step.next || []).forEach(function (target) {
+        var a = pos[step.id], b = pos[target];
+        if (!a || !b) return;
+        var x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = b.x + NODE_W / 2, y2 = b.y;
+        var mid = y1 + Math.max(18, (y2 - y1) / 2);
+        out.push('<path d="M' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + mid + ', ' + x2 + ' ' +
+          mid + ', ' + x2 + ' ' + y2 + '" fill="none" stroke="#cbd5e1" stroke-width="2" ' +
+          'marker-end="url(#auto-arrow)"/>');
+      });
+    });
+    steps.forEach(function (step) {
+      var p = pos[step.id];
+      out.push('<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' +
+        NODE_H + '" rx="10" fill="#fff" stroke="' +
+        (step.type === 'gate' ? '#4338ca' : '#e2e8f0') + '" stroke-width="' +
+        (step.type === 'gate' ? 2 : 1) + '"/>' +
+        '<text x="' + (p.x + 12) + '" y="' + (p.y + 19) + '" font-size="12.5" ' +
+        'font-weight="600" fill="#111827" font-family="inherit">' +
+        esc(String(step.title || step.id).slice(0, 26)) + '</text>' +
+        '<text x="' + (p.x + 12) + '" y="' + (p.y + 34) + '" font-size="10.5" ' +
+        'fill="#94a3b8" letter-spacing=".06em" font-family="inherit">' +
+        esc(String(step.type || '').toUpperCase()) + '</text></g>');
+    });
+    out.push('</svg>');
+    return out.join('');
   }
 
   // ---------- Floating manager ----------
