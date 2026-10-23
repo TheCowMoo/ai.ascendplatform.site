@@ -139,6 +139,17 @@ def test_a_client_cannot_switch_clients(alpha, beta):
     print("client A's attempt to act as B -> 403, tenant unchanged")
 
 
+def test_a_fresh_login_starts_at_all_clients(alpha):
+    """Nobody should inherit the last session's client just by signing in."""
+    owner = login("admin@example.com", "admin123")
+    owner.post("/api/session/org", json={"org_id": alpha["id"]})
+    assert owner.get("/api/session/org").get_json()["acting_org"] == alpha["id"]
+    owner.post("/api/auth/logout")
+    again = login("admin@example.com", "admin123")
+    assert again.get("/api/session/org").get_json()["acting_org"] is None
+    print("re-login clears the acting client")
+
+
 def test_no_client_means_no_new_work():
     """With nobody picked, work is refused instead of saved where no one can find it."""
     owner = login("admin@example.com", "admin123")
@@ -174,6 +185,7 @@ def main():
         test_owner_picks_a_client_and_the_lists_follow(alpha, beta)
         test_only_a_real_client_id_is_accepted()
         test_a_client_cannot_switch_clients(alpha, beta)
+        test_a_fresh_login_starts_at_all_clients(alpha)
         test_no_client_means_no_new_work()
         test_save_deliverable_refuses_an_unowned_job()
     finally:
