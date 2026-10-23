@@ -130,6 +130,68 @@ def test_resume_picks_up_after_the_gate_and_never_reruns_earlier_work():
     assert automations.walk(steps, resume_after="gone") == ["a", "g"]
 
 
+def _branch(config):
+    """A condition with a then branch and an else branch, each ending in its own stop."""
+    return [
+        {"id": "c", "type": "condition", "title": "Enough drafts?", "config": config,
+         "next": ["then", "else"]},
+        {"id": "then", "type": "notify", "title": "Then", "next": ["t_end"]},
+        {"id": "else", "type": "notify", "title": "Else", "next": ["e_end"]},
+        {"id": "t_end", "type": "stop", "title": "T", "next": []},
+        {"id": "e_end", "type": "stop", "title": "E", "next": []},
+    ]
+
+
+def test_a_condition_takes_the_first_link_when_it_is_true():
+    # OTHER_ORG has no drafts, so "drafts == 0" is true.
+    steps = _branch({"fact": "drafts", "op": "==", "value": 0})
+    assert automations.validate_graph(steps) == [], automations.validate_graph(steps)
+    assert automations.walk(steps, org_id=OTHER_ORG) == ["c", "then", "t_end"]
+    answer, note = automations.evaluate_condition(steps[0], OTHER_ORG)
+    assert answer is True
+    assert "first" in note, note
+    print("true ->", note)
+
+
+def test_a_condition_takes_the_second_link_when_it_is_false():
+    steps = _branch({"fact": "drafts", "op": "==", "value": 5})
+    assert automations.walk(steps, org_id=OTHER_ORG) == ["c", "else", "e_end"]
+    answer, note = automations.evaluate_condition(steps[0], OTHER_ORG)
+    assert answer is False
+    assert "second" in note, note
+    print("false ->", note)
+
+
+def test_a_condition_without_an_else_link_stops_a_false_answer():
+    """One link is a one-sided branch: false means the run ends there, not that it loops."""
+    steps = _branch({"fact": "drafts", "op": ">", "value": 999})
+    steps[0]["next"] = ["then"]
+    assert automations.validate_graph(steps) != []      # 'else' is now unreachable
+    assert automations.walk(steps, org_id=OTHER_ORG) == ["c"]
+
+
+def test_a_condition_is_validated_before_it_can_be_saved():
+    three = _branch({"fact": "drafts", "op": ">", "value": 0})
+    three[0]["next"] = ["then", "else", "then"]
+    assert any("at most two links" in p for p in automations.validate_graph(three))
+
+    unknown = _branch({"fact": "vibes", "op": ">", "value": 0})
+    assert any("unknown condition" in p for p in automations.validate_graph(unknown))
+
+    bad_op = _branch({"fact": "drafts", "op": "≈", "value": 0})
+    assert any("unknown operator" in p for p in automations.validate_graph(bad_op))
+    print("three links, an unknown fact and a bad operator are all refused")
+
+
+def test_an_unanswered_condition_reads_zero_rather_than_guessing():
+    """No client, no rows: every fact is 0, and the run says so instead of inventing one."""
+    assert automations.fact_value(None, "drafts") == 0
+    assert automations.fact_value(OTHER_ORG, "sites") == 0
+    answer, note = automations.evaluate_condition(
+        {"type": "condition", "config": {"fact": "failed_jobs", "op": ">", "value": 0}}, None)
+    assert answer is False and "0" in note, note
+
+
 def test_resuming_with_nothing_parked_is_refused():
     mine = automations.create(OTHER_ORG, "No runs", [
         {"id": "s", "type": "stop", "title": "S", "next": []}])

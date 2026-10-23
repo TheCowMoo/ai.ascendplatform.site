@@ -3631,6 +3631,45 @@
         row.innerHTML = '<span class="auto-step-num">' + (index + 1) + '</span>' +
           '<span class="auto-step-title">' + esc(step.title || step.id) + '</span>' +
           '<span class="auto-step-type">' + esc(step.type) + '</span>';
+        // A condition is a count compared with a number - "fewer than 1 email". The editor
+        // writes those three fields straight into step.config, which Save posts unchanged.
+        if (step.type === 'condition') {
+          var cfg = step.config || (step.config = {});
+          var rules = el('div', 'auto-cond');
+          function condPicker(options, key, fallback) {
+            var sel = el('select', 'auto-cond-select');
+            options.forEach(function (o) {
+              var opt = el('option', null, o.label);
+              opt.value = o.value;
+              sel.appendChild(opt);
+            });
+            sel.value = cfg[key] || fallback;
+            sel.onchange = function () { cfg[key] = sel.value; };
+            return sel;
+          }
+          rules.appendChild(condPicker([
+            { value: 'drafts', label: 'drafts' },
+            { value: 'sites', label: 'websites' },
+            { value: 'failed_jobs', label: 'failed jobs' }
+          ], 'fact', 'drafts'));
+          rules.appendChild(condPicker([
+            { value: '==', label: 'is' }, { value: '!=', label: 'is not' },
+            { value: '>', label: 'more than' }, { value: '>=', label: 'at least' },
+            { value: '<', label: 'fewer than' }, { value: '<=', label: 'at most' }
+          ], 'op', '>'));
+          var num = el('input', 'auto-cond-num');
+          num.type = 'number';
+          num.min = '0';
+          num.value = cfg.value === undefined ? '0' : String(cfg.value);
+          num.oninput = function () { cfg.value = parseInt(num.value, 10) || 0; };
+          rules.appendChild(num);
+          var kindField = el('input', 'auto-cond-kind');
+          kindField.placeholder = 'kind, e.g. email';
+          kindField.value = cfg.kind || '';
+          kindField.oninput = function () { cfg.kind = kindField.value.trim(); };
+          rules.appendChild(kindField);
+          row.appendChild(rules);
+        }
         list.appendChild(row);
       });
       panel.appendChild(list);

@@ -18,6 +18,76 @@ OUTWARD_TOOLS = ("send_email", "publish_site", "provision_site")
 MAX_NODES = 12
 MAX_NAME = 120
 
+# A condition is answered from the client's own rows, not by asking a model: a branch that
+# answers differently each run is not a branch, it is a coin toss. Each fact is a count, so
+# the whole language is "<count> <op> <number>".
+CONDITION_FACTS = ("drafts", "sites", "failed_jobs")
+CONDITION_OPS = ("==", "!=", ">", ">=", "<", "<=")
+
+
+def condition_config(step):
+    """(fact, op, value, kind) from a condition node, with safe defaults."""
+    config = step.get("config") or {}
+    if not isinstance(config, dict):
+        config = {}
+    fact = str(config.get("fact") or "drafts").strip().lower()
+    op = str(config.get("op") or ">").strip()
+    try:
+        value = int(config.get("value") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    kind = str(config.get("kind") or "").strip().lower() or None
+    return fact, op, value, kind
+
+
+def fact_value(org_id, fact, kind=None):
+    """One number about the client. Unknown facts are 0, never an exception."""
+    from db import get_connection
+
+    if not org_id:
+        return 0
+    with get_connection() as conn:
+        if fact == "drafts":
+            sql = "SELECT COUNT(*) AS n FROM deliverables WHERE org_id = ?"
+            args = [org_id]
+            if kind:
+                sql += " AND kind = ?"
+                args.append(kind)
+        elif fact == "sites":
+            sql = "SELECT COUNT(*) AS n FROM sites WHERE org_id = ?"
+            args = [org_id]
+        elif fact == "failed_jobs":
+            sql = "SELECT COUNT(*) AS n FROM jobs WHERE org_id = ? AND status = 'failed'"
+            args = [org_id]
+        else:
+            return 0
+        row = conn.execute(sql, tuple(args)).fetchone()
+    return int((row["n"] if row else 0) or 0)
+
+
+def evaluate_condition(step, org_id):
+    """(answer, note) for a condition node.
+
+    ``True`` takes the first link, ``False`` the second - the same edge order the editor
+    draws. The note goes into the transcript, so a run explains why it went that way.
+    """
+    fact, op, value, kind = condition_config(step)
+    if fact not in CONDITION_FACTS:
+        return False, "Unknown condition '%s'; taking the second link." % fact
+    if op not in CONDITION_OPS:
+        return False, "Unknown comparison '%s'; taking the second link." % op
+    actual = fact_value(org_id, fact, kind)
+    label = "%s%s" % (fact, (" (%s)" % kind) if kind else "")
+    answer = {
+        "==": actual == value, "!=": actual != value,
+        ">": actual > value, ">=": actual >= value,
+        "<": actual < value, "<=": actual <= value,
+    }[op]
+    return answer, "%s is %d, %s %d is %s - took the %s link." % (
+        label, actual, op, value, "true" if answer else "false",
+        "first" if answer else "second",
+    )
+
 
 class AutomationError(ValueError):
     pass
@@ -61,6 +131,21 @@ def validate_graph(steps, trigger_type="manual"):
         elif not edges:
             problems.append("Step '%s' leads nowhere - add a next step or make it a stop."
                             % node_id)
+        elif kind == "condition":
+            # First link = when true, second = when false. One link is a one-sided branch.
+            if len(edges) > 2:
+                problems.append(
+                    "Step '%s' is a condition; it takes at most two links (then, else)."
+                    % node_id)
+            fact, op, _, _ = condition_config(step)
+            if fact not in CONDITION_FACTS:
+                problems.append(
+                    "Step '%s' checks an unknown condition '%s'; use one of %s."
+                    % (node_id, fact, ", ".join(CONDITION_FACTS)))
+            if op not in CONDITION_OPS:
+                problems.append(
+                    "Step '%s' compares with an unknown operator '%s'; use one of %s."
+                    % (node_id, op, " ".join(CONDITION_OPS)))
 
     for node_id, step in by_id.items():
         for nxt in step.get("next") or []:
@@ -327,14 +412,19 @@ def _execute(step, automation, emit):
     if kind == "notify":
         return "Would report: %s" % (config.get("message") or step.get("title") or "done")
     if kind == "condition":
-        return "Condition noted; branch taken on the graph's first link."
+        _, note = evaluate_condition(step, automation.get("org_id"))
+        return note
     if kind == "tool":
         return "Tool '%s' is not executed by the walker yet." % config.get("tool", "unknown")
     return "Gate." if kind == "gate" else "Nothing to do."
 
 
-def _chain(steps):
-    """Every node reachable by following edges, gates included. No side effects."""
+def _chain(steps, org_id=None):
+    """Every node reachable by following edges, gates included. No side effects.
+
+    A condition picks which edge: the first when it is true, the second when it is false.
+    Everything else follows its first link, which is what the editor draws.
+    """
     if not steps:
         return []
     by_id = {s["id"]: s for s in steps}
@@ -342,20 +432,29 @@ def _chain(steps):
     while current and current in by_id and current not in seen:
         seen.add(current)
         order.append(current)
-        if by_id[current].get("type") == "stop":
+        step = by_id[current]
+        if step.get("type") == "stop":
             break
-        links = by_id[current].get("next") or []
-        current = links[0] if links else None
+        links = step.get("next") or []
+        if step.get("type") == "condition":
+            answer, _ = evaluate_condition(step, org_id)
+            if answer:
+                current = links[0] if links else None
+            else:
+                current = links[1] if len(links) > 1 else None
+        else:
+            current = links[0] if links else None
     return order
 
 
-def walk(steps, resume_after=None):
+def walk(steps, resume_after=None, org_id=None):
     """The nodes this job runs, in order, stopping at the next gate.
 
     ``resume_after`` is the gate a parked run stopped at: the walk picks up at the node
     its edge points to, so a resumed job never re-runs the work before the approval.
+    ``org_id`` answers the conditions on the way - without it every condition reads 0.
     """
-    order = _chain(steps)
+    order = _chain(steps, org_id)
     if resume_after in order:
         order = order[order.index(resume_after) + 1:]
     by_id = {s["id"]: s for s in steps}
@@ -381,7 +480,8 @@ async def run_task(job, emit):
 
     steps = {s["id"]: s for s in automation["steps"]}
     emit("message", "Automation", "Running “%s”." % automation["name"])
-    for node_id in walk(automation["steps"], payload.get("resume_after")):
+    order = walk(automation["steps"], payload.get("resume_after"), automation.get("org_id"))
+    for node_id in order:
         step = steps[node_id]
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "running"}))
@@ -393,7 +493,7 @@ async def run_task(job, emit):
             _finish(run_id, "awaiting_approval", resume_at=node_id)
             return "Parked at the approval gate “%s”." % (step.get("title") or node_id)
     _finish(run_id, "done")
-    return "Ran %d steps." % len(walk(automation["steps"]))
+    return "Ran %d steps." % len(order)
 
 
 def delete(automation_id, org_id):

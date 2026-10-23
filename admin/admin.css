@@ -689,6 +689,15 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 }
 .auto-step-title { flex: 1; font: 500 var(--t-3)/1.4 inherit; color: var(--ink); }
 .auto-step-type { font: 400 var(--t-2)/1 inherit; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+/* A condition's three fields sit on their own line, under the step's title. */
+.auto-step { flex-wrap: wrap; }
+.auto-cond {
+  flex: 0 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1);
+  margin: 2px 0 0 34px;
+}
+.auto-cond-select, .auto-cond-num, .auto-cond-kind { height: 28px; padding: 0 6px; font: 400 var(--t-2)/1 inherit; }
+.auto-cond-num { width: 64px; }
+.auto-cond-kind { width: 132px; }
 .auto-graph { background: #fcfcfd; border: 1px solid var(--line); border-radius: var(--r-2); padding: var(--s-2); }
 .auto-svg { display: block; max-height: 320px; }
 .run-status {

@@ -482,6 +482,9 @@ def login():
         session["email"] = row["email"]
         # The tenant lives in the signed session, never in request input.
         session["org_id"] = row["org_id"]
+        # A fresh login starts at the all-clients overview: inheriting the previous
+        # session's client would mean the operator silently creating work for the wrong one.
+        session.pop("acting_org_id", None)
         return jsonify({"user": {
             "id": row["id"], "email": row["email"], "name": row["name"],
             "role": row["role"], "org_id": row["org_id"],
