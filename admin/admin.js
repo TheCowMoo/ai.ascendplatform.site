@@ -144,6 +144,7 @@
     brand.innerHTML = '<img class="logo-img" src="/admin/logo-trim.png" alt="' +
       esc(BRAND) + '" />';
     aside.appendChild(brand);
+    aside.appendChild(workspaceSwitcher());
 
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
 
@@ -3805,6 +3806,40 @@
         window.addEventListener('pointerup', up);
       });
     });
+  }
+
+  // ---------- Workspace switcher ----------
+  // One row under the logo. The operator picks a client to act as; a client just sees
+  // their own name. The choice lives in the session, so every scoped view follows it.
+  function workspaceSwitcher() {
+    var row = el('div', 'side-workspace');
+    row.appendChild(el('div', 'side-workspace-label', 'Workspace'));
+    api('GET', '/api/session/org').then(function (d) {
+      if (!((d.orgs || []).length)) {
+        row.appendChild(el('div', 'side-workspace-name', d.name || 'No client'));
+        return;
+      }
+      var pick = el('select', 'side-workspace-select');
+      var all = el('option', null, 'All clients');
+      all.value = '0';
+      pick.appendChild(all);
+      d.orgs.forEach(function (o) {
+        var opt = el('option', null, o.name);
+        opt.value = o.id;
+        pick.appendChild(opt);
+      });
+      pick.value = d.acting_org ? String(d.acting_org) : '0';
+      pick.onchange = function () {
+        var chosen = pick.value === '0' ? null : pick.value;
+        api('POST', '/api/session/org', { org_id: chosen }).then(function () {
+          toast(chosen ? 'Now acting as ' + pick.options[pick.selectedIndex].text
+                       : 'Showing all clients', true);
+          render();     // re-render the current route against the new tenant
+        }).catch(function (e) { toast(e.message, false); });
+      };
+      row.appendChild(pick);
+    }).catch(function () { row.style.display = 'none'; });
+    return row;
   }
 
   // ---------- Floating manager ----------

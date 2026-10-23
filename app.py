@@ -301,8 +301,12 @@ def current_org():
     """The tenant for this request, taken from the signed session only.
 
     Never read the org from request input: it is the one value an attacker controls,
-    and it decides every scoped query.
+    and it decides every scoped query. The operator can pick a client to act as - that
+    choice is written to the session by ``/api/session/org``, so it arrives here the same
+    way a client's own org does.
     """
+    if is_owner():
+        return session.get("acting_org_id") or session.get("org_id")
     return session.get("org_id")
 
 
@@ -365,7 +369,9 @@ def list_scope():
     view, which is the one value that must never leak.
     """
     if is_owner():
-        return None
+        # An owner who has picked a client sees that client's rows; with nothing picked
+        # they still see everything, which is the operator's overview.
+        return session.get("acting_org_id") or None
     return current_org() or 0
 
 
@@ -2230,6 +2236,44 @@ def resume_automation(automation_id):
     except automations_service.AutomationError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(queued), 202
+
+
+@app.route("/api/session/org", methods=["GET"])
+@login_required
+def get_acting_org():
+    """Who is this session acting as? The switcher in the sidebar reads this."""
+    if not is_owner():
+        org = orgs_service.get_org(current_org() or 0)
+        return jsonify({"acting_org": current_org(), "name": (org or {}).get("name"),
+                        "orgs": []})
+    acting = session.get("acting_org_id")
+    orgs = orgs_service.list_orgs()
+    org = orgs_service.get_org(acting) if acting else None
+    return jsonify({
+        "acting_org": acting,
+        "name": (org or {}).get("name"),
+        "orgs": [{"id": o["id"], "name": o["name"]} for o in orgs],
+    })
+
+
+@app.route("/api/session/org", methods=["POST"])
+@owner_required
+def set_acting_org():
+    """Pick the client to act as. Written to the session, never trusted from the URL."""
+    data = request.get_json(silent=True) or {}
+    raw = data.get("org_id")
+    if raw in (None, "", 0, "0"):
+        session.pop("acting_org_id", None)
+        return jsonify({"acting_org": None, "name": None})
+    try:
+        org_id = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "org_id must be a number"}), 400
+    org = orgs_service.get_org(org_id)
+    if not org:
+        return jsonify({"error": "No such client"}), 404
+    session["acting_org_id"] = org_id
+    return jsonify({"acting_org": org_id, "name": org.get("name")})
 
 
 @app.route("/api/manager/chat", methods=["POST"])
