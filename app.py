@@ -2046,6 +2046,13 @@ def create_job():
     prompt = (data.get("prompt") or "").strip()
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
+    if current_org() is None:
+        # Nothing this job produces would be visible to a client, so refuse at the door
+        # rather than leave an orphan row behind.
+        return jsonify({
+            "error": "Pick a client in the workspace switcher first - work has to "
+                     "belong to someone."
+        }), 400
     title = (data.get("title") or "").strip() or prompt[:60]
     task_name = (data.get("task") or jobs.DEFAULT_TASK).strip()
     if task_name not in jobs.TASKS:
@@ -2247,7 +2254,7 @@ def get_acting_org():
         return jsonify({"acting_org": current_org(), "name": (org or {}).get("name"),
                         "orgs": []})
     acting = session.get("acting_org_id")
-    orgs = orgs_service.list_orgs()
+    orgs = orgs_service.list_orgs(limit=1000)   # a switcher that silently truncates is a bug
     org = orgs_service.get_org(acting) if acting else None
     return jsonify({
         "acting_org": acting,

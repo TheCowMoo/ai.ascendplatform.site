@@ -100,6 +100,20 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 Postgres `RETURNING id` is appended only for tables that actually have an `id` column
 (`settings`, `client_settings`, `meta_events` do not — that was a live 500).
 
+## Acting as a client (the workspace switcher)
+
+`current_org()` reads `session["org_id"]`, and the operator's own value is `None` - which
+used to mean "no tenant", so a job they launched wrote rows nobody could see. The row under
+the logo in the console fixes the cause: `POST /api/session/org` (owner only, org validated)
+stores `session["acting_org_id"]`, and `current_org()`/`list_scope()` follow it. Clearing it
+returns the operator to the all-clients overview. A client session cannot set it, and its
+`GET` never receives the list of other tenants.
+
+With no client selected, work is refused rather than orphaned: `POST /api/jobs`,
+`start_job` (manager) and `save_deliverable` all say so instead of writing. Rows that already
+have `org_id IS NULL` are listed - and only reassigned with explicit ids - by
+`repair_orphans.py`.
+
 ## The three core flows
 
 **A job.** `POST /api/jobs` → row + events. The worker (or in-process runner) builds the

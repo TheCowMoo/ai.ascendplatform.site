@@ -23,6 +23,7 @@ FAST_SUITES = (
     "smoke_automations",
     "smoke_analytics",
     "smoke_deliverables",
+    "smoke_workspace",
     "smoke_review",
     "smoke_asgi",
 )

@@ -127,6 +127,14 @@ def _build_save_deliverable(emit, job_id=None):
                 % ", ".join(placeholders[:4])
             )
         org_id, requester = _job_context(job_id)
+        if org_id is None:
+            # A draft with no owner appears in no client's tab, so it is worse than a
+            # refusal: it looks saved and is unreachable. Say so instead.
+            return (
+                "Nothing was saved: this job has no client attached, so the draft would "
+                "belong to nobody. Pick a client in the workspace switcher, then run "
+                "this again."
+            )
         # A refinement names an existing draft; anything else is a new one.
         target = deliverables_service.get_deliverable(int(deliverable_id)) if deliverable_id else None
         if target and org_id is not None and target.get("org_id") not in (None, org_id):

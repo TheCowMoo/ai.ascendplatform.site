@@ -82,6 +82,12 @@ def _build_start_job(emit, job_id=None):
         if not (prompt or "").strip():
             return "A prompt is required."
         org_id, requester = _context(job_id)
+        if org_id is None:
+            return (
+                "I can't start work that belongs to no client - it would never show up "
+                "in their Jobs or Library. Pick a client in the workspace switcher, then "
+                "ask me again."
+            )
         new_id = jobs.create_job(
             title.strip() or prompt.strip()[:60],
             prompt.strip(),
