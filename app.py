@@ -1362,6 +1362,13 @@ def list_deliverables():
 @app.route("/api/deliverables", methods=["POST"])
 @client_admin_required
 def create_deliverable():
+    if current_org() is None:
+        # Same rule as a job: an unowned draft shows up in nobody's tab, so it is refused
+        # here rather than saved where it cannot be found.
+        return jsonify({
+            "error": "Pick a client in the workspace switcher first - a draft has to "
+                     "belong to someone."
+        }), 400
     try:
         item = deliverables_service.create_deliverable(
             request.get_json(silent=True) or {},

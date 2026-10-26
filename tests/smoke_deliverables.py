@@ -207,6 +207,11 @@ def test_publish_route_validates_the_kind_and_the_session():
         "/api/auth/login", json={"email": "admin@example.com", "password": "admin123"}
     )
     assert resp.status_code == 200, resp.get_data(as_text=True)
+    # Creating a draft now needs a client, the same rule as a job: pick one first.
+    orgs = client.get("/api/orgs").get_json().get("orgs") or []
+    assert orgs, "no clients to act as"
+    picked = client.post("/api/session/org", json={"org_id": orgs[0]["id"]})
+    assert picked.status_code == 200, picked.get_data(as_text=True)
     resp = client.post(
         "/api/deliverables",
         json={"kind": "email", "title": "Route email %s" % TOKEN, "content": "<html>x</html>"},

@@ -159,6 +159,16 @@ def test_no_client_means_no_new_work():
     assert "workspace switcher" in resp.get_json()["error"].lower(), resp.get_json()
     print("POST /api/jobs with no client -> 400:", resp.get_json()["error"])
 
+    # The "+ New draft" button goes through this one, and it used to write unowned rows.
+    draft = owner.post("/api/deliverables", json={"kind": "email", "title": "Nobody's"})
+    assert draft.status_code == 400, draft.get_data(as_text=True)
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id FROM deliverables WHERE title = ?", ("Nobody's",)
+        ).fetchall()
+    assert not rows, "an unowned draft row was created: %s" % rows
+    print("POST /api/deliverables with no client -> 400, no row written")
+
 
 def test_save_deliverable_refuses_an_unowned_job():
     job_id = jobs.create_job("orphan check", "write an email", None, "selector", "agent_team")
