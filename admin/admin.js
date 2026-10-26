@@ -78,6 +78,11 @@
     }
     return fetch(url, opts).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
+        // A session that expired mid-page: send the user back to sign in. Without this the
+        // console keeps painting an empty shell over a series of 401 toasts.
+        if (res.status === 401 && url.indexOf('/api/auth/') !== 0) {
+          sessionExpired();
+        }
         if (!res.ok) {
           var e = new Error(data.error || ('HTTP ' + res.status));
           e.status = res.status;
@@ -113,8 +118,32 @@
 
   function toast(msg, ok) {
     var t = el('div', 'toast ' + (ok ? 'toast-success' : 'toast-error'), msg);
+    t.setAttribute('role', 'status');
+    t.setAttribute('aria-live', 'polite');
     document.body.appendChild(t);
-    setTimeout(function () { t.remove(); }, 3000);
+    setTimeout(function () { t.remove(); }, ok ? 3000 : 6000);
+  }
+
+  // Escape closes the topmost modal. All ten of them are a .modal-backdrop with a Close
+  // button, so one listener serves every call site without rewriting any of them.
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape') return;
+    var open = document.querySelectorAll('.modal-backdrop');
+    if (!open.length) return;
+    ev.preventDefault();
+    open[open.length - 1].remove();
+  });
+
+  // Called when the API says the session is gone. Guarded, because several requests can
+  // fail at once and only one redirect is wanted.
+  var expiring = false;
+  function sessionExpired() {
+    if (expiring) return;
+    expiring = true;
+    state.user = null;
+    toast('Signed out - please sign in again.', false);
+    if (location.hash !== '#/login') location.hash = '#/login';
+    setTimeout(function () { expiring = false; }, 1500);
   }
 
   function initials(name) {
@@ -2780,16 +2809,35 @@
     head.appendChild(el('h1', null, meta.title));
     var add = el('button', 'btn btn-primary', '+ New draft');
     add.onclick = function () { showDeliverableForm(meta.kind || 'blog', null, refresh); };
+    add.disabled = true;         // enabled once we know there is a client to own the draft
     head.appendChild(add);
     container.appendChild(head);
     container.appendChild(el('p', 'muted', meta.blurb));
-    if (meta.kind) {
-      container.appendChild(aiComposer(meta.kind,
-        'Describe what you want. The team saves it straight into this tab as a draft, so you can read and edit it without leaving the page.',
-        refresh, function () { return body; }));
-    }
+    var composerHost = el('div');
+    container.appendChild(composerHost);
     var body = el('div');
     container.appendChild(body);
+
+    // A draft needs a client, or it lands in nobody's tab. Say that up front instead of
+    // letting the save fail with a toast the user has to interpret.
+    api('GET', '/api/session/org').then(function (state) {
+      if (state && state.acting_org) {
+        add.disabled = false;
+        if (meta.kind) {
+          composerHost.appendChild(aiComposer(meta.kind,
+            'Describe what you want. The team saves it straight into this tab as a draft, ' +
+            'so you can read and edit it without leaving the page.',
+            refresh, function () { return body; }));
+        }
+        return;
+      }
+      add.disabled = true;
+      var hint = el('div', 'panel-card empty-state');
+      hint.innerHTML = '<p><strong>Pick a client to start a draft.</strong></p>' +
+        '<p class="muted">Choose one in the workspace switcher under the logo. A draft ' +
+        'with no client belongs to nobody, so it would never appear in a tab.</p>';
+      composerHost.appendChild(hint);
+    }).catch(function () { add.disabled = false; });
 
     function refresh() {
       var url = '/api/deliverables' + (meta.kind ? '?kind=' + meta.kind : '');
@@ -3420,7 +3468,13 @@
       });
     }
 
-    loadOrgs();
+    // Start on the client picked in the sidebar switcher, so this page and the rest of
+    // the console agree. The picker stays: syncing and configuring sources is per client
+    // and the operator may well want to look at a different one without leaving.
+    api('GET', '/api/session/org').then(function (s) {
+      if (s && s.acting_org) state.org = String(s.acting_org);
+    }).catch(function () { /* fall back to the first client */ })
+      .finally(loadOrgs);
     return container;
   }
 
@@ -3432,11 +3486,8 @@
       'one before it. Same numbers the weekly review reads.</p></div>';
     container.appendChild(head);
 
-    // The operator has no org of their own, so the page opens with a picker instead of
-    // a 400. Clients never see it - their org comes from the session.
-    var picker = el('select');
-    picker.style.maxWidth = '260px';
-    picker.style.marginBottom = '16px';
+    // The tenant comes from the session, like every other page: the sidebar switcher is
+    // the one control, so this page can never disagree with it.
     var body = el('div');
     container.appendChild(body);
 
@@ -3457,8 +3508,8 @@
       return box;
     }
 
-    function render(orgId) {
-      var q = '/api/analytics/summary?days=7' + (orgId ? '&org_id=' + orgId : '');
+    function render() {
+      var q = '/api/analytics/summary?days=7';
       api('GET', q).then(function (d) {
         body.innerHTML = '';
         var now = d.current || {};
@@ -3499,18 +3550,14 @@
       }).catch(function (e) { toast(e.message, false); });
     }
 
-    api('GET', '/api/orgs').then(function (d) {
-      var orgs = (d && d.orgs) || (Array.isArray(d) ? d : []);
-      if (!orgs.length) { render(null); return; }
-      orgs.forEach(function (o) {
-        var opt = el('option', null, o.name || ('Client ' + o.id));
-        opt.value = o.id;
-        picker.appendChild(opt);
-      });
-      picker.onchange = function () { render(picker.value); };
-      container.insertBefore(picker, body);
-      render(picker.value);
-    }).catch(function () { render(null); });
+    api('GET', '/api/session/org').then(function (state) {
+      if (state && state.acting_org) { render(); return; }
+      var hint = el('div', 'panel-card empty-state');
+      hint.innerHTML = '<div class="empty-icon">◔</div>' +
+        '<p><strong>Pick a client to see its traffic.</strong></p>' +
+        '<p class="muted">Use the workspace switcher under the logo.</p>';
+      body.appendChild(hint);
+    }).catch(function () { render(); });
 
     return container;
   }
@@ -3651,15 +3698,16 @@
             { value: 'drafts', label: 'drafts' },
             { value: 'sites', label: 'websites' },
             { value: 'failed_jobs', label: 'failed jobs' }
-          ], 'fact', 'drafts'));
+          ], 'fact', 'drafts')).setAttribute('aria-label', 'Condition fact');
           rules.appendChild(condPicker([
             { value: '==', label: 'is' }, { value: '!=', label: 'is not' },
             { value: '>', label: 'more than' }, { value: '>=', label: 'at least' },
             { value: '<', label: 'fewer than' }, { value: '<=', label: 'at most' }
-          ], 'op', '>'));
+          ], 'op', '>')).setAttribute('aria-label', 'Comparison');
           var num = el('input', 'auto-cond-num');
           num.type = 'number';
           num.min = '0';
+          num.setAttribute('aria-label', 'Value');
           num.value = cfg.value === undefined ? '0' : String(cfg.value);
           num.oninput = function () { cfg.value = parseInt(num.value, 10) || 0; };
           rules.appendChild(num);
