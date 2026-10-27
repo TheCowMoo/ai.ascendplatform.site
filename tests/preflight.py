@@ -61,35 +61,55 @@ def check_compose():
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
     worker = text.split("worker:", 1)[-1].split("\n  caddy:", 1)[0]
-    missing = [frag for frag in ("/etc/caddy/sites", "/srv/sites", "/srv/caddy/Caddyfile")
+    missing = [frag for frag in ("/etc/caddy/sites", "/srv/sites", "/app/Caddyfile")
                if frag not in worker]
     if missing:
         raise AssertionError(
             "the worker service is missing %s - provisioning would write where Caddy "
             "cannot see it" % ", ".join(missing))
-    # A single-file mount is pinned to the inode git replaces, so a pull left Caddy
-    # reading the previous Caddyfile until the container was recreated. Mount the dir.
-    for name in ("app", "worker", "caddy"):
-        block = text.split(name + ":", 1)[-1]
-        if "./caddy/Caddyfile:" in block:
+    # A *directory* bind over /etc/caddy takes the Caddyfile with it: if that directory is
+    # absent when the container is created, Caddy starts with no config and exits, and the
+    # site is simply unreachable. Mount the file.
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("- ").strip()
+        if stripped.endswith(":/etc/caddy:ro") or stripped.endswith(":/etc/caddy"):
             raise AssertionError(
-                "%s mounts caddy/Caddyfile as a file - mount ./caddy as a directory "
-                "instead, or edits will not take effect until the container is recreated"
-                % name)
+                "docker-compose.yml mounts a directory over /etc/caddy (%s) - if it is "
+                "ever missing, Caddy starts with no config and the site goes down. Mount "
+                "./Caddyfile:/etc/caddy/Caddyfile instead." % stripped)
     print("worker shares the site paths with caddy")
 
 
 def check_caddyfile():
-    """Formatting nits Caddy warns about on every reload, caught before they ship."""
-    path = os.path.join(ROOT, "caddy", "Caddyfile")
+    """Formatting traps Caddy warns about on every reload, caught before they ship.
+
+    `caddy fmt` reports space indentation and CRLF line endings the same way - "input is
+    not formatted" plus a line number - so both are checked here rather than guessed at
+    while staring at a reload log.
+    """
+    path = os.path.join(ROOT, "Caddyfile")
     if not os.path.exists(path):
         return
     with open(path, "rb") as handle:
         raw = handle.read()
-    assert b"\r" not in raw, "caddy/Caddyfile has CRLF line endings - `caddy fmt` will warn"
-    assert raw.endswith(b"\n"), "caddy/Caddyfile must end with a newline"
+    assert b"\r" not in raw, "Caddyfile has CRLF line endings - `caddy fmt` will warn"
+    assert raw.endswith(b"\n"), "Caddyfile must end with a newline"
     assert b"header_up X-Forwarded-Proto" not in raw, "Caddy sets X-Forwarded-Proto itself"
-    print("caddy/Caddyfile is clean")
+    indented = [line for line in raw.decode("utf-8").splitlines()
+                if line.startswith(" ") and line.strip()]
+    assert not indented, "Caddyfile indents with spaces (use tabs): %r" % indented[0]
+    print("Caddyfile is clean")
+
+
+def check_deploy_script():
+    """A deploy that cannot prove the site answers is a deploy that can take it down."""
+    path = os.path.join(ROOT, "deploy.sh")
+    assert os.path.exists(path), "deploy.sh is missing - nothing verifies a deploy"
+    with open(path, encoding="utf-8") as handle:
+        body = handle.read()
+    assert "api/health" in body, "deploy.sh must check the site answers through Caddy"
+    assert "git revert" in body, "deploy.sh must roll back when the check fails"
+    print("deploy.sh proves the site and rolls back")
 
 
 def check_js():
@@ -125,6 +145,7 @@ def main():
     check_imports()
     check_compose()
     check_caddyfile()
+    check_deploy_script()
     try:
         check_js()
     except FileNotFoundError:

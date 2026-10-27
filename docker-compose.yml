@@ -38,16 +38,16 @@ services:
       SERVER_IP: ${SERVER_IP:-}
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites
-      CADDYFILE: /srv/caddy/Caddyfile
+      CADDYFILE: /app/Caddyfile
       # Reload Caddy through its admin API (no caddy binary in this image).
-      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/srv/caddy/Caddyfile http://caddy:2019/load}"
+      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/app/Caddyfile http://caddy:2019/load}"
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - app_data:/app/data
       - ./artifacts:/app/artifacts
-      - ./caddy:/srv/caddy:ro
+      - ./Caddyfile:/app/Caddyfile:ro
       - ./sites:/srv/sites
       - ./sites-conf:/etc/caddy/sites
     command: >
@@ -71,8 +71,8 @@ services:
       SERVER_IP: ${SERVER_IP:-}
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites
-      CADDYFILE: /srv/caddy/Caddyfile
-      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/srv/caddy/Caddyfile http://caddy:2019/load}"
+      CADDYFILE: /app/Caddyfile
+      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/app/Caddyfile http://caddy:2019/load}"
     depends_on:
       db:
         condition: service_healthy
@@ -86,8 +86,8 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       # The three the provisioner writes through: the vhost Caddy imports, the document
-      # root Caddy serves, and the Caddyfile directory the reload posts.
-      - ./caddy:/srv/caddy:ro
+      # root Caddy serves, and the Caddyfile the reload posts.
+      - ./Caddyfile:/app/Caddyfile:ro
       - ./sites:/srv/sites
       - ./sites-conf:/etc/caddy/sites
     command: ["python", "-m", "worker"]
@@ -101,7 +101,7 @@ services:
     environment:
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:-localhost}
     volumes:
-      - ./caddy:/etc/caddy:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
       - ./sites-conf:/etc/caddy/sites:ro
