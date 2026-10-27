@@ -11,6 +11,15 @@
 	# The admin API lets the app reload Caddy after writing a site config.
 	# Reachable only on the compose network; never published to the host.
 	admin 0.0.0.0:2019
+
+	# Where Let's Encrypt sends expiry warnings. Without this, certificates still issue -
+	# but nobody hears about one that starts failing.
+	email {$ACME_EMAIL:ops@example.com}
+
+	# To exercise issuance end to end without burning the production rate limit, set
+	# ACME_CA to the staging directory and confirm the whole loop once:
+	#   acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	# Five failed validations in an hour locks a domain out of production.
 }
 
 {$ADMIN_DOMAIN:localhost} {

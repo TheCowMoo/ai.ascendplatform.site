@@ -266,6 +266,94 @@ def dns_records(domain, server_ip_value=None):
     ]
 
 
+def _cert_summary(cert):
+    """Issuer, expiry and the names a certificate actually covers."""
+    issuer = ""
+    for part in (cert or {}).get("issuer") or ():
+        for key, value in part:
+            if key in ("organizationName", "commonName") and not issuer:
+                issuer = value
+    names = [value for kind, value in ((cert or {}).get("subjectAltName") or ()) if kind == "DNS"]
+    return issuer, (cert or {}).get("notAfter") or "", names
+
+
+def describe_probe_error(exc):
+    """(reason, hint) for a failed HTTPS probe, in words a client can act on."""
+    name = type(exc).__name__
+    text = str(exc)
+    lowered = text.lower()
+    if isinstance(exc, ConnectionRefusedError) or "refused" in lowered:
+        return (text or name), "Nothing is listening on port 443 - check the firewall and that Caddy is running."
+    if "timed out" in lowered or name == "timeout":
+        return (text or name), "The connection timed out - the port is filtered, or the server is unreachable."
+    if "certificate verify failed" in lowered or name == "SSLCertVerificationError":
+        if "hostname mismatch" in lowered or "doesn't match" in lowered:
+            return text, "The server answered with a certificate for a different domain."
+        if "self-signed" in lowered or "self signed" in lowered:
+            return text, "The server is presenting its own internal certificate, so Caddy has not issued one yet."
+        return text, "The certificate could not be trusted; it may still be issuing, or Caddy may have failed."
+    if "name or service not known" in lowered or "getaddrinfo" in lowered or "nodename" in lowered:
+        return (text or name), "The domain does not resolve yet - DNS has not propagated to this machine."
+    return (text or name), "The HTTPS check failed; the transcript above should say why."
+
+
+def live_probe(domain, timeout=8, path="/", fetcher=None, now=None):
+    """Knock on https://domain and report what actually answered.
+
+    Caddy issues a certificate on the *first handshake* for a name, so this probe is both
+    the test and the trigger - nothing else in the platform ever connects to a customer's
+    site, which is why "live" used to be a guess. ``fetcher`` exists so tests can supply a
+    certificate and status without a network.
+    """
+    import http.client
+    import ssl
+    import time
+
+    started = time.time()
+    stamp = now or (lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    result = {"domain": domain, "ok": False, "status_code": None, "issuer": "", "expires": "",
+              "names": [], "error": "", "hint": "", "seconds": 0.0, "checked_at": stamp()}
+
+    if fetcher is None:
+        def fetcher():
+            context = ssl.create_default_context()
+            raw = socket.create_connection((domain, 443), timeout=timeout)
+            with context.wrap_socket(raw, server_hostname=domain) as tls:
+                cert = tls.getpeercert()
+                tls.close()
+            # A second, cheap request: the handshake above may have been the very thing
+            # that made Caddy go and fetch the certificate.
+            connection = http.client.HTTPSConnection(domain, 443, timeout=timeout,
+                                                     context=ssl.create_default_context())
+            connection.request("GET", path)
+            response = connection.getresponse()
+            status = response.status
+            response.read(2048)
+            connection.close()
+            return status, cert
+
+    try:
+        status, cert = fetcher()
+    except Exception as exc:
+        result["error"], result["hint"] = describe_probe_error(exc)
+        result["seconds"] = round(time.time() - started, 1)
+        return result
+
+    issuer, expires, names = _cert_summary(cert)
+    result.update({"status_code": status, "issuer": issuer, "expires": expires, "names": names})
+    result["seconds"] = round(time.time() - started, 1)
+    if status in (200, 301, 302, 307, 308):
+        result["ok"] = True
+        return result
+    if status in (521, 522, 523, 524, 526):
+        result["hint"] = ("A proxy in front of this server answered %d - Cloudflare proxying "
+                          "blocks the certificate challenge." % status)
+    else:
+        result["hint"] = "The site answered %d; the certificate is installed but the page is not healthy." % status
+    result["error"] = "HTTP %d" % status
+    return result
+
+
 def check_dns(domain, server_ip=None):
     """The one-line verdict, kept for callers that only need ok/reason.
 

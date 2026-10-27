@@ -116,6 +116,53 @@ def test_the_records_use_the_resolved_address():
     print("records ->", ", ".join("%s %s" % (r["type"], r["name"]) for r in records))
 
 
+_CERT = {
+    "issuer": ((("organizationName", "Let's Encrypt"),),),
+    "subjectAltName": (("DNS", DOMAIN), ("DNS", "www." + DOMAIN)),
+    "notAfter": "Jan 24 12:00:00 2027 GMT",
+}
+
+
+def test_a_live_site_is_verified_with_its_certificate():
+    probe = provisioner.live_probe(DOMAIN, fetcher=lambda: (200, _CERT))
+    assert probe["ok"] is True, probe
+    assert probe["issuer"] == "Let's Encrypt", probe
+    assert probe["expires"] == "Jan 24 12:00:00 2027 GMT"
+    assert DOMAIN in probe["names"], probe
+    print("200 + certificate ->", probe["issuer"], "until", probe["expires"])
+
+
+def test_a_proxy_answering_is_explained_not_retried_blindly():
+    probe = provisioner.live_probe(DOMAIN, fetcher=lambda: (522, _CERT))
+    assert probe["ok"] is False
+    assert "cloudflare" in probe["hint"].lower(), probe["hint"]
+    print("522 ->", probe["hint"][:60], "...")
+
+
+def test_refused_and_untrusted_and_missing_dns_get_different_advice():
+    refused = provisioner.live_probe(DOMAIN, fetcher=lambda: (_ for _ in ()).throw(
+        ConnectionRefusedError("Connection refused")))
+    assert "443" in refused["hint"], refused["hint"]
+
+    untrusted = provisioner.live_probe(DOMAIN, fetcher=lambda: (_ for _ in ()).throw(
+        __import__("ssl").SSLCertVerificationError(
+            "certificate verify failed: Hostname mismatch, certificate is not valid for 'x'")))
+    assert "different domain" in untrusted["hint"], untrusted["hint"]
+
+    missing = provisioner.live_probe(DOMAIN, fetcher=lambda: (_ for _ in ()).throw(
+        OSError("[Errno -2] Name or service not known")))
+    assert "does not resolve" in missing["hint"], missing["hint"]
+    print("refused / untrusted / unresolved each get their own advice")
+
+
+def test_a_healthy_certificate_but_a_broken_page_is_not_live():
+    probe = provisioner.live_probe(DOMAIN, fetcher=lambda: (502, _CERT))
+    assert probe["ok"] is False
+    assert probe["issuer"] == "Let's Encrypt", "the certificate still tells us something"
+    assert "not healthy" in probe["hint"], probe["hint"]
+    print("502 ->", probe["hint"])
+
+
 def main():
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]
