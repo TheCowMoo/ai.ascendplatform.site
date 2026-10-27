@@ -27,13 +27,34 @@ if [ "${SKIP_PULL:-0}" != "1" ]; then
 fi
 
 # Name the build in the container, so /api/version reports the commit that is actually
-# running rather than whatever happens to be checked out later.
+# running rather than whatever happens to be checked out later. The version counter lives
+# on this server (and in .gitignore) because it describes a deploy, not the code: keeping
+# it in git would mean every deploy creates a commit here, which is what diverged the
+# branch and blocked every later pull.
+bump_version() {
+  current="1.00"
+  [ -f .build-version ] && current="$(tr -d '[:space:]' < .build-version)"
+  major="${current%%.*}"
+  minor="${current##*.}"
+  minor=$((10#$minor + 1))
+  if [ "$minor" -ge 100 ]; then
+    major=$((major + 1))
+    minor=0
+  fi
+  printf -v next "%s.%02d" "$major" "$minor"
+  echo "$next" > .build-version
+  echo "$next"
+}
+
+export APP_VERSION="$(bump_version)"
 export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "== build $GIT_COMMIT at $BUILD_TIME"
+echo "== Version $APP_VERSION ($GIT_COMMIT) at $BUILD_TIME"
 
-echo "== recreating caddy, app and worker (a restart does not re-read a single-file mount)"
-docker compose up -d --force-recreate caddy app worker
+echo "== recreating caddy, app and worker (--build: the code is baked into the image, so a"
+echo "   plain recreate would happily serve the previous build; --progress=plain so a long"
+echo "   pip install shows its steps instead of a spinner)"
+docker compose up -d --build --progress=plain --force-recreate caddy app worker
 
 echo "== waiting for https://$ADMIN_DOMAIN/api/health"
 for attempt in $(seq 1 30); do
@@ -49,6 +70,6 @@ echo "!! $ADMIN_DOMAIN does not answer after 60s - last caddy lines:" >&2
 docker compose logs --tail=40 caddy >&2 || true
 echo "!! rolling back to the previous commit" >&2
 git revert --no-edit HEAD
-docker compose up -d --force-recreate caddy app worker
+docker compose up -d --build --force-recreate caddy app worker
 echo "!! rolled back; the site should be serving the previous version" >&2
 exit 1

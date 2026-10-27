@@ -2550,7 +2550,41 @@ def admin_index():
 
 @app.route("/admin/")
 def admin_slash():
-    return send_from_directory(ADMIN_DIR, "index.html")
+    """The console shell, stamped with the build that served it.
+
+    The stamp sits in the HTML rather than being fetched, so "which build is this?"
+    survives a cached bundle or a broken script: curl the page and read the attribute.
+    """
+    import os
+
+    label, commit = build_label()
+    path = os.path.join(ADMIN_DIR, "index.html")
+    with open(path, encoding="utf-8") as handle:
+        page = handle.read()
+    stamp = ("%s (%s)" % (label, commit)).replace('"', "&quot;")
+    return page.replace("<html", '<html data-build="%s"' % stamp, 1), 200, {
+        "Content-Type": "text/html; charset=utf-8",
+    }
+
+
+def build_label():
+    """(version label, commit) for this deployment.
+
+    The env wins over the file: the environment is what the running container was handed
+    at creation, while the file on disk may already have been bumped by a later deploy.
+    """
+    import os
+
+    commit = (os.environ.get("GIT_COMMIT") or "").strip() or "unknown"
+    label = (os.environ.get("APP_VERSION") or "").strip()
+    if not label:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   ".build-version"), encoding="utf-8") as handle:
+                label = handle.read().strip()
+        except OSError:
+            label = ""
+    return label or "unknown", commit
 
 
 @app.route("/api/version", methods=["GET"])
@@ -2566,8 +2600,10 @@ def version():
     import platform as platform_mod
     import time
 
+    label, commit = build_label()
     return jsonify({
-        "commit": (os.environ.get("GIT_COMMIT") or "").strip() or "unknown",
+        "version": label,
+        "commit": commit,
         "build_time": (os.environ.get("BUILD_TIME") or "").strip() or "unknown",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                     time.gmtime(getattr(app, "booted_at", time.time()))),

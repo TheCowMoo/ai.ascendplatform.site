@@ -22,3 +22,7 @@ sites-conf/
 Thumbs.db
 .idea/
 .vscode/
+
+# The deploy counter: bumped by deploy.sh on the server, belongs to the deployment rather
+# than the code. A counter in git means every deploy creates a commit.
+.build-version

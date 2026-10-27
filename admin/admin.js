@@ -240,11 +240,11 @@
       api('POST', '/api/auth/logout').then(function () { location.reload(); });
     };
     foot.appendChild(logout);
-    var build = el('div', 'side-build', 'build …');
+    var build = el('div', 'side-build', 'Version …');
     buildInfo().then(function (v) {
-      build.textContent = 'build ' + (v.commit || 'unknown');
-      build.title = 'built ' + (v.build_time || '?') + ' · process started ' +
-        (v.started_at || '?');
+      build.textContent = 'Version ' + (v.version || 'unknown');
+      build.title = 'commit ' + (v.commit || '?') + ' · built ' + (v.build_time || '?') +
+        ' · process started ' + (v.started_at || '?');
     });
     foot.appendChild(build);
     aside.appendChild(foot);
@@ -1056,6 +1056,7 @@
     container.appendChild(buildCard);
     buildInfo().then(function (v) {
       buildCard.innerHTML = '<h3 class="card-title">Build</h3>' +
+        '<p><strong>Version ' + esc(v.version || 'unknown') + '</strong></p>' +
         '<p class="fine-print">commit <code>' + esc(v.commit || 'unknown') + '</code>' +
         ' · built ' + esc(v.build_time || 'unknown') +
         ' · this process started ' + esc(v.started_at || 'unknown') +

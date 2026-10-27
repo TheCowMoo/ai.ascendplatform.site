@@ -9,6 +9,7 @@ second and catches exactly that class of mistake.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -109,7 +110,19 @@ def check_deploy_script():
         body = handle.read()
     assert "api/health" in body, "deploy.sh must check the site answers through Caddy"
     assert "git revert" in body, "deploy.sh must roll back when the check fails"
-    print("deploy.sh proves the site and rolls back")
+    # Without --build a deploy recreates containers from the *previous* image: it looks
+    # successful and ships nothing, which is exactly how a tab went missing for a day.
+    assert "--build" in body, "deploy.sh must rebuild - a recreate reuses the old image"
+    assert "APP_VERSION" in body, "deploy.sh must label the build"
+    if shutil.which("git"):
+        listed = subprocess.run(["git", "ls-files", "-s", "deploy.sh"], cwd=ROOT,
+                                capture_output=True, text=True).stdout.strip()
+        if listed:
+            mode = listed.split()[0]
+            assert mode == "100755", (
+                "deploy.sh is committed as %s, so it lands non-executable on the server "
+                "(fix: git update-index --chmod=+x deploy.sh)" % mode)
+    print("deploy.sh rebuilds, labels the build and rolls back")
 
 
 def check_js():
