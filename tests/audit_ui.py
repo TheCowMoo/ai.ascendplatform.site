@@ -135,6 +135,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Team         ", "/api/users", ["users"], "ok"),
         ("Approvals    ", "/api/approvals?status=pending", [], "ok"),
         ("Me           ", "/api/auth/me", ["user"], "ok"),
+        ("Build        ", "/api/version", ["commit", "started_at"], "ok"),
         ("Workspace    ", "/api/session/org", ["acting_org", "orgs"], "ok"),
         # Platform area: the client must be refused, and refused with 403 rather than 500.
         ("Platform     ", "/api/orgs", ["orgs"], "deny"),

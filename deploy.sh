@@ -26,6 +26,12 @@ if [ "${SKIP_PULL:-0}" != "1" ]; then
   git pull --ff-only origin "$BRANCH"
 fi
 
+# Name the build in the container, so /api/version reports the commit that is actually
+# running rather than whatever happens to be checked out later.
+export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "== build $GIT_COMMIT at $BUILD_TIME"
+
 echo "== recreating caddy, app and worker (a restart does not re-read a single-file mount)"
 docker compose up -d --force-recreate caddy app worker
 

@@ -36,6 +36,10 @@ services:
       HOST: 0.0.0.0
       PORT: "8000"
       SERVER_IP: ${SERVER_IP:-}
+      # Which build is being served. deploy.sh exports these before recreating the
+      # container, so /api/version names the commit actually running.
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites
       CADDYFILE: /app/Caddyfile
@@ -68,6 +72,8 @@ services:
       # site paths as app: otherwise the vhost and the content are written into this
       # container's own filesystem, Caddy never sees them, and the site silently never
       # goes live. Keep these in step with the `app` service.
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
       SERVER_IP: ${SERVER_IP:-}
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites

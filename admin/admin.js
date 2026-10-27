@@ -117,6 +117,16 @@
     return n;
   }
 
+  // Which build is this? Fetched once per page load and shown in the sidebar and Settings,
+  // so "I deployed but nothing changed" is answerable without guessing.
+  var versionPromise = null;
+  function buildInfo() {
+    if (!versionPromise) {
+      versionPromise = api('GET', '/api/version').catch(function () { return {}; });
+    }
+    return versionPromise;
+  }
+
   function toast(msg, ok) {
     var t = el('div', 'toast ' + (ok ? 'toast-success' : 'toast-error'), msg);
     t.setAttribute('role', 'status');
@@ -176,6 +186,18 @@
     aside.appendChild(brand);
     aside.appendChild(workspaceSwitcher());
 
+    // Two areas, reachable by clicking. Before this the only way from Platform back to
+    // Workspace was editing the URL, which made a whole nav look missing.
+    if (isOwner(state.user)) {
+      var areas = el('div', 'side-areas');
+      ['app', 'platform'].forEach(function (key) {
+        var link = el('a', 'side-area' + (key === area ? ' active' : ''), AREAS[key].label);
+        link.href = AREAS[key].home;
+        areas.appendChild(link);
+      });
+      aside.appendChild(areas);
+    }
+
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
 
     var nav = el('nav', 'side-nav');
@@ -218,6 +240,13 @@
       api('POST', '/api/auth/logout').then(function () { location.reload(); });
     };
     foot.appendChild(logout);
+    var build = el('div', 'side-build', 'build …');
+    buildInfo().then(function (v) {
+      build.textContent = 'build ' + (v.commit || 'unknown');
+      build.title = 'built ' + (v.build_time || '?') + ' · process started ' +
+        (v.started_at || '?');
+    });
+    foot.appendChild(build);
     aside.appendChild(foot);
     return aside;
   }
@@ -1020,6 +1049,21 @@
       'here is stored in the database and takes effect immediately; environment variables remain ' +
       'the fallback.</p></div>';
     container.appendChild(head);
+
+    // What build is this? Listed first, because the first question about any oddity below
+    // is whether you are looking at the code you think you are.
+    var buildCard = el('div', 'panel-card');
+    container.appendChild(buildCard);
+    buildInfo().then(function (v) {
+      buildCard.innerHTML = '<h3 class="card-title">Build</h3>' +
+        '<p class="fine-print">commit <code>' + esc(v.commit || 'unknown') + '</code>' +
+        ' · built ' + esc(v.build_time || 'unknown') +
+        ' · this process started ' + esc(v.started_at || 'unknown') +
+        ' · python ' + esc(v.python || '?') + '</p>' +
+        '<p class="fine-print">If that commit is not the one you deployed, the container was ' +
+        'not recreated - run <code>./deploy.sh</code>, which recreates it and then checks the ' +
+        'site answers.</p>';
+    });
 
     var banner = el('div', 'panel-card');
     container.appendChild(banner);

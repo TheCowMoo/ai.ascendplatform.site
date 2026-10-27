@@ -55,6 +55,9 @@ from tools import ssh as ssh_tool
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__, static_folder=None)
+# When this process started: /api/version exposes it, because a container that was never
+# recreated after a deploy is otherwise invisible - the code looks new, the process is old.
+app.booted_at = __import__("time").time()
 CORS(app)
 
 # These are read per call rather than captured at import, so a change made in the
@@ -2550,9 +2553,39 @@ def admin_slash():
     return send_from_directory(ADMIN_DIR, "index.html")
 
 
+@app.route("/api/version", methods=["GET"])
+def version():
+    """Which build is this, and when did this process start?
+
+    Written because "I deployed but I still see the old page" has two indistinguishable
+    causes - a stale container and a cached bundle - and guessing between them wastes
+    real time. ``started_at`` exposes a container that was never recreated; ``commit``
+    comes from the shell that ran deploy.sh, so it names the code actually being served.
+    """
+    import os
+    import platform as platform_mod
+    import time
+
+    return jsonify({
+        "commit": (os.environ.get("GIT_COMMIT") or "").strip() or "unknown",
+        "build_time": (os.environ.get("BUILD_TIME") or "").strip() or "unknown",
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                    time.gmtime(getattr(app, "booted_at", time.time()))),
+        "python": platform_mod.python_version(),
+    })
+
+
 @app.route("/admin/<path:filename>")
 def admin_assets(filename):
-    return send_from_directory(ADMIN_DIR, filename)
+    """Console assets revalidate on every load.
+
+    They used to inherit a five-minute max-age, which meant a deploy could be invisible
+    for minutes with nothing on screen to say so. Revalidation costs a 304.
+    """
+    response = send_from_directory(ADMIN_DIR, filename)
+    if filename.endswith((".js", ".css")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
 
 
 @app.route("/widget.js")
