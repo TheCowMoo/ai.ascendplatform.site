@@ -28,10 +28,10 @@
 		output file /data/logs/admin.log
 	}
 
-	# The app (FastAPI + Flask over ASGI) on the compose network.
+	# The app (FastAPI + Flask over ASGI) on the compose network. Caddy sets
+	# X-Forwarded-Proto itself, so there is nothing to add here.
 	reverse_proxy app:8000 {
 		header_up X-Real-IP {remote_host}
-		header_up X-Forwarded-Proto {scheme}
 	}
 }
 

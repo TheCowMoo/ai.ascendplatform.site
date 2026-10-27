@@ -48,6 +48,28 @@ def check_imports():
     print("imports OK | tasks:", sorted(jobs.TASKS))
 
 
+def check_compose():
+    """The worker runs provisioning, so it needs the same site paths as the app.
+
+    This is not pedantry: when only `app` had those mounts, a vhost was written into the
+    worker container's own filesystem, Caddy never imported it, and the site reported
+    success while nothing went live.
+    """
+    path = os.path.join(ROOT, "docker-compose.yml")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    worker = text.split("worker:", 1)[-1].split("\n  caddy:", 1)[0]
+    missing = [frag for frag in ("/etc/caddy/sites", "/srv/sites", "/app/Caddyfile")
+               if frag not in worker]
+    if missing:
+        raise AssertionError(
+            "the worker service is missing %s - provisioning would write where Caddy "
+            "cannot see it" % ", ".join(missing))
+    print("worker shares the site paths with caddy")
+
+
 def check_js():
     if not os.path.exists(os.path.join(ROOT, "admin", "admin.js")):
         return
@@ -79,6 +101,7 @@ def check_suites():
 
 def main():
     check_imports()
+    check_compose()
     try:
         check_js()
     except FileNotFoundError:
