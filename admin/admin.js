@@ -28,6 +28,7 @@
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
+        { id: 'domains', label: 'Domains', icon: 'server', hash: '#/app/domains' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
         { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
@@ -1729,8 +1730,9 @@
     if (site.dns_last_ip) card.appendChild(el('div', 'muted', 'resolves to ' + esc(site.dns_last_ip)));
 
     var actions = el('div', 'card-actions');
-    var dns = el('button', 'btn btn-ghost btn-sm', 'DNS setup');
-    dns.onclick = function () { showDns(site); };
+    var dns = el('button', 'btn btn-ghost btn-sm', 'DNS & SSL');
+    // One implementation, in the Domains tab - this used to open a second, older modal.
+    dns.onclick = function () { location.hash = '#/app/domains/' + site.id; };
     var check = el('button', 'btn btn-ghost btn-sm', 'Check DNS');
     check.onclick = function () {
       api('POST', '/api/sites/' + site.id + '/check').then(function (d) {
@@ -3562,7 +3564,172 @@
     return container;
   }
 
-  // ---------- Automations: a graph that runs as a job ----------
+  // ---------- Domains: point it here, prove it, then go live ----------
+  // The old DNS modal listed two records and a single yes/no. This shows every record
+  // judged separately, what DNS actually answers, and whether a certificate exists -
+  // because "it does not work" is almost always one specific record.
+  function viewDomains(openId) {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Domains</h2><p class="muted">Point a domain at this server, ' +
+      'watch each record go green, then go live. A certificate is only reported once the ' +
+      'site actually answers over HTTPS.</p></div>';
+    container.appendChild(head);
+    var body = el('div', 'mt');
+    container.appendChild(body);
+
+    function chip(status) {
+      var map = { ok: 'badge-done', wrong: 'badge-failed', missing: 'badge-queued',
+                  proxied: 'badge-running', unknown: 'badge-failed' };
+      return '<span class="badge ' + (map[status] || 'badge-queued') + '">' +
+        esc(status || 'unknown') + '</span>';
+    }
+
+    function copyText(text, btn) {
+      function done() {
+        var was = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = was; }, 1200);
+      }
+      function fallback() {
+        var input = el('input');
+        input.value = String(text);
+        document.body.appendChild(input);
+        input.select();
+        try { document.execCommand('copy'); done(); } catch (e) { toast('Copy failed', false); }
+        input.remove();
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(String(text)).then(done).catch(fallback);
+      } else {
+        fallback();
+      }
+    }
+
+    function refresh() {
+      api('GET', '/api/sites').then(function (d) {
+        body.innerHTML = '';
+        var sites = d.sites || [];
+        if (!sites.length) {
+          body.innerHTML = '<div class="empty-state"><strong>No domains yet</strong>' +
+            '<p>Add one under Websites first — a domain has to exist before it can be ' +
+            'pointed here.</p></div>';
+          return;
+        }
+        sites.forEach(function (site) {
+          body.appendChild(row(site));
+          if (String(openId) === String(site.id)) body.appendChild(panel(site));
+        });
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+    }
+
+    function row(site) {
+      var card = el('div', 'panel-card dom-row');
+      var cls = site.status === 'live' ? 'badge-done'
+        : (site.status === 'dns_ok' ? 'badge-running'
+        : (site.status === 'error' ? 'badge-failed' : 'badge-queued'));
+      card.innerHTML = '<div><div class="dom-name">' + esc(site.domain) + '</div>' +
+        '<div class="dom-meta"><span class="badge ' + cls + '">' +
+        esc(String(site.status || 'pending').replace('_', ' ')) + '</span>' +
+        (site.dns_last_ip ? ' · resolves to ' + esc(site.dns_last_ip) : '') +
+        (site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') + '</div></div>';
+      var open = el('button', 'btn btn-ghost btn-sm',
+        String(openId) === String(site.id) ? 'Hide' : 'Records');
+      open.onclick = function () {
+        location.hash = String(openId) === String(site.id)
+          ? '#/app/domains' : '#/app/domains/' + site.id;
+      };
+      card.appendChild(open);
+      return card;
+    }
+
+    function panel(site) {
+      var box = el('div', 'panel-card dom-panel');
+      box.innerHTML = '<p class="muted">Checking…</p>';
+
+      function load() {
+        api('GET', '/api/sites/' + site.id + '/dns-report').then(function (d) {
+          box.innerHTML = '';
+          var report = d.report || {};
+          box.appendChild(el('h3', 'card-title', 'Where ' + site.domain + ' should point'));
+          box.appendChild(el('p', 'fine-print', 'Server IP ' + esc(d.server_ip || 'unknown') +
+            ' (' + esc(d.server_ip_source || 'not set') + ')'));
+
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Type</th><th>Name</th><th>Value</th>' +
+            '<th>Status</th><th></th></tr></thead>';
+          var tbody = el('tbody');
+          (d.records || []).forEach(function (rec) {
+            var judged = (report.rows || []).filter(function (r) {
+              return r.type === rec.type && r.name === rec.name;
+            })[0] || {};
+            var tr = el('tr');
+            tr.innerHTML = '<td><span class="badge">' + esc(rec.type) + '</span></td>' +
+              '<td>' + esc(rec.name) + '</td>' +
+              '<td><code>' + esc(rec.value) + '</code>' +
+              (judged.note ? '<div class="fine-print">' + esc(judged.note) + '</div>' : '') +
+              '</td><td>' + chip(judged.status) + '</td>';
+            var cell = el('td', 'row-actions');
+            var copy = el('button', 'btn btn-ghost btn-sm', 'Copy');
+            copy.onclick = function () { copyText(rec.value, copy); };
+            cell.appendChild(copy);
+            tr.appendChild(cell);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          box.appendChild(table);
+
+          var actions = el('div', 'row-actions');
+          var check = el('button', 'btn btn-ghost', 'Check again');
+          check.onclick = function () {
+            check.disabled = true;
+            api('POST', '/api/sites/' + site.id + '/verify').then(function (res) {
+              var probe = res.probe || {};
+              toast(probe.ok ? 'Live - certificate verified'
+                             : (probe.hint || ('DNS: ' + (report.reason || 'not pointed here'))),
+                    !!probe.ok);
+              refresh();
+            }).catch(function (e) { toast(e.message, false); })
+              .finally(function () { check.disabled = false; });
+          };
+          actions.appendChild(check);
+
+          var live = el('button', 'btn btn-primary', 'Go live');
+          live.disabled = !report.ok;
+          if (!report.ok) live.title = report.reason || 'DNS is not pointed here yet';
+          live.onclick = function () {
+            live.disabled = true;
+            api('POST', '/api/sites/' + site.id + '/provision').then(function (res) {
+              toast('Provisioning queued - job #' + ((res.job || {}).id || '?'), true);
+            }).catch(function (e) {
+              live.disabled = false;
+              toast(e.message, false);
+            });
+          };
+          actions.appendChild(live);
+          box.appendChild(actions);
+
+          if (report.reason) box.appendChild(el('p', 'form-error', report.reason));
+          var cert = report.ok && site.ssl_status === 'verified'
+            ? 'Certificate verified over HTTPS.'
+            : 'Certificate: ' + (site.ssl_status || 'pending') +
+              ' - issued after the site answers, so this is not a failure yet.';
+          box.appendChild(el('p', 'fine-print', cert));
+        }).catch(function (e) {
+          box.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+        });
+      }
+
+      load();
+      return box;
+    }
+
+    refresh();
+    return container;
+  }
+
   function viewAutomations() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -4082,6 +4249,7 @@
     else if (tab === 'profile') view = viewProfile();
     else if (tab === 'bots') view = viewBots();
     else if (tab === 'conversations') view = viewConversationsIndex();
+    else if (tab === 'domains') view = viewDomains(rest[0]);
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();

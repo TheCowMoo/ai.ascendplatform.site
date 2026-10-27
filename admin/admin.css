@@ -700,6 +700,14 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .auto-cond-kind { width: 132px; }
 .auto-graph { background: #fcfcfd; border: 1px solid var(--line); border-radius: var(--r-2); padding: var(--s-2); }
 .auto-svg { display: block; max-height: 320px; }
+/* Domains tab: one row per domain, with the record panel underneath it. */
+.dom-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.dom-name { font: 600 var(--t-4)/1.3 inherit; color: var(--ink); }
+.dom-meta { font: 400 var(--t-2)/1.5 inherit; color: var(--ink-3); margin-top: 2px; }
+.dom-panel { margin: -4px 0 var(--s-3) 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.dom-panel .table { margin-top: var(--s-2); }
+.dom-panel code { font-size: var(--t-2); }
+
 .run-status {
   font: 600 var(--t-2)/1 inherit; padding: 2px 7px; border-radius: var(--r-4);
   background: #f3f4f6; color: var(--ink-2); text-transform: capitalize;
