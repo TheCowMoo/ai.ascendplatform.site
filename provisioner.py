@@ -69,26 +69,216 @@ def resolve_domain(domain, timeout=5):
     return addresses
 
 
-def dns_records(domain, server_ip=None):
+def resolve_types(domain, timeout=5):
+    """(IPv4s, IPv6s) currently published for a domain, in the order DNS returned them."""
+    try:
+        infos = socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return [], []
+    v4, v6 = [], []
+    for info in infos:
+        address = info[4][0]
+        bucket = v6 if ":" in address else v4
+        if address not in bucket:
+            bucket.append(address)
+    return v4, v6
+
+
+_IP_CACHE = {"at": 0.0, "ip": ""}
+IP_CACHE_SECONDS = 600
+
+
+def _looks_like_ipv4(value):
+    parts = (value or "").strip().split(".")
+    if len(parts) != 4:
+        return False
+    return all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
+def detected_server_ip(timeout=4):
+    """This machine's public IPv4, asked of an echo service and cached for ten minutes.
+
+    Only used when neither the settings panel nor ``SERVER_IP`` says what the address is: a
+    wrong guess would publish a record nobody can reach, so the value is cached and easy to
+    override rather than trusted blindly.
+    """
+    import time
+    import urllib.request
+
+    if _IP_CACHE["ip"] and time.time() - _IP_CACHE["at"] < IP_CACHE_SECONDS:
+        return _IP_CACHE["ip"]
+    for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                candidate = resp.read(64).decode("ascii", "ignore").strip()
+        except Exception:
+            continue
+        if _looks_like_ipv4(candidate):
+            _IP_CACHE.update({"at": time.time(), "ip": candidate})
+            return candidate
+    return ""
+
+
+def server_ip_source():
+    """(address, where it came from): 'setting', 'detected', or '' when nobody knows."""
+    try:
+        import settings as settings_mod
+        configured = (settings_mod.get("SERVER_IP") or "").strip()
+    except Exception:
+        configured = SERVER_IP
+    if configured:
+        return configured, "setting"
+    guess = detected_server_ip()
+    return guess, ("detected" if guess else "")
+
+
+def server_ip():
+    return server_ip_source()[0]
+
+
+CLOUDFLARE_RANGES_URL = "https://www.cloudflare.com/ips-v4"
+_CF_CACHE = {"at": 0.0, "nets": []}
+
+
+def _cloudflare_ranges(timeout=5):
+    """Cloudflare's published IPv4 ranges, cached for a day. [] on failure."""
+    import time
+    import urllib.request
+
+    if _CF_CACHE["nets"] and time.time() - _CF_CACHE["at"] < 86400:
+        return _CF_CACHE["nets"]
+    try:
+        with urllib.request.urlopen(CLOUDFLARE_RANGES_URL, timeout=timeout) as resp:
+            body = resp.read(8000).decode("ascii", "ignore")
+    except Exception:
+        return _CF_CACHE["nets"]
+    nets = []
+    for line in body.splitlines():
+        line = line.strip()
+        if "/" not in line:
+            continue
+        try:
+            net, bits = line.split("/")
+            nets.append((int.from_bytes(socket.inet_aton(net), "big"), int(bits)))
+        except Exception:
+            continue
+    if nets:
+        _CF_CACHE.update({"at": time.time(), "nets": nets})
+    return nets
+
+
+def _in_cloudflare(address):
+    if not _looks_like_ipv4(address):
+        return False
+    nets = _cloudflare_ranges()
+    if not nets:
+        return False
+    value = int.from_bytes(socket.inet_aton(address), "big")
+    for net, bits in nets:
+        mask = (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF
+        if value & mask == net & mask:
+            return True
+    return False
+
+
+def _record_row(rtype, name, expected, seen, required):
+    """One line of the report: what was asked for, what DNS says, and what that means."""
+    row = {"type": rtype, "name": name, "value": expected if rtype == "A" else None,
+           "seen": list(seen), "required": required, "status": "ok", "note": ""}
+    if not expected:
+        row["status"] = "unknown"
+        row["note"] = "no public IP is configured for this server, so there is nothing to point at"
+        return row
+    if rtype == "AAAA":
+        # We publish no IPv6, so any AAAA is somebody else's answer - and browsers try it first.
+        if seen and not all(_in_cloudflare(a) for a in seen):
+            row["status"] = "wrong"
+            row["note"] = ("IPv6 points somewhere else (%s). Browsers try it first, so the "
+                           "site can look broken even when IPv4 is right." % ", ".join(seen[:2]))
+        return row
+    if not seen:
+        row["status"] = "missing"
+        row["note"] = ("no record published yet" if required
+                       else "optional: add it so www.%s works too" % name)
+        return row
+    if all(_in_cloudflare(a) for a in seen):
+        row["status"] = "proxied"
+        row["note"] = ("Cloudflare is proxying this name, so it never resolves to this "
+                       "server. Set the record to DNS-only, or install an Origin "
+                       "certificate and keep the proxy on.")
+        return row
+    if expected in seen:
+        return row
+    row["status"] = "wrong"
+    row["note"] = "resolves to %s, expected %s" % (", ".join(seen[:3]), expected)
+    return row
+
+
+def dns_report(domain, server_ip_value=None):
+    """Per-record truth for one domain: what to publish, what DNS says, and the verdict.
+
+    One boolean cannot tell you that the apex is right and ``www`` was never created, which
+    is the mistake people actually make, so every record gets its own row.
+    """
+    expected, source = (server_ip_value, "given") if server_ip_value else server_ip_source()
+    apex4, apex6 = resolve_types(domain)
+    www4, www6 = resolve_types("www." + domain)
+
+    rows = [
+        _record_row("A", "@", expected, apex4, True),
+        _record_row("A", "www", expected, www4, False),
+        _record_row("AAAA", "@", expected, apex6, False),
+        _record_row("AAAA", "www", expected, www6, False),
+    ]
+    required = [row for row in rows if row["required"]]
+    proxied = any(row["status"] == "proxied" for row in rows) or (
+        bool(apex4) and all(_in_cloudflare(a) for a in apex4))
+    ok = bool(expected) and all(row["status"] == "ok" for row in required) and not proxied
+    if not expected:
+        reason = "no server IP configured"
+    elif proxied:
+        reason = "proxied by Cloudflare"
+    elif ok:
+        reason = ""
+    elif not apex4:
+        reason = "no records published yet"
+    else:
+        reason = "points elsewhere"
+    return {
+        "domain": domain,
+        "expected": expected or None,
+        "expected_source": source,
+        "rows": rows,
+        "ok": ok,
+        "reason": reason,
+        "proxied": proxied,
+        "resolved": apex4 + apex6,
+        "resolved_www": www4 + www6,
+    }
+
+
+def dns_records(domain, server_ip_value=None):
     """The records the user must create at their DNS provider."""
-    ip = (server_ip or SERVER_IP) or "<this server's public IP>"
+    ip = (server_ip_value or server_ip()) or "<this server's public IP>"
     return [
-        {"type": "A", "name": domain, "value": ip, "ttl": 3600},
-        {"type": "A", "name": "www." + domain, "value": ip, "ttl": 3600},
+        {"type": "A", "name": "@", "host": domain, "value": ip, "ttl": 3600},
+        {"type": "A", "name": "www", "host": "www." + domain, "value": ip, "ttl": 3600},
     ]
 
 
 def check_dns(domain, server_ip=None):
-    """Compare the published A records with this server's address."""
-    ip = (server_ip or SERVER_IP).strip()
-    addresses = resolve_domain(domain)
-    ok = bool(ip) and ip in addresses
+    """The one-line verdict, kept for callers that only need ok/reason.
+
+    It is now a summary of :func:`dns_report`, so the console and the provisioning job can
+    never disagree about whether a domain points here.
+    """
+    report = dns_report(domain, server_ip)
     return {
         "domain": domain,
-        "resolved": addresses,
-        "expected": ip or None,
-        "ok": ok,
-        "reason": "" if ok else ("no records published yet" if not addresses else "points elsewhere"),
+        "resolved": report["resolved"],
+        "expected": report["expected"],
+        "ok": report["ok"],
+        "reason": report["reason"],
     }
 
 

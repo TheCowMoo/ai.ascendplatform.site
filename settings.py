@@ -188,6 +188,9 @@ SPEC = [
         "icon": "server",
         "blurb": "Limits applied whenever the Operator reaches a server.",
         "fields": [
+            _f("SERVER_IP", "Public IP of this server",
+               help="The address customers point their domain's A record at. Leave blank "
+                    "to detect it; set it if this box sits behind NAT."),
             _f("SSH_TIMEOUT", "SSH connect timeout (seconds)", kind="int",
                default="15"),
             _f("SSH_CMD_TIMEOUT", "SSH command timeout (seconds)", kind="int",

@@ -1981,6 +1981,44 @@ def check_site(site_id):
     return jsonify({"site": updated, "check": info})
 
 
+@app.route("/api/sites/<int:site_id>/dns-report", methods=["GET"])
+@login_required
+def site_dns_report(site_id):
+    """The Domains tab: every record with its own verdict, and where the IP came from."""
+    site = _site_for_request(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    report = provisioner.dns_report(site["domain"])
+    return jsonify({
+        "site": site,
+        "report": report,
+        "records": provisioner.dns_records(site["domain"], report["expected"]),
+        "server_ip": report["expected"],
+        "server_ip_source": report["expected_source"],
+        # Only a probe may claim HTTPS works - a finished job has not proven anything.
+        "ssl_status": site.get("ssl_status"),
+        "ssl_verified": site.get("ssl_status") == "verified",
+    })
+
+
+@app.route("/api/sites/<int:site_id>/verify", methods=["POST"])
+@login_required
+def verify_site(site_id):
+    """Re-check DNS and store the result. Read-only, so it needs no approval."""
+    site = _site_for_request(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    report = provisioner.dns_report(site["domain"])
+    fields = {
+        "dns_last_ip": ", ".join(report["resolved"])[:200],
+        "dns_last_check": now_str(),
+    }
+    if site["status"] != "live":
+        fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
+    updated = sites_service.update_site(site_id, fields)
+    return jsonify({"site": updated, "report": report})
+
+
 @app.route("/api/sites/<int:site_id>/provision", methods=["POST"])
 @client_admin_required
 def provision_site(site_id):

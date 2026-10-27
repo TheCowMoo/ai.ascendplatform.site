@@ -128,6 +128,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Websites     ", "/api/sites", ["sites"], "ok"),
         ("Websites     ", "/api/sites/%d" % site["id"], ["site"], "ok"),
         ("Websites     ", "/api/sites/%d/versions" % site["id"], [], "ok"),
+        ("Domains      ", "/api/sites/%d/dns-report" % site["id"], ["report", "records"], "ok"),
         ("Profile      ", "/api/profile", ["profile"], "ok"),
         ("Profile      ", "/api/profile/knowledge", [], "ok"),
         ("Settings     ", "/api/settings", [], "ok"),
