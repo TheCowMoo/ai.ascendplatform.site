@@ -2004,19 +2004,32 @@ def site_dns_report(site_id):
 @app.route("/api/sites/<int:site_id>/verify", methods=["POST"])
 @login_required
 def verify_site(site_id):
-    """Re-check DNS and store the result. Read-only, so it needs no approval."""
+    """Re-check DNS *and* knock on the site over HTTPS. Read-only, so no approval.
+
+    The probe is the only thing allowed to call a site live: a finished job proves that
+    files were written, not that a certificate exists.
+    """
     site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
     report = provisioner.dns_report(site["domain"])
+    probe = provisioner.live_probe(site["domain"])
     fields = {
         "dns_last_ip": ", ".join(report["resolved"])[:200],
         "dns_last_check": now_str(),
     }
-    if site["status"] != "live":
-        fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
+    if probe["ok"]:
+        fields["status"] = "live"
+        fields["ssl_status"] = "verified"
+        fields["url"] = "https://" + site["domain"]
+        fields["last_error"] = ""
+    else:
+        fields["ssl_status"] = "failed" if probe["error"] else "pending"
+        fields["last_error"] = (probe["hint"] or probe["error"])[:200]
+        if site["status"] != "live":
+            fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
     updated = sites_service.update_site(site_id, fields)
-    return jsonify({"site": updated, "report": report})
+    return jsonify({"site": updated, "report": report, "probe": probe})
 
 
 @app.route("/api/sites/<int:site_id>/provision", methods=["POST"])
