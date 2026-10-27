@@ -1,0 +1,37 @@
+# Caddyfile for CMBGrowthAI
+#
+# Caddy obtains and renews TLS certificates automatically - there is no certbot,
+# no nginx and no control panel to install. Point the domain's A/AAAA record at
+# this server (ports 80 + 443 open) and HTTPS is provisioned on first request.
+#
+# This file lives in ./caddy and is mounted as a *directory* on purpose: a single
+# file mount is pinned to the inode it was created with, so `git pull` (which
+# replaces the file) left Caddy reading the previous version until the container
+# was recreated. A directory mount follows the replacement.
+#
+# ACME_EMAIL is where Let's Encrypt sends expiry warnings. ACME_CA is left alone
+# in production; to exercise issuance once without burning the rate limit, set
+# ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory on the caddy
+# service. Five failed validations in an hour locks a domain out of production.
+
+{
+	admin 0.0.0.0:2019
+	email {$ACME_EMAIL:ops@example.com}
+}
+
+# The app (FastAPI + Flask over ASGI) on the compose network. Caddy sets
+# X-Forwarded-Proto itself, so only the real client IP is added here.
+{$ADMIN_DOMAIN:localhost} {
+	encode zstd gzip
+	log {
+		output file /data/logs/admin.log
+	}
+	reverse_proxy app:8000 {
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+# Hosted customer sites. The provisioner writes one file per domain into
+# /etc/caddy/sites and reloads Caddy through its admin API; each block gets its
+# own certificate as soon as the domain resolves here.
+import /etc/caddy/sites/*.caddy

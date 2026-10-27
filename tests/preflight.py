@@ -61,13 +61,35 @@ def check_compose():
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
     worker = text.split("worker:", 1)[-1].split("\n  caddy:", 1)[0]
-    missing = [frag for frag in ("/etc/caddy/sites", "/srv/sites", "/app/Caddyfile")
+    missing = [frag for frag in ("/etc/caddy/sites", "/srv/sites", "/srv/caddy/Caddyfile")
                if frag not in worker]
     if missing:
         raise AssertionError(
             "the worker service is missing %s - provisioning would write where Caddy "
             "cannot see it" % ", ".join(missing))
+    # A single-file mount is pinned to the inode git replaces, so a pull left Caddy
+    # reading the previous Caddyfile until the container was recreated. Mount the dir.
+    for name in ("app", "worker", "caddy"):
+        block = text.split(name + ":", 1)[-1]
+        if "./caddy/Caddyfile:" in block:
+            raise AssertionError(
+                "%s mounts caddy/Caddyfile as a file - mount ./caddy as a directory "
+                "instead, or edits will not take effect until the container is recreated"
+                % name)
     print("worker shares the site paths with caddy")
+
+
+def check_caddyfile():
+    """Formatting nits Caddy warns about on every reload, caught before they ship."""
+    path = os.path.join(ROOT, "caddy", "Caddyfile")
+    if not os.path.exists(path):
+        return
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    assert b"\r" not in raw, "caddy/Caddyfile has CRLF line endings - `caddy fmt` will warn"
+    assert raw.endswith(b"\n"), "caddy/Caddyfile must end with a newline"
+    assert b"header_up X-Forwarded-Proto" not in raw, "Caddy sets X-Forwarded-Proto itself"
+    print("caddy/Caddyfile is clean")
 
 
 def check_js():
@@ -102,6 +124,7 @@ def check_suites():
 def main():
     check_imports()
     check_compose()
+    check_caddyfile()
     try:
         check_js()
     except FileNotFoundError:
