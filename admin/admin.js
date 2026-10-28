@@ -4238,13 +4238,16 @@
             panel.appendChild(top);
             panel.appendChild(el('p', 'fine-print', 'A draft — nothing is saved until you ' +
               'press Apply.'));
-            var graph = el('div', 'auto-graph');
             var layout = {};
             (draft.steps || []).forEach(function (step, index) {
               layout[step.id] = { x: 20, y: 20 + index * 84 };
             });
-            graph.innerHTML = graphSvg(draft.steps || [], layout, {});
-            panel.appendChild(graph);
+            // Same canvas as the editor, so a draft can be zoomed and expanded before you
+            // decide anything - a 12-step sequence is unreadable at thumbnail size.
+            var shell = graphShell(function () {
+              return { steps: draft.steps || [], layout: layout, states: {} };
+            }, {});
+            panel.appendChild(shell.node);
             panel.appendChild(el('p', 'fine-print', (draft.steps || []).map(function (step) {
               return (step.title || step.id) + ' (' + step.type + ')';
             }).join(' → ')));
@@ -4486,9 +4489,8 @@
       });
       panel.appendChild(list);
 
-      // Read-only graph: the same steps JSON, drawn. Drag and live states come next; this
-      // already makes the shape legible, which is the part that was missing.
-      var graph = el('div', 'auto-graph');
+      // Read-only graph: the same steps JSON, drawn. Zoom and full screen come from the
+      // shell, drag from attachDrag - the canvas is shared with the draft preview.
       var layout = {};
       steps.forEach(function (step, index) {
         var saved = (a && a.layout && a.layout[step.id]) || null;
@@ -4497,13 +4499,14 @@
           : { x: 20, y: 20 + index * 84 };
       });
       var nodeStates = {};
-      function draw() {
-        graph.innerHTML = graphSvg(steps, layout, nodeStates);
-        attachDrag(graph, layout, draw);
-      }
-      draw();
-      panel.appendChild(graph);
-      panel.appendChild(el('p', 'fine-print', 'Drag a step to move it.'));
+      var shell = graphShell(function () {
+        // steps is reassigned when a draft is previewed, so read it, never close over it.
+        return { steps: steps, layout: layout, states: nodeStates };
+      }, { draggable: true });
+      function draw() { shell.draw(); }
+      panel.appendChild(shell.node);
+      panel.appendChild(el('p', 'fine-print',
+        'Drag a step to move it. Scroll or pinch to zoom, Expand for the whole canvas.'));
 
       // A draft from the agent is offered here, never applied silently: preview swaps the
       // canvas over to the proposed graph, Apply is the only thing that saves it.
@@ -4705,6 +4708,199 @@
     });
     out.push('</svg>');
     return out.join('');
+  }
+
+  // ---------- The graph canvas: zoom, pan, and a full-screen mode ----------
+  // Zoom drives the SVG's viewBox rather than a CSS transform. That is the whole trick:
+  // attachDrag() converts pointer travel through rect.width / viewBox.width, so leaving the
+  // geometry in the element keeps node dragging exact at any zoom - a CSS scale would apply
+  // that factor twice and make every drag feel wrong. k = 1 fits the whole graph; 8 is 8x.
+  function graphShell(read, opts) {
+    opts = opts || {};
+    var MAX_K = 8;
+    var wrap = el('div', 'auto-graph');
+    var canvas = el('div', 'auto-canvas');
+    var bar = el('div', 'auto-zoom');
+    var minus = el('button', 'btn btn-ghost btn-sm', '−');
+    var pct = el('span', 'auto-zoom-pct', '100%');
+    var plus = el('button', 'btn btn-ghost btn-sm', '+');
+    var fit = el('button', 'btn btn-ghost btn-sm', 'Fit');
+    var expand = el('button', 'btn btn-ghost btn-sm', 'Expand');
+    minus.type = plus.type = fit.type = expand.type = 'button';
+    minus.title = 'Zoom out';
+    plus.title = 'Zoom in';
+    fit.title = 'Show the whole graph';
+    expand.title = 'Fill the screen';
+    pct.title = '100% fits the whole graph';
+    [minus, pct, plus, fit, expand].forEach(function (node) { bar.appendChild(node); });
+    wrap.appendChild(canvas);
+    wrap.appendChild(bar);
+
+    var view = { k: 1, x: 0, y: 0 };
+    var bounds = { w: 1, h: 1 };
+
+    function svg() { return canvas.querySelector('svg'); }
+
+    function apply() {
+      var node = svg();
+      if (!node) return;
+      var w = bounds.w / view.k, h = bounds.h / view.k;
+      view.x = Math.max(0, Math.min(Math.max(0, bounds.w - w), view.x));
+      view.y = Math.max(0, Math.min(Math.max(0, bounds.h - h), view.y));
+      node.setAttribute('viewBox', [view.x, view.y, w, h].join(' '));
+      pct.textContent = Math.round(view.k * 100) + '%';
+    }
+
+    // Zoom about a screen point, so the node under the cursor stays under the cursor.
+    function zoomTo(k, clientX, clientY) {
+      var node = svg();
+      if (!node) return;
+      var rect = node.getBoundingClientRect();
+      var w = bounds.w / view.k, h = bounds.h / view.k;
+      var fx = rect.width ? (clientX - rect.left) / rect.width : 0.5;
+      var fy = rect.height ? (clientY - rect.top) / rect.height : 0.5;
+      var px = view.x + fx * w, py = view.y + fy * h;
+      k = Math.max(1, Math.min(MAX_K, k));
+      var w2 = bounds.w / k, h2 = bounds.h / k;
+      view.k = k;
+      view.x = px - fx * w2;
+      view.y = py - fy * h2;
+      apply();
+    }
+
+    function zoomAround(k) {
+      var rect = canvas.getBoundingClientRect();
+      zoomTo(k, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    }
+
+    function reset() { view.k = 1; view.x = 0; view.y = 0; apply(); }
+
+    function draw() {
+      var state = read();
+      canvas.innerHTML = graphSvg(state.steps || [], state.layout || {}, state.states || {});
+      var node = svg();
+      if (node) {
+        bounds.w = node.viewBox.baseVal.width || 1;
+        bounds.h = node.viewBox.baseVal.height || 1;
+      }
+      apply();   // a redraw resets the viewBox to content bounds; put the view back
+      if (opts.draggable) attachDrag(canvas, state.layout || {}, draw);
+    }
+
+    minus.onclick = function () { zoomAround(view.k / 1.25); };
+    plus.onclick = function () { zoomAround(view.k * 1.25); };
+    fit.onclick = reset;
+
+    function setFull(on) {
+      wrap.classList.toggle('is-full', on);
+      document.body.classList.toggle('graph-full', on);
+      expand.textContent = on ? 'Collapse' : 'Expand';
+      expand.title = on ? 'Back to the panel (Esc)' : 'Fill the screen';
+      apply();
+    }
+    expand.onclick = function () { setFull(!wrap.classList.contains('is-full')); };
+
+    // Closing the editor while expanded must not leave the page scroll locked, so the
+    // canvas collapses itself the moment it leaves the document.
+    if (typeof MutationObserver === 'function') {
+      var watcher = new MutationObserver(function () {
+        if (wrap.isConnected) return;
+        if (wrap.classList.contains('is-full')) setFull(false);
+        watcher.disconnect();
+      });
+      watcher.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // In the panel the page keeps its scroll; full screen the wheel zooms - and ctrl/cmd
+    // zooms anywhere, which is also what a trackpad pinch arrives as.
+    canvas.addEventListener('wheel', function (ev) {
+      if (!wrap.classList.contains('is-full') && !ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      zoomTo(view.k * (ev.deltaY < 0 ? 1.12 : 1 / 1.12), ev.clientX, ev.clientY);
+    }, { passive: false });
+
+    canvas.addEventListener('dblclick', function (ev) {
+      if (ev.target.closest('[data-node]')) return;
+      reset();
+    });
+
+    // Pan with one pointer, pinch with two. A press that starts on a node belongs to
+    // attachDrag's handler, so it never pans the canvas underneath it.
+    var pointers = {}, drag = null, pinch = null;
+
+    function pair() {
+      return Object.keys(pointers).map(function (id) { return pointers[id]; });
+    }
+
+    function begin() {
+      var pts = pair();
+      if (pts.length === 1) {
+        drag = { x: pts[0].x, y: pts[0].y, vx: view.x, vy: view.y };
+        pinch = null;
+        canvas.classList.add('panning');
+      } else if (pts.length === 2) {
+        drag = null;
+        pinch = {
+          dist: Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)),
+          k: view.k,
+          cx: (pts[0].x + pts[1].x) / 2,
+          cy: (pts[0].y + pts[1].y) / 2
+        };
+      }
+    }
+
+    function move(ev) {
+      if (!pointers[ev.pointerId]) return;
+      pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+      var node = svg();
+      if (!node) return;
+      var rect = node.getBoundingClientRect();
+      var pts = pair();
+      if (pinch && pts.length >= 2) {
+        var dist = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+        zoomTo(pinch.k * (dist / pinch.dist), pinch.cx, pinch.cy);
+        return;
+      }
+      if (!drag || !rect.width || !rect.height) return;
+      var w = bounds.w / view.k, h = bounds.h / view.k;
+      view.x = drag.vx - (ev.clientX - drag.x) * (w / rect.width);
+      view.y = drag.vy - (ev.clientY - drag.y) * (h / rect.height);
+      apply();
+    }
+
+    function end(ev) {
+      delete pointers[ev.pointerId];
+      if (!Object.keys(pointers).length) {
+        drag = null;
+        pinch = null;
+        canvas.classList.remove('panning');
+      } else {
+        begin();
+      }
+    }
+
+    canvas.addEventListener('pointerdown', function (ev) {
+      if (ev.button && ev.button !== 0) return;
+      if (ev.target.closest('[data-node]')) return;
+      pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+      begin();
+    });
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+
+    // Esc to leave, +/-/0 to zoom - only while expanded, and only while this canvas is on
+    // the page (an editor opened twice must not answer for the one that was closed).
+    document.addEventListener('keydown', function (ev) {
+      if (!wrap.isConnected || !wrap.classList.contains('is-full')) return;
+      if (ev.key === 'Escape') { setFull(false); return; }
+      if (ev.key === '+' || ev.key === '=') { zoomAround(view.k * 1.25); ev.preventDefault(); }
+      if (ev.key === '-') { zoomAround(view.k / 1.25); ev.preventDefault(); }
+      if (ev.key === '0') { reset(); ev.preventDefault(); }
+    });
+
+    draw();
+    return { node: wrap, draw: draw, view: view, fit: reset };
   }
 
   // Pointer drag on an SVG group. The scale factor matters: the SVG scales to the panel

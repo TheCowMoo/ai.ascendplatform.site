@@ -668,7 +668,7 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
   background: rgba(15, 23, 42, .45); padding: var(--s-4);
 }
 .auto-panel {
-  width: min(520px, 100%); max-height: 82vh; overflow-y: auto;
+  width: min(760px, 100%); max-height: 82vh; overflow-y: auto;
   display: flex; flex-direction: column; gap: var(--s-3);
   background: #fff; border-radius: var(--r-3); padding: var(--s-5);
   box-shadow: var(--sh-3);
@@ -700,6 +700,28 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .auto-cond-kind { width: 132px; }
 .auto-graph { background: #fcfcfd; border: 1px solid var(--line); border-radius: var(--r-2); padding: var(--s-2); }
 .auto-svg { display: block; max-height: 320px; }
+/* The graph canvas. Zoom is a viewBox change, so nothing here needs to scale the SVG: the
+   box only has to be a positioning context for the toolbar and a full-screen surface that
+   does not fight the panel's 320px cap. */
+.auto-canvas { position: relative; touch-action: pan-y; cursor: default; }
+.auto-canvas.panning { cursor: grabbing; }
+.auto-zoom {
+  position: absolute; right: 10px; bottom: 10px; z-index: 2;
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(255, 255, 255, .94); border: 1px solid var(--line);
+  border-radius: var(--r-2); padding: 3px 4px; box-shadow: var(--sh-2);
+}
+.auto-zoom-pct { font: 600 var(--t-1)/1 var(--font-mono); color: var(--ink-3); min-width: 42px; text-align: center; }
+.auto-zoom .btn { padding: 2px 8px; }
+.auto-graph.is-full {
+  position: fixed; inset: 0; z-index: 90; margin: 0; padding: 0;
+  border: 0; border-radius: 0; background: #fcfcfd;
+  display: flex; flex-direction: column;
+}
+.auto-graph.is-full .auto-canvas { flex: 1 1 auto; min-height: 0; touch-action: none; }
+.auto-graph.is-full .auto-svg { height: 100%; max-height: none; }
+.auto-graph.is-full .auto-zoom { right: 16px; bottom: 16px; }
+body.graph-full { overflow: hidden; }
 /* Domains tab: one row per domain, with the record panel underneath it. */
 .dom-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
 .dom-name { font: 600 var(--t-4)/1.3 inherit; color: var(--ink); }
