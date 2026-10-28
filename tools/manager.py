@@ -325,6 +325,57 @@ def _build_ask_user(emit, job_id=None):
     return ask_user
 
 
+def _build_create_template(emit, job_id=None):
+    async def create_template(name: str, subject: str, body: str) -> str:
+        """Write an email template for this client. Returns its id for a send step.
+
+        Create what the work needs rather than telling the user to. The body may use
+        {{contact.name}} and {{contact.email}}, which are filled from the contact.
+        """
+        import templates_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - templates belong to a client."
+        try:
+            row = templates_service.save_template(
+                {"name": name, "subject": subject, "body": body}, org_id)
+        except templates_service.TemplateError as exc:
+            return "Not created: %s" % exc
+        return ("Created template #%d “%s”. Use template_id %d in a send_email step."
+                % (row["id"], row["name"], row["id"]))
+
+    return create_template
+
+
+def _build_list_templates(emit, job_id=None):
+    async def list_templates() -> str:
+        """Templates this client already has - reuse one instead of writing a duplicate."""
+        import json
+
+        import templates_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first."
+        rows = templates_service.list_templates(org_id)
+        if not rows:
+            return "No templates yet."
+        return json.dumps([{"id": row["id"], "name": row["name"], "subject": row["subject"]}
+                           for row in rows])
+
+    return list_templates
+
+
+register("create_template",
+         "Write an email template for this client; returns the id a send step needs.",
+         _build_create_template)
+
+
+register("list_templates", "List this client's email templates, so you reuse rather than duplicate.",
+         _build_list_templates)
+
+
 register("ask_user",
          "Ask up to three questions when the brief is missing something that matters.",
          _build_ask_user)

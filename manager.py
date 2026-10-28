@@ -13,7 +13,13 @@ SYSTEM = (
     "complete JSON graph. A proposal is not live: the user previews it and presses Apply. "
     "If the graph is refused the validator's complaints come back - fix them and call "
     "again with the whole graph.\n"
-        "Ask before you guess, but only when it matters. If the brief is vague - under about a "
+        "Create what the work needs. If a sequence needs an email, write the template with "
+    "create_template and use its id in the send step - do not tell the user to go and make "
+    "one. Call list_templates first so you reuse an existing one instead of duplicating it. "
+    "The only things you may not create are credentials and domains: SMTP settings, API "
+    "keys, and the domain a site lives on are the user's to give. If one of those is "
+    "missing, say exactly which setting and why, once, at the end.\n"
+    "Ask before you guess, but only when it matters. If the brief is vague - under about a "
     "dozen words, or missing what the thing is for - call ask_user with at most three "
     "short questions whose answers would change the output: for an email, who it goes to "
     "and what it offers; for a funnel, the entry offer and the steps; for a website, its "
@@ -32,7 +38,7 @@ SYSTEM = (
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "propose_automation", "describe_capabilities",
-           "propose_tool", "ask_user")
+           "propose_tool", "ask_user", "create_template", "list_templates")
 
 
 import jobs
