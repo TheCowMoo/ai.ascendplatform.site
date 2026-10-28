@@ -237,3 +237,14 @@ EMAIL TEMPLATE PREVIEW (v1.61): the Emails tab had list/New/Delete and no way to
 template. GET /api/templates/<id>/preview renders subject and body through
 templates_service.render - the same function a send uses - with a sample contact, and
 returns sandboxed HTML for an iframe. Nothing is sent.
+
+OPEN BUG (found 2026-10-29, not yet diagnosed): form.submitted does not visibly start
+a run. forms.submit calls automations.start_for_event correctly, and start_for_event
+skips nothing obvious (enabled, trigger_type event, event name match), but a form
+submission on a published form with an enabled form.submitted automation produced zero
+rows in automation_runs. The likely cause is that automations.start() raises and
+start_for_event swallows it (its own comment says failures must not break the cause),
+so the automation silently never runs. Note also: automation_runs has NO org_id column -
+scope it through automation_id. Next step: call automations.start() directly with the
+same graph and read the exception instead of the swallowed result, then decide whether
+the swallow should log a run row with status failed rather than vanish.
