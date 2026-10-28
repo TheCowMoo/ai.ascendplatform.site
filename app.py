@@ -1985,6 +1985,39 @@ def check_site(site_id):
     return jsonify({"site": updated, "check": info})
 
 
+@app.route("/api/domains/preview", methods=["POST"])
+@login_required
+def domain_preview():
+    """Type a domain, get the records to copy - the way GoHighLevel does it.
+
+    Reads DNS and writes nothing, so it is safe to call while somebody is still typing, and
+    it must not create a site before the person has decided the domain is right.
+    """
+    data = request.get_json(silent=True) or {}
+    raw = str(data.get("domain") or "").strip().lower()
+    domain = re.sub(r"^https?://", "", raw).split("/")[0].strip().strip(".")
+    if not re.match(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", domain or ""):
+        return jsonify({"error": "That does not look like a domain - try example.com"}), 400
+    report = provisioner.dns_report(domain)
+    expected = report["expected"]
+    warnings = []
+    if not expected:
+        warnings.append("This server has no public IP configured yet, so the records would "
+                        "have nothing to point at. Set it in Settings, or wait for detection.")
+    if report.get("proxied"):
+        warnings.append("This domain currently resolves through Cloudflare, so the certificate "
+                        "cannot be issued until the record is DNS-only.")
+    return jsonify({
+        "domain": domain,
+        "records": provisioner.dns_records(domain, expected),
+        "copy_all": provisioner.dns_records_text(domain, expected),
+        "server_ip": expected,
+        "server_ip_source": report["expected_source"],
+        "warnings": warnings,
+        "report": report,
+    })
+
+
 @app.route("/api/sites/<int:site_id>/dns-report", methods=["GET"])
 @login_required
 def site_dns_report(site_id):

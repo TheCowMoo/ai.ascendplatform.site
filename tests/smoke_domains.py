@@ -32,6 +32,9 @@ def inject(apex=(), www=(), ip=HERE, cloudflare=(CF,)):
     provisioner.resolve_types = fake_resolve
     provisioner.server_ip_source = lambda: (ip, "setting" if ip else "")
     provisioner._in_cloudflare = lambda address: address in cloudflare
+    # www is judged as a CNAME first; with no alias in this fake, it falls back to the A
+    # record, which is exactly the path a client who published an A record takes.
+    provisioner.resolve_cname = lambda name, timeout=5: ""
 
 
 def row(report, rtype, name):
@@ -39,6 +42,19 @@ def row(report, rtype, name):
         if item["type"] == rtype and item["name"] == name:
             return item
     raise AssertionError("no %s %s row in %s" % (rtype, name, report["rows"]))
+
+
+def www_row(report):
+    """The www row, by name.
+
+    Its *type* depends on what is published - CNAME when the client took the advice, A when
+    they published an address - so looking it up by type is how this test broke the day www
+    became a CNAME. The name is the stable identity.
+    """
+    for item in report["rows"]:
+        if item["name"] == "www" and item["type"] in ("A", "CNAME"):
+            return item
+    raise AssertionError("no www row in %s" % (report["rows"],))
 
 
 def test_pointed_correctly_is_green():
@@ -55,9 +71,9 @@ def test_a_missing_www_is_named_not_swallowed():
     """www is optional, but it must be visible: silence is how people lose an hour."""
     inject(apex=[HERE], www=[])
     report = provisioner.dns_report(DOMAIN)
-    www = row(report, "A", "www")
+    www = www_row(report)
     assert www["status"] == "missing", www
-    assert "optional" in www["note"], www
+    assert "CNAME" in www["note"], www
     assert report["ok"] is True, "a missing www must not block go-live"
     print("missing www ->", www["note"])
 
@@ -111,9 +127,13 @@ def test_the_records_use_the_resolved_address():
     inject(apex=[HERE], www=[HERE])
     records = provisioner.dns_records(DOMAIN)
     assert [r["name"] for r in records] == ["@", "www"], records
-    assert all(r["value"] == HERE for r in records), records
+    assert records[0]["value"] == HERE, records
+    # www is a CNAME to the domain, deliberately: an address would have to be edited the day
+    # the server moves, and nobody remembers to.
+    assert records[1]["type"] == "CNAME" and records[1]["value"] == DOMAIN, records
     assert records[1]["host"] == "www." + DOMAIN
-    print("records ->", ", ".join("%s %s" % (r["type"], r["name"]) for r in records))
+    print("records ->", ", ".join("%s %s -> %s" % (r["type"], r["name"], r["value"])
+                                  for r in records))
 
 
 _CERT = {

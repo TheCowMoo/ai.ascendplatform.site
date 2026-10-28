@@ -214,6 +214,80 @@ def _record_row(rtype, name, expected, seen, required):
     return row
 
 
+def resolve_cname(name, timeout=5):
+    """The CNAME target for a name, or "" when the name is not an alias.
+
+    dnspython answers this exactly when it is installed; without it, the canonical name is
+    still available from the resolver's own lookup, which is enough to tell "www is an alias
+    of the domain" from "www is its own A record".
+    """
+    bare = (name or "").rstrip(".").lower()
+    try:
+        import dns.resolver
+    except Exception:
+        dns = None
+    else:
+        try:
+            answers = dns.resolver.resolve(bare, "CNAME", lifetime=timeout)
+            for answer in answers:
+                return str(getattr(answer, "target", "") or "").rstrip(".").lower()
+            return ""
+        except Exception:
+            return ""
+    try:
+        canonical, _, _ = socket.gethostbyname_ex(bare)
+    except Exception:
+        return ""
+    canonical = (canonical or "").rstrip(".").lower()
+    return "" if canonical in ("", bare) else canonical
+
+
+def _www_row(domain, expected):
+    """The www verdict, accepting either shape of the record.
+
+    A CNAME is what we recommend, because it keeps working when the server's address changes.
+    A site that already published ``A www`` is not *wrong* - it is tomorrow's outage - so it
+    passes with a note rather than failing, and nobody has to tear down working DNS.
+    """
+    name = "www." + domain
+    target = resolve_cname(name)
+    seen4, _ = resolve_types(name)
+    row = {"type": "CNAME", "name": "www", "value": domain, "seen": [], "required": False,
+           "status": "ok", "note": "", "alias_of": target}
+    if not expected:
+        row["status"] = "unknown"
+        row["note"] = ("no public IP is configured for this server, so there is nothing to "
+                       "point at")
+        return row
+    if target:
+        row["seen"] = [target]
+        if target == domain.rstrip(".").lower():
+            row["note"] = "CNAME to %s - survives an IP change" % domain
+            return row
+        row["status"] = "wrong"
+        row["note"] = "CNAME points at %s, expected %s" % (target, domain)
+        return row
+    if not seen4:
+        row["status"] = "missing"
+        row["note"] = "no record yet: add CNAME www -> %s" % domain
+        return row
+    if all(_in_cloudflare(address) for address in seen4):
+        row["status"] = "proxied"
+        row["note"] = ("Cloudflare is proxying this name, so it never resolves to this "
+                       "server. Set the record to DNS-only, or install an Origin certificate "
+                       "and keep the proxy on.")
+        return row
+    if expected in seen4:
+        row["type"] = "A"
+        row["value"] = expected
+        row["note"] = ("A record works, but a CNAME www -> %s would survive an IP change"
+                       % domain)
+        return row
+    row["status"] = "wrong"
+    row["note"] = "resolves to %s, expected %s" % (", ".join(seen4[:3]), domain)
+    return row
+
+
 def dns_report(domain, server_ip_value=None):
     """Per-record truth for one domain: what to publish, what DNS says, and the verdict.
 
@@ -226,7 +300,7 @@ def dns_report(domain, server_ip_value=None):
 
     rows = [
         _record_row("A", "@", expected, apex4, True),
-        _record_row("A", "www", expected, www4, False),
+        _www_row(domain, expected),
         _record_row("AAAA", "@", expected, apex6, False),
         _record_row("AAAA", "www", expected, www6, False),
     ]
@@ -258,12 +332,35 @@ def dns_report(domain, server_ip_value=None):
 
 
 def dns_records(domain, server_ip_value=None):
-    """The records the user must create at their DNS provider."""
+    """The records the user must create at their DNS provider - and the text to copy.
+
+    ``www`` is a CNAME rather than a second A record: it keeps working when the server's
+    address changes, which is the difference between a five-minute fix and an outage nobody
+    noticed. The ``copy`` strings are built here, not in the console, so the button and the
+    table can never disagree about what a record is.
+    """
     ip = (server_ip_value or server_ip()) or "<this server's public IP>"
-    return [
-        {"type": "A", "name": "@", "host": domain, "value": ip, "ttl": 3600},
-        {"type": "A", "name": "www", "host": "www." + domain, "value": ip, "ttl": 3600},
+    rows = [
+        {"type": "A", "name": "@", "host": domain, "value": ip, "ttl": 3600,
+         "note": "the site itself"},
+        {"type": "CNAME", "name": "www", "host": "www." + domain, "value": domain,
+         "ttl": 3600, "note": "the friendly address"},
     ]
+    for row in rows:
+        row["copy"] = "%s  %s  %s  TTL %d" % (row["type"], row["name"], row["value"],
+                                              row["ttl"])
+    return rows
+
+
+def dns_records_text(domain, server_ip_value=None):
+    """The same list as one paragraph, for pasting into a ticket or a chat with the client."""
+    rows = dns_records(domain, server_ip_value)
+    lines = ["DNS records for %s" % domain, ""]
+    lines.extend(row["copy"] for row in rows)
+    lines.append("")
+    lines.append("Add these at the provider where the domain's nameservers point. "
+                 "Leave any AAAA records alone unless they point somewhere else.")
+    return "\n".join(lines)
 
 
 def _cert_summary(cert):
