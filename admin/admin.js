@@ -2863,6 +2863,59 @@
     container.appendChild(el('p', 'muted', meta.blurb));
     var composerHost = el('div');
     container.appendChild(composerHost);
+    var templatesHost = el('div');
+    container.appendChild(templatesHost);
+
+    // Templates live with the Emails tab because that is where someone thinks of them: the
+    // wording a send step points at, so an automation never carries an email inside itself.
+    function loadTemplates() {
+      api('GET', '/api/templates').then(function (d) {
+        templatesHost.innerHTML = '';
+        var card = el('div', 'panel-card');
+        card.appendChild(el('h3', 'card-title', 'Templates'));
+        card.appendChild(el('p', 'fine-print', 'A send step points at one of these. ' +
+          '{{contact.name}} and {{contact.email}} are filled in from the contact.'));
+        var rows = d.templates || [];
+        if (!rows.length) {
+          card.appendChild(el('p', 'muted', 'No templates yet - a sequence can only send ' +
+            'freehand text until you add one.'));
+        }
+        rows.forEach(function (t) {
+          var row = el('div', 'auto-proposal');
+          var label = el('div');
+          label.innerHTML = '<strong>' + esc(t.name) + '</strong>' +
+            '<div class="fine-print">' + esc(t.subject || '(no subject)') + ' · #' +
+            esc(String(t.id)) + '</div>';
+          row.appendChild(label);
+          var drop = el('button', 'btn btn-ghost btn-sm', 'Delete');
+          drop.onclick = function () {
+            api('DELETE', '/api/templates/' + t.id).then(function () {
+              toast('Template deleted', true);
+              loadTemplates();
+            }).catch(function (e) { toast(e.message, false); });
+          };
+          row.appendChild(drop);
+          card.appendChild(row);
+        });
+        var add = el('button', 'btn btn-ghost btn-sm', '+ New template');
+        add.onclick = function () {
+          formModal('New email template', [
+            { name: 'name', label: 'Name', help: 'What a send step picks from' },
+            { name: 'subject', label: 'Subject', help: '{{contact.name}} works here' },
+            { name: 'body', label: 'Body', help: 'Placeholders are filled from the contact' }
+          ], function (data, fail, ok) {
+            api('POST', '/api/templates', data).then(function () {
+              ok();
+              toast('Template saved', true);
+              loadTemplates();
+            }).catch(function (e) { fail(e.message); });
+          });
+        };
+        card.appendChild(add);
+        templatesHost.appendChild(card);
+      }).catch(function () { templatesHost.style.display = 'none'; });
+    }
+    if (meta.kind === 'email') loadTemplates();
     var body = el('div');
     container.appendChild(body);
 
