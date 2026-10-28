@@ -15,11 +15,24 @@ depends_on = None
 
 
 def upgrade():
-    for column in (Column("context", Text, nullable=False, server_default="{}"),
-                   Column("wake_at", Text)):
-        op.add_column("automation_runs", column)
+    # init_db()'s create_all() builds automation_runs from db.metadata, which already has
+    # these columns, and db.py's additive-column pass adds them to existing tables. So the
+    # ALTER must be conditional or a fresh database fails with "duplicate column".
+    from sqlalchemy import inspect
+
+    existing = {column["name"] for column in inspect(op.get_bind()).get_columns("automation_runs")}
+    if "context" not in existing:
+        op.add_column("automation_runs", Column("context", Text, nullable=False,
+                                                 server_default="{}"))
+    if "wake_at" not in existing:
+        op.add_column("automation_runs", Column("wake_at", Text))
 
 
 def downgrade():
-    op.drop_column("automation_runs", "wake_at")
-    op.drop_column("automation_runs", "context")
+    from sqlalchemy import inspect
+
+    existing = {column["name"] for column in inspect(op.get_bind()).get_columns("automation_runs")}
+    if "wake_at" in existing:
+        op.drop_column("automation_runs", "wake_at")
+    if "context" in existing:
+        op.drop_column("automation_runs", "context")
