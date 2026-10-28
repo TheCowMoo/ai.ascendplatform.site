@@ -2277,6 +2277,44 @@ def update_automation(automation_id):
     return jsonify({"automation": automation})
 
 
+@app.route("/api/automations/proposals", methods=["GET"])
+@login_required
+def list_automation_proposals():
+    """Graphs the agents have drafted and are waiting for a human to apply."""
+    org = current_org()
+    if org is None:
+        return jsonify({"proposals": [],
+                        "reason": "Pick a client in the workspace switcher"})
+    status = (request.args.get("status") or "pending").strip()
+    return jsonify({"proposals": automations_service.list_proposals(org, status)})
+
+
+@app.route("/api/automations/proposals/<int:proposal_id>/apply", methods=["POST"])
+@login_required
+def apply_automation_proposal(proposal_id):
+    """The only path from a draft to a saved automation, and it re-validates first."""
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    try:
+        saved, _ = automations_service.apply_proposal(proposal_id, org,
+                                                      session.get("user_id"))
+    except automations_service.AutomationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"automation": saved})
+
+
+@app.route("/api/automations/proposals/<int:proposal_id>/discard", methods=["POST"])
+@login_required
+def discard_automation_proposal(proposal_id):
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    if not automations_service.discard_proposal(proposal_id, org):
+        return jsonify({"error": "No pending proposal with that id"}), 404
+    return jsonify({"ok": True})
+
+
 @app.route("/api/automations/<int:automation_id>", methods=["DELETE"])
 @login_required
 def delete_automation(automation_id):

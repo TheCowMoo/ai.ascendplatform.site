@@ -493,6 +493,105 @@ async def run_task(job, emit):
     return "Ran %d steps." % len(order)
 
 
+def _now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _proposal(row):
+    if not row:
+        return None
+    out = dict(row)
+    for key in ("steps", "layout"):
+        try:
+            out[key] = json.loads(out.get(key) or ("[]" if key == "steps" else "{}"))
+        except (TypeError, ValueError):
+            out[key] = [] if key == "steps" else {}
+    return out
+
+
+def propose(org_id, name, steps, automation_id=None, created_by=None, job_id=None, note=""):
+    """Store a drafted graph. Returns (proposal, problems); problems means nothing saved.
+
+    Validation happens here so the *model* hears about a bad graph while it can still fix
+    it, and again in :func:`apply` so a proposal cannot slip past a later edit.
+    """
+    from db import get_connection
+
+    problems = validate_graph(steps)
+    if problems:
+        return None, problems
+    clean_steps, layout = _clean_graph(steps, None, "manual")
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO automation_proposals (org_id, automation_id, name, steps, layout, "
+            "status, created_by, job_id, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+            (org_id, automation_id, (name or "").strip()[:MAX_NAME], json.dumps(clean_steps),
+             json.dumps(layout), created_by, job_id, (note or "")[:500], _now()),
+        )
+        row = conn.execute("SELECT * FROM automation_proposals WHERE id = ?",
+                           (cur.lastrowid,)).fetchone()
+    return _proposal(row), []
+
+
+def list_proposals(org_id, status="pending"):
+    from db import get_connection
+
+    query = "SELECT * FROM automation_proposals WHERE org_id = ?"
+    params = [org_id]
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    with get_connection() as conn:
+        rows = conn.execute(query + " ORDER BY id DESC", tuple(params)).fetchall()
+    return [_proposal(row) for row in rows]
+
+
+def get_proposal(proposal_id, org_id):
+    from db import get_connection
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM automation_proposals WHERE id = ? AND org_id = ?",
+            (proposal_id, org_id)).fetchone()
+    return _proposal(row)
+
+
+def apply_proposal(proposal_id, org_id, requester_id=None):
+    """Turn a pending proposal into a saved automation. (automation, problems)."""
+    from db import get_connection
+
+    draft = get_proposal(proposal_id, org_id)
+    if not draft or draft["status"] != "pending":
+        raise AutomationError("That proposal is not waiting to be applied.")
+    problems = validate_graph(draft["steps"])
+    if problems:
+        raise AutomationError(" ".join(problems))
+    if draft["automation_id"]:
+        saved = update(draft["automation_id"], org_id, name=draft["name"],
+                       steps=draft["steps"], layout=draft["layout"])
+        if not saved:
+            raise AutomationError("That automation no longer exists.")
+    else:
+        new_id = create(org_id, draft["name"], draft["steps"], draft["layout"],
+                        created_by=requester_id or draft["created_by"])
+        saved = get(new_id, org_id)
+    with get_connection() as conn:
+        conn.execute("UPDATE automation_proposals SET status = 'applied' WHERE id = ?",
+                     (proposal_id,))
+    return saved, []
+
+
+def discard_proposal(proposal_id, org_id):
+    from db import get_connection
+
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE automation_proposals SET status = 'discarded' "
+            "WHERE id = ? AND org_id = ? AND status = 'pending'", (proposal_id, org_id))
+        return cur.rowcount > 0
+
+
 def delete(automation_id, org_id):
     from db import get_connection
 

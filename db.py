@@ -253,6 +253,26 @@ automation_runs = Table(
 
 Index("idx_automation_runs_automation", automation_runs.c.automation_id)
 
+# A graph an agent *drafted*. Deliberately a separate table: a proposal must never be able
+# to change a saved automation, so the model writes here and a human applies it.
+automation_proposals = Table(
+    "automation_proposals",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("automation_id", Integer),          # null = a brand new automation
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("steps", Text, nullable=False, server_default=_literal("[]")),
+    Column("layout", Text, nullable=False, server_default=_literal("{}")),
+    Column("status", Text, nullable=False, server_default=_literal("pending")),
+    Column("created_by", Integer),
+    Column("job_id", Integer),
+    Column("note", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+
+Index("idx_automation_proposals_org", automation_proposals.c.org_id)
+
 # Files/images produced by a job.
 job_artifacts = Table(
     "job_artifacts", metadata,
