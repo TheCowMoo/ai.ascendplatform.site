@@ -206,3 +206,34 @@ model name can never remove tool support. Before sending, `without_empty_blocks(
 rebuilds the payload: empty text blocks dropped; empty messages replaced with
 "(no content)" — never removed, since that orphans tool results; `tool_result` blocks
 kept only when a `tool_use` sits in the **immediately previous** message.
+
+## Forms, surveys and quizzes - state (v1.60)
+
+Built in five commits: c6b2d5a schema + engine, 0f7735c hosted page, da417a7 Forms tab,
+aee48ee builder, 3f4aa7d agent tools, f3cfd94 repair.
+
+Working end to end: forms/form_responses tables; forms_engine (walk, visibility, scoring
+over only the questions asked, branching that cannot loop, definition validation);
+GET /f/<slug> with server-decided navigation and a CSP; /step and submit endpoints with
+honeypot, hashed IP and rate limit; preview that runs the real engine and writes nothing;
+Forms tab with create, publish, responses and CSV; builder (types, pages, one rule per
+question, points and correct answer); agent tools create_form/list_forms with
+can_create.form; form.submitted fires on every submission and is named in the trigger
+placeholder.
+
+Known gaps, in the order they would bite:
+* The builder has never been clicked in a browser. It is node --check-clean and reviewed,
+  not verified: add/move/type-change and the rule dropdowns are the likely breakage.
+* Cross-client isolation is implemented (404 on another client form) but its test SKIPS
+  here because the local database has one org - it needs a second client fixture.
+* No partial saves (a response exists only on submit), no file questions, no email on a
+  new answer.
+* Deleting a form with answers archives it; there is no un-archive button yet.
+
+Hard-won rule: never chain `git push` with `;` after a test. It pushed a broken test file
+twice (f3cfd94 is the repair). Gate on the preflight result, never on the semicolon.
+
+EMAIL TEMPLATE PREVIEW (v1.61): the Emails tab had list/New/Delete and no way to read a
+template. GET /api/templates/<id>/preview renders subject and body through
+templates_service.render - the same function a send uses - with a sample contact, and
+returns sandboxed HTML for an iframe. Nothing is sent.

@@ -2660,6 +2660,37 @@ def create_template():
     return jsonify({"template": item}), 201
 
 
+@app.route("/api/templates/<int:template_id>/preview", methods=["GET"])
+@client_admin_required
+def api_template_preview(template_id):
+    """A template as an inbox would show it, with a sample contact in the placeholders.
+
+    Rendered by ``templates_service.render`` - the same function a send uses - so a preview
+    and a real email cannot drift apart. Deliberately a *sample* contact: previewing with a
+    real lead would put one client's details in front of whoever is looking.
+    """
+    import json
+    import templates_service
+
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    item = templates_service.get_template(template_id, org)
+    if not item:
+        return jsonify({"error": "No such template"}), 404
+    sample = {"name": "Ada Lovelace", "email": "ada@example.test", "phone": "+44 0000 000000",
+              "id": "0", "status": "new", "tags": "sample", "company": "Example Ltd"}
+    subject = templates_service.render(item.get("subject") or "", sample)
+    body = templates_service.render(item.get("body") or "", sample)
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<style>body{margin:0;padding:20px;font:15px/1.6 system-ui,-apple-system,"
+            "'Segoe UI',Roboto,sans-serif;color:#111827}pre{white-space:pre-wrap;"
+            "font:inherit;margin:0}</style></head><body><pre>" + safe + "</pre></body></html>")
+    return jsonify({"template": item, "subject": subject, "body": body, "html": html,
+                    "sample": json.dumps(sample)})
+
+
 @app.route("/api/templates/<int:template_id>", methods=["PUT", "DELETE"])
 @login_required
 def template_detail(template_id):

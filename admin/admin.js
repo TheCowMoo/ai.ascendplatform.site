@@ -2895,6 +2895,29 @@
             '<div class="fine-print">' + esc(t.subject || '(no subject)') + ' · #' +
             esc(String(t.id)) + '</div>';
           row.appendChild(label);
+          // A template you cannot read is a template you cannot trust: preview renders it
+          // through the same function a send uses, with a sample contact in the placeholders.
+          var peek = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          peek.onclick = function () {
+            api('GET', '/api/templates/' + t.id + '/preview').then(function (d) {
+              var modal = el('div', 'auto-modal');
+              var panel = el('div', 'auto-panel');
+              panel.appendChild(el('h3', 'card-title', d.template.subject || '(no subject)'));
+              var frame = el('iframe', 'preview-frame');
+              frame.setAttribute('sandbox', '');
+              frame.setAttribute('title', 'Template preview');
+              frame.srcdoc = d.html;
+              panel.appendChild(frame);
+              panel.appendChild(el('p', 'fine-print', 'Rendered with ' + d.sample +
+                ' in the placeholders. Nothing was sent.'));
+              var close = el('button', 'btn', 'Close');
+              close.onclick = function () { if (modal.parentNode) modal.parentNode.removeChild(modal); };
+              panel.appendChild(close);
+              modal.appendChild(panel);
+              document.body.appendChild(modal);
+            }).catch(function (e) { toast(e.message, false); });
+          };
+          row.appendChild(peek);
           var drop = el('button', 'btn btn-ghost btn-sm', 'Delete');
           drop.onclick = function () {
             api('DELETE', '/api/templates/' + t.id).then(function () {
