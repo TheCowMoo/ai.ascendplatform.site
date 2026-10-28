@@ -133,6 +133,31 @@ def check_deploy_script():
     print("deploy.sh rebuilds, labels the build and rolls back")
 
 
+def check_icons():
+    """Every icon the console asks for must exist in the sprite.
+
+    A missing <symbol> renders an empty SVG - no error, no console warning, just a blank
+    gap where the glyph should be. Analytics lost its icon that way and it took someone
+    looking at the screen to notice.
+    """
+    js_path = os.path.join(ROOT, "admin", "admin.js")
+    html_path = os.path.join(ROOT, "admin", "index.html")
+    if not (os.path.exists(js_path) and os.path.exists(html_path)):
+        return
+    import re
+
+    with open(js_path, encoding="utf-8") as handle:
+        script = handle.read()
+    with open(html_path, encoding="utf-8") as handle:
+        page = handle.read()
+    used = set(re.findall(r"icon: '([a-z0-9-]+)'", script))
+    used |= set(re.findall(r"icon\('([a-z0-9-]+)'\)", script))
+    have = set(re.findall(r'id="i-([a-z0-9-]+)"', page))
+    missing = sorted(used - have)
+    assert not missing, "no sprite symbol for: %s (add <symbol id=\"i-..\">)" % ", ".join(missing)
+    print("icons: %d used, all present" % len(used))
+
+
 def check_js():
     if not os.path.exists(os.path.join(ROOT, "admin", "admin.js")):
         return
@@ -166,6 +191,7 @@ def main():
     check_imports()
     check_compose()
     check_caddyfile()
+    check_icons()
     check_deploy_script()
     try:
         check_js()
