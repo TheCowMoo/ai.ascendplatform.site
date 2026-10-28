@@ -42,7 +42,81 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "create_contact", "create_site")
 
 
+import json
+import re
+
 import jobs
+
+# Where a model's tool-call markup starts. DeepSeek writes "<||DSML||invoke name=...>"; the
+# bars turn up as ASCII pipes or fullwidth ones depending on the tokenizer, so match both,
+# along with the other shapes seen in the wild.
+_INVOKE = re.compile(r"invoke\s+name\s*=\s*[\"']([A-Za-z_]\w*)[\"']")
+_PARAM = re.compile(
+    r"parameter\s+name\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)(?=parameter\s+name\s*=|</|\Z)",
+    re.S)
+
+
+def _markup_start(text):
+    """Where a leaked tool call begins, or -1.
+
+    Deliberately not anchored on the exact marker: the ｜ bars in DeepSeek's
+    "<||DSML||invoke name=...>" arrive as ASCII pipes, fullwidth bars, or mangled bytes
+    depending on the proxy and the console. What is stable is the shape - a word like DSML,
+    or "invoke name=" followed by "parameter name=" - so that is what is matched.
+    """
+    low = text.lower()
+    hits = []
+    for token in ("dsml", "antml:invoke", "tool_calls"):
+        index = low.find(token)
+        if index != -1:
+            hits.append(index)
+    for hit in _INVOKE.finditer(text):
+        if "parameter" in text[hit.end():hit.end() + 400].lower():
+            hits.append(hit.start())
+            break
+    return min(hits) if hits else -1
+
+
+def _markup_calls(text):
+    """[(tool name, args)] for tool calls a model *wrote* instead of sending.
+
+    Nothing here trusts the markup's round-trip fidelity: names are validated by the
+    registry (`tools.resolve` drops unknown ones) and values are decoded as JSON where they
+    look like JSON, which is how a `steps` list arrives as a list and not as a string.
+    """
+    if not isinstance(text, str):
+        return []
+    start = _markup_start(text)
+    if start < 0:
+        return []
+    body = text[start:]
+    found = []
+    hits = list(_INVOKE.finditer(body))
+    for index, hit in enumerate(hits):
+        end = hits[index + 1].start() if index + 1 < len(hits) else len(body)
+        block = body[hit.end():end]
+        args = {}
+        for name, raw in _PARAM.findall(block):
+            value = raw.strip().lstrip("<|｜?").strip()
+            if value[:1] in "[{":
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            elif value in ("true", "false"):
+                value = value == "true"
+            args[name.strip()] = value
+        found.append((hit.group(1), args))
+    return found
+
+
+def _strip_markup(text):
+    """The prose a model wrote, with the markup it leaked after it removed."""
+    if not isinstance(text, str):
+        return ""
+    start = _markup_start(text)
+    return (text[:start] if start >= 0 else text).strip().rstrip("|｜?<").strip()
+
 
 
 @jobs.task("chat")
@@ -68,12 +142,66 @@ async def chat_task(job, emit):
     )
     emit("system", "system", "Manager is thinking…")
     result = await agent.run(task=job.get("prompt") or "")
-    messages = getattr(result, "messages", []) or []
-
+    messages = list(getattr(result, "messages", []) or [])
+    said = _answer_from(messages)
     for message in messages:
         for call in _tool_calls(message):
             emit("Manager", "tool", call)
-    return _answer_from(messages)
+    ran = []
+
+    # Some models (DeepSeek's chat models in particular) print their tool calls as *text* -
+    # "<||DSML||invoke name=\"propose_automation\">..." - instead of returning structured
+    # calls. AutoGen sees ordinary content, so nothing runs, the user gets a wall of markup,
+    # and the turn looks broken. Parse the markup, run it through the same registry, and
+    # hand the results back so the model can answer in words.
+    for _ in range(3):
+        calls = _markup_calls(said)
+        if not calls:
+            break
+        notes = []
+        for name, args in calls:
+            ran.append(name)
+            emit("Manager", "tool", name)
+            notes.append("%s -> %s" % (name, await _run_named(name, args, emit, job.get("id"))))
+        emit("system", "system",
+             "Ran %d call(s) the model wrote as text instead of sending." % len(calls))
+        result = await agent.run(task=_follow_up(notes))
+        messages = list(getattr(result, "messages", []) or [])
+        said = _answer_from(messages)
+
+    prose = _strip_markup(said).strip()
+    if prose:
+        return prose
+    # Markup and nothing else: say what happened rather than echo the model's syntax back.
+    if ran:
+        return ("I ran %s. Open the job transcript to see the results, and tell me what you "
+                "want done next." % ", ".join(sorted(set(ran))))
+    return "I finished without saying anything - open the job transcript to see what ran."
+
+
+def _follow_up(notes):
+    """The prompt that turns markup into work: here is what you meant, keep going."""
+    return ("You wrote those tool calls as text instead of calling them, so I ran them for "
+            "you:\n%s\n\nNow reply to the user in 1-3 sentences saying what you built and "
+            "what is still missing, or call the next tool you need. Never write tool markup "
+            "into your reply." % "\n".join(notes))
+
+
+async def _run_named(name, args, emit, job_id):
+    """Run one tool by name with dict arguments, and turn any failure into a sentence."""
+    from autogen_core import CancellationToken
+
+    import tools as tool_registry
+
+    resolved = tool_registry.resolve([name], emit, job_id=job_id)
+    if not resolved:
+        return "no such tool"
+    try:
+        out = await resolved[0].run_json(args, CancellationToken())
+    except Exception as exc:
+        return "error: %s" % str(exc)[:300]
+    return str(out)[:1500]
+
 
 
 def _tool_calls(message):

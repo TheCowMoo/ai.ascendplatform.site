@@ -22,6 +22,7 @@ FAST_SUITES = (
     "test_migrations",
     "test_automation_graph",
     "test_manager_questions",
+    "test_markup_calls",
     "smoke_automations",
     "smoke_analytics",
     "smoke_deliverables",
