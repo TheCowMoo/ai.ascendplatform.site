@@ -86,6 +86,23 @@ def main():
     check("the page locks itself down",
           "default-src 'none'" in resp.headers["Content-Security-Policy"])
 
+    # The page's JavaScript is 6KB of untested code unless something parses it. Node is not
+    # guaranteed on a server, so this check skips rather than failing when it is missing.
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    script = re.search(r"<script>(.*)</script>", body, re.S)
+    if shutil.which("node") and script:
+        path = os.path.join(tempfile.gettempdir(), "form_page_%s.js" % TOKEN)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(script.group(1))
+        result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        check("the page's JavaScript parses", result.returncode, 0)
+        check("and the step and submit URLs are baked in",
+              ('"step": "/api/public/forms/%s/step"' % slug) in body, True)
+
     resp = client.get("/f/%s" % draft_slug)
     check("an unpublished form answers nobody", resp.status_code, 404)
     resp = client.get("/f/%s?preview=1" % draft_slug)
