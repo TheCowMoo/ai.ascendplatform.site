@@ -893,11 +893,38 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None):
     record("reload", target.run(CADDY_RELOAD_CMD, job_id, emit, allow_mutating=True,
                                 summary="reload the web server (%s)" % target.name))
 
+    # Certificate. Caddy issues on the first TLS handshake for a name, so this probe is
+    # both the request and the proof - without it a job could report "live" while the
+    # browser got a name-mismatch error. Retried because ACME validation takes seconds.
+    import time
+
+    ssl_probe = {"ok": False, "error": "not attempted", "hint": "", "issuer": "",
+                 "expires": "", "status_code": None}
+    if actions.is_dry_run():
+        ssl_probe = {"ok": True, "error": "", "hint": "", "issuer": "dry-run",
+                     "expires": "", "status_code": None}
+        record("ssl", {"ok": True}, "[dry-run] would request and verify the certificate")
+    else:
+        for attempt in range(18):
+            ssl_probe = live_probe(domain, timeout=6)
+            if ssl_probe["ok"]:
+                break
+            if emit and attempt % 3 == 0:
+                emit("provision", "system", "[ssl] requesting certificate… attempt %d/18"
+                     % (attempt + 1))
+            time.sleep(5)
+        detail = ("issued by %s, expires %s" % (ssl_probe["issuer"], ssl_probe["expires"])
+                  if ssl_probe["ok"] else (ssl_probe["hint"] or ssl_probe["error"]))
+        record("ssl", {"ok": ssl_probe["ok"]}, detail)
+
     # DNS is the user's job, so unpublished records are the expected state before
     # they create them — not a failure. `ok` reflects whether the *target* was
     # configured successfully; `status` distinguishes waiting-for-DNS from live.
-    configured = all(step["ok"] for step in steps if step["step"] != "dns")
-    status = "error" if not configured else ("live" if dns["ok"] else "pending_dns")
+    configured = all(step["ok"] for step in steps if step["step"] not in ("dns", "ssl"))
+    # "live" now needs a certificate that was actually served, not just a vhost that was
+    # written: a site can be perfectly configured and still fail in the browser.
+    status = "error" if not configured else (
+        "live" if (dns["ok"] and ssl_probe["ok"]) else "pending_dns")
     return {
         "ok": configured,
         "dry_run": actions.is_dry_run(),
