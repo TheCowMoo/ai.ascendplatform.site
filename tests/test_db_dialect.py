@@ -118,6 +118,7 @@ def test_sqlite_schema():
         "orgs", "client_settings", "deliverables", "mail_senders", "invites",
         "data_sources", "metrics_daily", "sync_runs", "site_versions",
         "automations", "automation_runs", "automation_proposals", "contacts", "email_templates", "agent_tools",
+        "forms", "form_responses",
     }
     assert tables == expected, tables
     print("tables:", sorted(tables))

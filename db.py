@@ -315,6 +315,48 @@ email_templates = Table(
 
 Index("idx_email_templates_org", email_templates.c.org_id)
 
+# Forms, surveys and quizzes. The questions live in JSON rather than rows: a form is edited
+# as a whole document, branching rules point at question ids inside it, and re-reading one
+# JSON blob is cheaper and less error-prone than reassembling an ordered tree from rows.
+forms = Table(
+    "forms",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("slug", Text, nullable=False, unique=True),
+    Column("kind", Text, nullable=False, server_default=_literal("form")),
+    Column("pages", Text, nullable=False, server_default=_literal("[]")),
+    Column("questions", Text, nullable=False, server_default=_literal("[]")),
+    Column("settings", Text, nullable=False, server_default=_literal("{}")),
+    Column("status", Text, nullable=False, server_default=_literal("draft")),
+    Column("owner_id", Integer),
+    _created_at(),
+    Column("updated_at", Text),
+)
+
+Index("idx_forms_org", forms.c.org_id)
+
+# One row per submission. Deliberately not `responses`: that word is already used for HTTP
+# answers in this codebase, and a table named after a coincidental overlap invites confusion.
+form_responses = Table(
+    "form_responses",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("form_id", Integer, nullable=False),
+    Column("contact_id", Integer),
+    Column("answers", Text, nullable=False, server_default=_literal("{}")),
+    Column("score", Integer, nullable=False, server_default=text("0")),
+    Column("max_score", Integer, nullable=False, server_default=text("0")),
+    Column("outcome", Text, nullable=False, server_default=_literal("")),
+    Column("ip_hash", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+
+Index("idx_form_responses_form", form_responses.c.form_id)
+Index("idx_form_responses_org", form_responses.c.org_id)
+
 # Tools the *agent* proposes. A row here is inert: nothing executes until status='approved',
 # and no executor for either kind exists yet - the approval gate is being built before the
 # thing it guards, deliberately.

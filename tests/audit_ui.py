@@ -60,7 +60,7 @@ def cleanup():
         conn.execute("DELETE FROM jobs WHERE org_id = ?", (org_id,))
         for table in ("automations", "automation_runs", "deliverables", "site_versions",
                       "sites", "users", "client_settings", "business_profiles",
-                      "data_sources", "invites", "site_snapshots"):
+                      "data_sources", "invites", "site_snapshots", "forms", "form_responses"):
             try:
                 conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org_id,))
             except Exception:
