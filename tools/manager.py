@@ -290,17 +290,27 @@ def _build_ask_user(emit, job_id=None):
                 parsed = None
         else:
             parsed = questions
+        def _split(items):
+            """One question per line, whether the model wrapped them in JSON or not."""
+            out = []
+            for item in items or []:
+                text = str(item)
+                if "\n" in text or re.search(r"(^|\s)\d+[).]\s", text):
+                    out.extend(part.strip(' []"\'') for part in
+                               re.split(r"\r?\n+|\s*\d+[).]\s*", text) if part.strip(' []"\''))
+                else:
+                    out.append(text.strip())
+            return [question for question in out if question]
+
         if parsed is None:
             # Models regularly send one string with numbered lines instead of a JSON list -
             # the transcript that exposed this had all three questions inside a single
-            # element, which renders as one unusable input. Split on lines and numbering.
-            text = str(questions or "")
-            parsed = [part.strip(' []"\'') for part in
-                      re.split(r"\r?\n+|\s*\d+[).]\s*", text) if part.strip(' []"\'')]
+            # element. A successful JSON parse can still hide that, so both go through the
+            # same splitter.
+            parsed = [str(questions or "")]
         if isinstance(parsed, str):
             parsed = [parsed]
-        cleaned = [str(question).strip() for question in (parsed or [])
-                   if str(question).strip()][:3]
+        cleaned = _split(parsed)[:3]
         if not cleaned:
             return "No questions given, so nothing was asked."
         if emit:

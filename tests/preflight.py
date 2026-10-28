@@ -21,6 +21,7 @@ FAST_SUITES = (
     "test_db_dialect",
     "test_migrations",
     "test_automation_graph",
+    "test_manager_questions",
     "smoke_automations",
     "smoke_analytics",
     "smoke_deliverables",
