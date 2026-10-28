@@ -2383,6 +2383,35 @@ def contacts_lead_token():
     return jsonify({"token": token, "url": url, "snippet": snippet})
 
 
+@app.route("/api/agent-tools", methods=["GET"])
+@login_required
+def list_agent_tools():
+    """Tools the agent has proposed. Approving one records it; nothing executes it yet."""
+    import agent_tools
+
+    org = current_org()
+    if org is None:
+        return jsonify({"tools": [], "reason": "Pick a client in the workspace switcher"})
+    status = (request.args.get("status") or "").strip().lower() or None
+    return jsonify({"tools": agent_tools.list_tools(org, status)})
+
+
+@app.route("/api/agent-tools/<int:tool_id>/<decision>", methods=["POST"])
+@login_required
+def decide_agent_tool(tool_id, decision):
+    import agent_tools
+
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    if decision not in ("approve", "reject"):
+        return jsonify({"error": "decision must be approve or reject"}), 400
+    row = agent_tools.decide(tool_id, org, approve=(decision == "approve"))
+    if not row:
+        return jsonify({"error": "No pending tool with that id"}), 404
+    return jsonify({"tool": row})
+
+
 @app.route("/api/templates", methods=["GET"])
 @login_required
 def list_templates():

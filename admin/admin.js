@@ -4024,6 +4024,49 @@
     composer.appendChild(askBtn);
     container.appendChild(composer);
 
+    // Tools the agent asked for. Approving records them; this build has no executor, and
+    // the screen says so rather than implying the tool now works.
+    var toolsHost = el('div');
+    container.appendChild(toolsHost);
+
+    function decideTool(id, what) {
+      api('POST', '/api/agent-tools/' + id + '/' + what).then(function () {
+        toast('Tool ' + (what === 'approve' ? 'approved' : 'rejected'), true);
+        loadTools();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function loadTools() {
+      api('GET', '/api/agent-tools?status=pending').then(function (d) {
+        toolsHost.innerHTML = '';
+        var rows = d.tools || [];
+        if (!rows.length) return;
+        var card = el('div', 'panel-card mt');
+        card.appendChild(el('h3', 'card-title', 'Proposed tools (' + rows.length + ')'));
+        card.appendChild(el('p', 'fine-print', 'The agent asked for these. Approving records ' +
+          'them - nothing executes a tool in this build yet.'));
+        rows.forEach(function (tool) {
+          var row = el('div', 'auto-proposal');
+          var label = el('div');
+          label.innerHTML = '<strong>' + esc(tool.name) + '</strong>' +
+            '<div class="fine-print">' + esc(tool.kind) + ' · ' +
+            esc(tool.description || 'no description') + '</div>' +
+            '<pre class="fine-print" style="white-space:pre-wrap;max-height:120px;' +
+            'overflow:auto;margin:4px 0 0">' + esc(String(tool.body || '').slice(0, 600)) +
+            '</pre>';
+          row.appendChild(label);
+          var yes = el('button', 'btn btn-primary btn-sm', 'Approve');
+          yes.onclick = function () { decideTool(tool.id, 'approve'); };
+          var no = el('button', 'btn btn-ghost btn-sm', 'Reject');
+          no.onclick = function () { decideTool(tool.id, 'reject'); };
+          row.appendChild(yes);
+          row.appendChild(no);
+          card.appendChild(row);
+        });
+        toolsHost.appendChild(card);
+      }).catch(function () { toolsHost.style.display = 'none'; });
+    }
+
     // Drafts for automations that do not exist yet. The first thing an agent produces is
     // a brand new one, and until this strip there was nowhere to accept it.
     var draftsHost = el('div');
@@ -4487,6 +4530,7 @@
     add.onclick = function () { openEditor(null); };
     refresh();
     loadDrafts();
+    loadTools();
     return container;
   }
 
