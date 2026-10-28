@@ -93,10 +93,22 @@ def test_preview_endpoint():
     check("and where the server IP came from", bool(data.get("server_ip_source")), True)
 
 
+def test_the_tab_wires_it_up():
+    """Static, like the graph guard: the endpoint existing is not the same as being used."""
+    script = open(os.path.join(ROOT, "admin", "admin.js"), encoding="utf-8").read()
+    check("the Domains tab asks for a preview", "'/api/domains/preview'" in script, True)
+    check("a row copies the record, not just its value",
+          "copyText(rec.copy || rec.value" in script, True)
+    check("there is a copy-all in both places", script.count("'Copy all'") >= 2, True)
+    check("adding a domain creates a site", "'/api/sites', { domain: d.domain" in script, True)
+    check("the panel has a Check again", "'Check again'" in script, True)
+
+
 if __name__ == "__main__":
     test_www_verdicts()
     test_the_list_and_the_copy()
     test_preview_endpoint()
+    test_the_tab_wires_it_up()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)

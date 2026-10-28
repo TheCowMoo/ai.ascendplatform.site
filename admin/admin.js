@@ -3991,6 +3991,83 @@
       }
     }
 
+    // ---------- Add a domain, the way GHL does it ----------
+    // Type it, read the two rows, decide. Nothing is created until "Add this domain", so a
+    // typo costs a re-type rather than a site row somebody has to go and delete.
+    var addCard = el('div', 'panel-card');
+    addCard.innerHTML = '<h3 class="card-title">Point a new domain here</h3>' +
+      '<p class="fine-print">Type a domain you own. You get the exact records to add at ' +
+      'your DNS provider - copy them across, then press Check again until every row is ' +
+      'green. Nothing is created until you add it.</p>';
+    var addBar = el('div', 'chip-input');
+    var addInput = el('input');
+    addInput.placeholder = 'example.com';
+    addInput.setAttribute('aria-label', 'Domain to add');
+    var addGo = el('button', 'btn btn-primary', 'Get records');
+    addBar.appendChild(addInput);
+    addBar.appendChild(addGo);
+    addCard.appendChild(addBar);
+    var addPreview = el('div');
+    addCard.appendChild(addPreview);
+
+    addGo.onclick = function () {
+      var name = (addInput.value || '').trim();
+      if (!name) { toast('Type a domain first', false); return; }
+      addGo.disabled = true;
+      api('POST', '/api/domains/preview', { domain: name }).then(function (d) {
+        addGo.disabled = false;
+        addPreview.innerHTML = '';
+        (d.warnings || []).forEach(function (text) {
+          addPreview.appendChild(el('p', 'form-error', text));
+        });
+        addPreview.appendChild(el('p', 'fine-print', 'Server IP ' +
+          esc(d.server_ip || 'unknown') + ' (' + esc(d.server_ip_source || 'not set') + ')'));
+
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th>' +
+          '<th></th></tr></thead>';
+        var tbody = el('tbody');
+        (d.records || []).forEach(function (rec) {
+          var tr = el('tr');
+          tr.innerHTML = '<td><span class="badge">' + esc(rec.type) + '</span></td>' +
+            '<td>' + esc(rec.name) + '</td><td><code>' + esc(rec.value) + '</code>' +
+            (rec.note ? '<div class="fine-print">' + esc(rec.note) + '</div>' : '') +
+            '</td><td>' + esc(String(rec.ttl || '')) + '</td>';
+          var cell = el('td', 'row-actions');
+          var copyOne = el('button', 'btn btn-ghost btn-sm', 'Copy');
+          copyOne.onclick = function () { copyText(rec.copy || rec.value, copyOne); };
+          cell.appendChild(copyOne);
+          tr.appendChild(cell);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        addPreview.appendChild(table);
+
+        var acts = el('div', 'row-actions');
+        var copyAll = el('button', 'btn btn-ghost', 'Copy all');
+        copyAll.onclick = function () { copyText(d.copy_all || '', copyAll); };
+        var adopt = el('button', 'btn btn-primary', 'Add this domain');
+        adopt.onclick = function () {
+          adopt.disabled = true;
+          api('POST', '/api/sites', { domain: d.domain, target: 'local' })
+            .then(function (res) {
+              var site = res.site || {};
+              toast('Added ' + d.domain + ' - now add the records above', true);
+              refresh();
+              if (site.id) location.hash = '#/app/domains/' + site.id;
+            })
+            .catch(function (e) { adopt.disabled = false; toast(e.message, false); });
+        };
+        acts.appendChild(copyAll);
+        acts.appendChild(adopt);
+        addPreview.appendChild(acts);
+      }).catch(function (e) {
+        addGo.disabled = false;
+        toast(e.message, false);
+      });
+    };
+    container.insertBefore(addCard, body);
+
     function refresh() {
       api('GET', '/api/sites').then(function (d) {
         body.innerHTML = '';
@@ -4058,13 +4135,21 @@
               '</td><td>' + chip(judged.status) + '</td>';
             var cell = el('td', 'row-actions');
             var copy = el('button', 'btn btn-ghost btn-sm', 'Copy');
-            copy.onclick = function () { copyText(rec.value, copy); };
+            copy.onclick = function () { copyText(rec.copy || rec.value, copy); };
             cell.appendChild(copy);
             tr.appendChild(cell);
             tbody.appendChild(tr);
           });
           table.appendChild(tbody);
           box.appendChild(table);
+
+          var copyAllBtn = el('button', 'btn btn-ghost btn-sm', 'Copy all');
+          copyAllBtn.onclick = function () {
+            copyText((d.records || []).map(function (rec) {
+              return rec.copy || rec.value;
+            }).join('\n'), copyAllBtn);
+          };
+          box.appendChild(copyAllBtn);
 
           var actions = el('div', 'row-actions');
           var check = el('button', 'btn btn-ghost', 'Check again');
