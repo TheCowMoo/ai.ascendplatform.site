@@ -217,6 +217,30 @@ def main():
     check("as a CSV", csv_resp.headers["Content-Type"].startswith("text/csv"))
     check("with a column per question", "Your name" in csv_resp.get_data(as_text=True))
 
+    # What the builder actually writes: questions with a rule, a page and a score, saved in
+    # one document and read back - the round trip is the builder's whole contract.
+    branched = api.put("/api/forms/%s" % console_form["id"], json={
+        "kind": "quiz",
+        "questions": [
+            {"id": "a", "type": "radio", "label": "Sea or mountains?", "page": 0,
+             "options": ["Sea", "Mountains"], "required": True,
+             "logic": [{"when": {"q": "a", "op": "is_set"}, "goto": "end"}]},
+            {"id": "b", "type": "text", "label": "Where?", "page": 1,
+             "score": {"points": 1, "correct": "Lisbon"}},
+        ]})
+    check("a branched quiz saves in one document", branched.status_code, 200,
+          branched.status_code)
+    saved = (api.get("/api/forms/%s" % console_form["id"]).get_json() or {}).get("form") or {}
+    check("the rule survived the round trip",
+          (saved["questions"][0]["logic"] or [{}])[0].get("goto"), "end")
+    check("the score survived", (saved["questions"][1]["score"] or {}).get("correct"),
+          "Lisbon")
+    check("the page numbers survived", (saved["questions"][0]["page"],
+                                       saved["questions"][1]["page"]), (0, 1))
+    refused = api.put("/api/forms/%s" % console_form["id"], json={
+        "questions": [{"id": "a", "type": "radio", "label": "No options", "page": 0}]})
+    check("a half-built question is refused on save", refused.status_code, 400)
+
     other_org = orgs[1]["id"] if len(orgs) > 1 else None
     if other_org:
         other = appmod.app.test_client()

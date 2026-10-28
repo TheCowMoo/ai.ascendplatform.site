@@ -5004,6 +5004,9 @@
       var answers = el('button', 'btn btn-ghost btn-sm', 'Responses');
       answers.onclick = function () { location.hash = '#/app/forms/' + item.id + '/responses'; };
 
+      var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+      edit.onclick = function () { location.hash = '#/app/forms/' + item.id; };
+
       var toggle = el('button', 'btn btn-sm',
                       item.status === 'published' ? 'Unpublish' : 'Publish');
       toggle.onclick = function () {
@@ -5028,7 +5031,7 @@
         }).catch(function (e) { toast(e.message, false); });
       };
 
-      [open, copy, answers, toggle, drop].forEach(function (button) {
+      [open, copy, answers, edit, toggle, drop].forEach(function (button) {
         actions.appendChild(button);
       });
       box.appendChild(actions);
@@ -5142,6 +5145,311 @@
       body.appendChild(problem);
       toast(e.message, false);
     });
+    return container;
+  }
+
+  // ---------- The form builder ----------
+  // One document edited in place: questions, pages and settings live in `draft`, and only
+  // Save writes them. Structural changes (add, delete, move) re-render; typing does not,
+  // because re-rendering the field you are typing in is how a builder loses keystrokes.
+  function viewFormBuilder(formId) {
+    var container = el('div');
+    var body = el('div');
+    container.appendChild(body);
+    var draft = null;
+
+    function load() {
+      api('GET', '/api/forms/' + formId).then(function (d) {
+        draft = d.form || {};
+        draft.questions = draft.questions || [];
+        draft.settings = draft.settings || {};
+        draft.pages = draft.pages || [];
+        render();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function save(patch) {
+      var payload = { name: draft.name, kind: draft.kind, questions: draft.questions,
+                      pages: draft.pages, settings: draft.settings };
+      Object.keys(patch || {}).forEach(function (key) { payload[key] = patch[key]; });
+      return api('PUT', '/api/forms/' + formId, payload).then(function (d) {
+        draft = d.form;
+        toast(patch && patch.status
+          ? (patch.status === 'published' ? 'Live at /f/' + draft.slug : 'Unpublished')
+          : 'Saved', true);
+        render();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function highestPage() {
+      return draft.questions.reduce(function (top, question) {
+        return Math.max(top, Number(question.page) || 0);
+      }, 0);
+    }
+
+    function nextId() {
+      var n = draft.questions.length + 1;
+      while (draft.questions.some(function (q) { return q.id === 'q' + n; })) n += 1;
+      return 'q' + n;
+    }
+
+    function row(question, index) {
+      var box = el('div', 'panel-card');
+      var head = el('div', 'auto-head');
+      var title = el('strong', null, 'Question ' + (index + 1));
+      head.appendChild(title);
+      var tools = el('div', 'chip-input');
+      var up = el('button', 'btn btn-ghost btn-sm', '↑');
+      var down = el('button', 'btn btn-ghost btn-sm', '↓');
+      var drop = el('button', 'btn btn-ghost btn-sm', 'Remove');
+      up.disabled = index === 0;
+      down.disabled = index === draft.questions.length - 1;
+      up.onclick = function () { swap(index, index - 1); };
+      down.onclick = function () { swap(index, index + 1); };
+      drop.onclick = function () {
+        draft.questions.splice(index, 1);
+        render();
+      };
+      [up, down, drop].forEach(function (button) { tools.appendChild(button); });
+      head.appendChild(tools);
+      box.appendChild(head);
+
+      var label = el('input');
+      label.value = question.label || '';
+      label.placeholder = 'The question, in the words your visitor reads';
+      label.setAttribute('aria-label', 'Question label');
+      label.oninput = function () { question.label = label.value; };
+      box.appendChild(label);
+
+      var line = el('div', 'chip-input');
+      var type = el('select');
+      ['text', 'email', 'phone', 'textarea', 'number', 'date', 'select', 'radio',
+       'checkbox', 'rating'].forEach(function (kind) {
+        var option = el('option', null, kind);
+        option.value = kind;
+        type.appendChild(option);
+      });
+      type.value = question.type || 'text';
+      type.onchange = function () { question.type = type.value; render(); };
+      line.appendChild(type);
+
+      var page = el('input');
+      page.type = 'number';
+      page.min = '0';
+      page.value = Number(question.page) || 0;
+      page.title = 'Page number - questions on the same page appear together';
+      page.style.width = '70px';
+      page.onchange = function () { question.page = Math.max(0, Number(page.value) || 0); };
+      line.appendChild(page);
+
+      var required = el('label', 'opt');
+      var check = el('input');
+      check.type = 'checkbox';
+      check.checked = !!question.required;
+      check.onchange = function () { question.required = check.checked; };
+      required.appendChild(check);
+      required.appendChild(el('span', null, 'required'));
+      line.appendChild(required);
+      box.appendChild(line);
+
+      if (['select', 'radio', 'checkbox'].indexOf(question.type) >= 0) {
+        var options = el('input');
+        options.value = (question.options || []).map(function (option) {
+          return typeof option === 'string' ? option : (option.label || option.value);
+        }).join(', ');
+        options.placeholder = 'Options, comma separated';
+        options.oninput = function () {
+          question.options = options.value.split(',')
+            .map(function (text) { return text.trim(); })
+            .filter(function (text) { return text; });
+        };
+        box.appendChild(options);
+      }
+
+      if (draft.kind === 'quiz') {
+        var marks = el('div', 'chip-input');
+        var points = el('input');
+        points.type = 'number';
+        points.min = '0';
+        points.style.width = '70px';
+        points.value = (question.score || {}).points || 0;
+        points.title = 'Points for a correct answer';
+        points.onchange = function () {
+          question.score = question.score || {};
+          question.score.points = Math.max(0, Number(points.value) || 0);
+        };
+        var correct = el('input');
+        correct.value = (question.score || {}).correct || '';
+        correct.placeholder = 'Correct answer (must match an option)';
+        correct.oninput = function () {
+          question.score = question.score || {};
+          question.score.correct = correct.value;
+        };
+        marks.appendChild(points);
+        marks.appendChild(correct);
+        box.appendChild(marks);
+      }
+      box.appendChild(rule(question));
+      return box;
+    }
+
+    function swap(from, to) {
+      var moved = draft.questions.splice(from, 1)[0];
+      draft.questions.splice(to, 0, moved);
+      render();
+    }
+
+    // One branching rule per question in the UI. The engine allows a list; expressing it as
+    // "after this answer, go there" is what a person actually means, and one line per
+    // question is easier to read than a rules table. The first rule wins, which is the
+    // engine's rule too.
+    function rule(question) {
+      var box = el('div', 'chip-input');
+      var existing = (question.logic || [])[0] || {};
+      var when = existing.when || {};
+      box.appendChild(el('span', 'fine-print', 'If this answer'));
+      var op = el('select');
+      [['is_set', 'is given'], ['eq', 'is'], ['ne', 'is not'], ['contains', 'contains'],
+       ['gt', 'is more than'], ['lt', 'is less than'], ['is_empty', 'is empty']
+      ].forEach(function (pair) {
+        var option = el('option', null, pair[1]);
+        option.value = pair[0];
+        op.appendChild(option);
+      });
+      op.value = when.op || 'is_set';
+      box.appendChild(op);
+      var value = el('input');
+      value.value = when.value === undefined || when.value === null ? '' : String(when.value);
+      value.placeholder = 'value';
+      value.style.maxWidth = '160px';
+      box.appendChild(value);
+      box.appendChild(el('span', 'fine-print', 'then go to'));
+      var target = el('select');
+      var cont = el('option', null, 'the next question');
+      cont.value = '';
+      target.appendChild(cont);
+      draft.questions.forEach(function (other) {
+        var option = el('option', null, (other.label || other.id).slice(0, 40));
+        option.value = other.id;
+        target.appendChild(option);
+      });
+      var stop = el('option', null, 'the end of the form');
+      stop.value = 'end';
+      target.appendChild(stop);
+      var pages = Math.max(highestPage() + 1, 1);
+      for (var page = 0; page < pages; page++) {
+        var jump = el('option', null, 'page ' + (page + 1));
+        jump.value = 'page:' + page;
+        target.appendChild(jump);
+      }
+      target.value = existing.goto || '';
+      box.appendChild(target);
+
+      function sync() {
+        var goto = target.value;
+        if (!goto) {
+          delete question.logic;
+          return;
+        }
+        question.logic = [{ when: { q: question.id, op: op.value, value: value.value },
+                            goto: goto }];
+      }
+      op.onchange = sync;
+      value.oninput = sync;
+      target.onchange = sync;
+      return box;
+    }
+
+    function render() {
+      body.innerHTML = '';
+      var head = el('div');
+      var live = draft.status === 'published' ? 'Live' : (draft.status || 'draft');
+      head.innerHTML = '<h2>' + esc(draft.name || 'Form') + '</h2><p class="muted">' +
+        esc(draft.kind || 'form') + ' · ' + draft.questions.length + ' question' +
+        (draft.questions.length === 1 ? '' : 's') + ' · ' + (highestPage() + 1) + ' page' +
+        (highestPage() ? 's' : '') + ' · ' + esc(live) + ' · /f/' + esc(draft.slug || '') +
+        '</p>';
+      body.appendChild(head);
+
+      var bar = el('div', 'chip-input');
+      var back = el('button', 'btn btn-ghost', 'Back to forms');
+      back.onclick = function () { location.hash = '#/app/forms'; };
+      var preview = el('button', 'btn btn-ghost', 'Preview');
+      preview.onclick = function () {
+        window.open(location.origin + '/f/' + draft.slug + '?preview=1', '_blank', 'noopener');
+      };
+      var add = el('button', 'btn', 'Add question');
+      add.onclick = function () {
+        draft.questions.push({ id: nextId(), type: 'text', label: '',
+                               page: highestPage(), required: false });
+        render();
+      };
+      var addPage = el('button', 'btn btn-ghost', 'Add page');
+      addPage.onclick = function () {
+        draft.questions.push({ id: nextId(), type: 'text', label: '',
+                               page: highestPage() + 1, required: false });
+        render();
+      };
+      var saveBtn = el('button', 'btn btn-primary', 'Save');
+      saveBtn.onclick = function () { save(); };
+      var publish = el('button', 'btn',
+                       draft.status === 'published' ? 'Unpublish' : 'Publish');
+      publish.onclick = function () {
+        save({ status: draft.status === 'published' ? 'draft' : 'published' });
+      };
+      [back, preview, add, addPage, saveBtn, publish].forEach(function (button) {
+        bar.appendChild(button);
+      });
+      body.appendChild(bar);
+
+      var meta = el('div', 'panel-card');
+      var name = el('input');
+      name.value = draft.name || '';
+      name.setAttribute('aria-label', 'Form name');
+      name.oninput = function () { draft.name = name.value; };
+      meta.appendChild(name);
+      var kind = el('select');
+      ['form', 'survey', 'quiz'].forEach(function (option) {
+        var item = el('option', null, option);
+        item.value = option;
+        kind.appendChild(item);
+      });
+      kind.value = draft.kind || 'form';
+      kind.onchange = function () { draft.kind = kind.value; render(); };
+      meta.appendChild(kind);
+      var description = el('input');
+      description.value = draft.settings.description || '';
+      description.placeholder = 'A line under the title';
+      description.oninput = function () { draft.settings.description = description.value; };
+      meta.appendChild(description);
+      var success = el('input');
+      success.value = draft.settings.success || '';
+      success.placeholder = 'Thank-you message after submitting';
+      success.oninput = function () { draft.settings.success = success.value; };
+      meta.appendChild(success);
+      var contact = el('label', 'opt');
+      var contactCheck = el('input');
+      contactCheck.type = 'checkbox';
+      contactCheck.checked = draft.settings.create_contact !== false;
+      contactCheck.onchange = function () {
+        draft.settings.create_contact = contactCheck.checked;
+      };
+      contact.appendChild(contactCheck);
+      contact.appendChild(el('span', null, 'create a contact from each answer'));
+      meta.appendChild(contact);
+      body.appendChild(meta);
+
+      if (!draft.questions.length) {
+        body.appendChild(el('p', 'muted', 'No questions yet - press Add question.'));
+      }
+      draft.questions.forEach(function (question, index) {
+        body.appendChild(row(question, index));
+      });
+      body.appendChild(el('p', 'fine-print', 'Branching: a rule sends the visitor to ' +
+        'another question, another page, or the end. Save, then Preview to walk it.'));
+    }
+
+    load();
     return container;
   }
 
@@ -5390,6 +5698,7 @@
     else if (tab === 'domains') view = viewDomains(rest[0]);
     else if (tab === 'contacts') view = viewContacts();
     else if (tab === 'forms' && rest[1] === 'responses') view = viewFormResponses(rest[0]);
+    else if (tab === 'forms' && rest[0]) view = viewFormBuilder(rest[0]);
     else if (tab === 'forms') view = viewForms();
     else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'analytics') view = viewAnalytics();
