@@ -3695,8 +3695,9 @@
     var body = el('div', 'mt');
     container.appendChild(body);
 
+    var shown = 200;      // grows with Load more; the server caps one request at 500
     function refresh() {
-      api('GET', '/api/contacts').then(function (d) {
+      api('GET', '/api/contacts?limit=' + shown).then(function (d) {
         body.innerHTML = '';
         var rows = d.contacts || [];
         if (!rows.length) {
@@ -3736,6 +3737,19 @@
         });
         table.appendChild(tbody);
         body.appendChild(table);
+        // Never truncate silently: a list that stops at 200 without saying so is how
+        // someone concludes a lead never arrived.
+        if (rows.length >= shown && shown < 500) {
+          var more = el('button', 'btn btn-ghost', 'Load more');
+          more.onclick = function () {
+            shown = Math.min(500, shown + 200);
+            refresh();
+          };
+          body.appendChild(more);
+        } else if (rows.length >= 500) {
+          body.appendChild(el('p', 'fine-print',
+            'Showing the first 500 - narrow it with the status filter.'));
+        }
       }).catch(function (e) {
         body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
       });

@@ -2407,8 +2407,12 @@ def list_contacts():
     if org is None:
         return jsonify({"contacts": [], "reason": "Pick a client in the workspace switcher"})
     status = (request.args.get("status") or "").strip().lower() or None
-    return jsonify({"contacts": contacts_service.list_contacts(org, status),
-                    "statuses": list(contacts_service.STATUSES)})
+    try:
+        limit = min(500, max(1, int(request.args.get("limit") or 200)))
+    except (TypeError, ValueError):
+        limit = 200
+    return jsonify({"contacts": contacts_service.list_contacts(org, status, limit),
+                    "statuses": list(contacts_service.STATUSES), "limit": limit})
 
 
 @app.route("/api/contacts", methods=["POST"])
