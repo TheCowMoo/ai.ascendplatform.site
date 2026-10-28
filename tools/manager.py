@@ -201,6 +201,8 @@ def _build_describe_capabilities(emit, job_id=None):
             "tools": ["send_email", "tag_contact", "save_deliverable", "get_metrics",
                       "list_sites", "start_job"],
             "conditions": list(automations.CONDITION_FACTS),
+            "delays": {"config": "days, hours or minutes", "max_days": 30,
+                       "note": "a delay parks the run and wakes it; use it for drip pacing"},
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
