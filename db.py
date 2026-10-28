@@ -273,6 +273,29 @@ automation_proposals = Table(
 
 Index("idx_automation_proposals_org", automation_proposals.c.org_id)
 
+# The mini CRM. Deliberately standalone: a client with no GoHighLevel still gets leads,
+# statuses, tags and notes, and the GHL columns stay empty rather than being required.
+contacts = Table(
+    "contacts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("email", Text, nullable=False, server_default=_literal("")),
+    Column("phone", Text, nullable=False, server_default=_literal("")),
+    Column("source", Text, nullable=False, server_default=_literal("manual")),
+    Column("status", Text, nullable=False, server_default=_literal("new")),
+    Column("tags", Text, nullable=False, server_default=_literal("[]")),
+    Column("notes", Text, nullable=False, server_default=_literal("")),
+    Column("ghl_contact_id", Text),
+    Column("ghl_synced_at", Text),
+    Column("ghl_error", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text),
+)
+
+Index("idx_contacts_org", contacts.c.org_id)
+
 # Files/images produced by a job.
 job_artifacts = Table(
     "job_artifacts", metadata,

@@ -49,6 +49,7 @@ import actions
 import provisioner
 import servers as servers_service
 import sites as sites_service
+import contacts as contacts_service
 from tools import policy as tool_policy
 from tools import ssh as ssh_tool
 
@@ -2279,6 +2280,44 @@ def update_automation(automation_id):
     except automations_service.AutomationError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"automation": automation})
+
+
+@app.route("/api/contacts", methods=["GET"])
+@login_required
+def list_contacts():
+    """The mini CRM: this client's leads, newest first."""
+    org = current_org()
+    if org is None:
+        return jsonify({"contacts": [], "reason": "Pick a client in the workspace switcher"})
+    status = (request.args.get("status") or "").strip().lower() or None
+    return jsonify({"contacts": contacts_service.list_contacts(org, status),
+                    "statuses": list(contacts_service.STATUSES)})
+
+
+@app.route("/api/contacts", methods=["POST"])
+@login_required
+def create_contact():
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client in the workspace switcher first"}), 400
+    try:
+        item = contacts_service.create_contact(request.get_json(silent=True) or {}, org,
+                                               source="manual")
+    except contacts_service.ContactError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"contact": item}), 201
+
+
+@app.route("/api/contacts/<int:contact_id>", methods=["PUT"])
+@login_required
+def update_contact(contact_id):
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    item = contacts_service.update_contact(contact_id, org, request.get_json(silent=True) or {})
+    if not item:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"contact": item})
 
 
 @app.route("/api/automations/proposals", methods=["GET"])
