@@ -2352,6 +2352,53 @@ def contacts_lead_token():
                     "url": request.url_root.rstrip("/") + "/api/public/lead/" + token})
 
 
+@app.route("/api/templates", methods=["GET"])
+@login_required
+def list_templates():
+    """Reusable email wording a send step can point at."""
+    import templates_service
+
+    org = current_org()
+    if org is None:
+        return jsonify({"templates": [], "reason": "Pick a client in the workspace switcher"})
+    return jsonify({"templates": templates_service.list_templates(org)})
+
+
+@app.route("/api/templates", methods=["POST"])
+@login_required
+def create_template():
+    import templates_service
+
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client in the workspace switcher first"}), 400
+    try:
+        item = templates_service.save_template(request.get_json(silent=True) or {}, org)
+    except templates_service.TemplateError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"template": item}), 201
+
+
+@app.route("/api/templates/<int:template_id>", methods=["PUT", "DELETE"])
+@login_required
+def template_detail(template_id):
+    import templates_service
+
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    if request.method == "DELETE":
+        if not templates_service.delete_template(template_id, org):
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"ok": True})
+    try:
+        item = templates_service.save_template(request.get_json(silent=True) or {}, org,
+                                               template_id=template_id)
+    except templates_service.TemplateError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"template": item})
+
+
 @app.route("/api/contacts", methods=["GET"])
 @login_required
 def list_contacts():

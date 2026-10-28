@@ -296,6 +296,21 @@ contacts = Table(
 
 Index("idx_contacts_org", contacts.c.org_id)
 
+# Reusable email templates: what a "send an email from my templates" step points at.
+email_templates = Table(
+    "email_templates",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("subject", Text, nullable=False, server_default=_literal("")),
+    Column("body", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text),
+)
+
+Index("idx_email_templates_org", email_templates.c.org_id)
+
 # Files/images produced by a job.
 job_artifacts = Table(
     "job_artifacts", metadata,
