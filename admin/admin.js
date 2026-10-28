@@ -4170,6 +4170,41 @@
           rules.appendChild(kindField);
           row.appendChild(rules);
         }
+        // Tool steps used to require hand-written JSON in the graph. Two fields: the tool's
+        // name, and its args as JSON with {{contact.id}} available at run time.
+        if (step.type === 'tool') {
+          var toolCfg = step.config || (step.config = {});
+          var toolRow = el('div', 'auto-cond');
+          var toolName = el('input', 'auto-cond-kind');
+          toolName.placeholder = 'tool, e.g. send_email';
+          toolName.setAttribute('aria-label', 'Tool name');
+          toolName.value = toolCfg.tool || '';
+          toolName.oninput = function () { toolCfg.tool = toolName.value.trim(); };
+          toolRow.appendChild(toolName);
+
+          var argsField = el('input', 'auto-args');
+          argsField.placeholder = '{"template_id": 3, "contact_id": "{{contact.id}}"}';
+          argsField.setAttribute('aria-label', 'Tool arguments as JSON');
+          argsField.value = toolCfg.args ? JSON.stringify(toolCfg.args) : '';
+          argsField.style.minWidth = '320px';
+          argsField.oninput = function () {
+            var text = argsField.value.trim();
+            if (!text) {
+              toolCfg.args = {};
+              argsField.title = 'No arguments';
+              return;
+            }
+            try {
+              toolCfg.args = JSON.parse(text);
+              argsField.title = 'Valid JSON';
+            } catch (e) {
+              // Keep the typed text: Save refuses an invalid step rather than losing it.
+              argsField.title = 'Not valid JSON yet - ' + e.message;
+            }
+          };
+          toolRow.appendChild(argsField);
+          row.appendChild(toolRow);
+        }
         list.appendChild(row);
       });
       panel.appendChild(list);
