@@ -2282,6 +2282,76 @@ def update_automation(automation_id):
     return jsonify({"automation": automation})
 
 
+# ---------------------------------------------------------------------------
+# Public lead capture. A form on a page we do not control has to post somewhere, so the
+# URL carries an org token: derived from the app secret (nothing to store or rotate in a
+# column) and useless for anything except adding a contact.
+# ---------------------------------------------------------------------------
+_LEAD_HITS = {}
+
+
+def lead_token(org_id):
+    import hashlib
+    import hmac
+
+    mac = hmac.new(str(app.secret_key or "lead-capture").encode(),
+                   ("lead:%d" % int(org_id)).encode(), hashlib.sha256)
+    return "%d.%s" % (int(org_id), mac.hexdigest()[:32])
+
+
+def _lead_org(token):
+    import hmac
+
+    parts = (token or "").split(".", 1)
+    if len(parts) != 2 or not parts[0].isdigit():
+        return None
+    return int(parts[0]) if hmac.compare_digest(lead_token(parts[0]), token) else None
+
+
+def _lead_rate_ok(ip, limit=10, window=60):
+    """Per-IP token bucket. A public endpoint that can stuff a CRM is worse than no form."""
+    import time
+
+    if len(_LEAD_HITS) > 2000:
+        _LEAD_HITS.clear()          # crude, but bounded memory matters more than elegance
+    now = time.time()
+    hits = [stamp for stamp in _LEAD_HITS.get(ip, []) if now - stamp < window]
+    hits.append(now)
+    _LEAD_HITS[ip] = hits
+    return len(hits) <= limit
+
+
+@app.route("/api/public/lead/<path:token>", methods=["POST"])
+def public_lead(token):
+    """Unauthenticated: this is what a form on a customer's page posts to."""
+    org = _lead_org(token)
+    if org is None:
+        return jsonify({"error": "Unknown form"}), 404
+    ip = ((request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+          or request.remote_addr or "?")
+    if not _lead_rate_ok(ip):
+        return jsonify({"error": "Too many submissions - try again in a minute"}), 429
+    data = request.get_json(silent=True) or request.form or {}
+    try:
+        item = contacts_service.create_contact(data, org,
+                                               source=(data.get("source") or "form"))
+    except contacts_service.ContactError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "contact_id": item["id"]}), 201
+
+
+@app.route("/api/contacts/lead-token", methods=["GET"])
+@login_required
+def contacts_lead_token():
+    """The URL to paste into a form. Safe to expose: it can only add a contact."""
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client in the workspace switcher first"}), 400
+    token = lead_token(org)
+    return jsonify({"token": token,
+                    "url": request.url_root.rstrip("/") + "/api/public/lead/" + token})
+
+
 @app.route("/api/contacts", methods=["GET"])
 @login_required
 def list_contacts():
