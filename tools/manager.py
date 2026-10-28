@@ -367,6 +367,34 @@ def _build_list_templates(emit, job_id=None):
     return list_templates
 
 
+def _build_create_contact(emit, job_id=None):
+    async def create_contact(name: str, email: str = "", phone: str = "",
+                             notes: str = "") -> str:
+        """Add somebody to this client's CRM.
+
+        A contact created here fires contact.created like any other lead, so an automation
+        waiting on signups will start. That is intended: a new lead is a new lead.
+        """
+        import contacts as contacts_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - contacts belong to a client."
+        try:
+            row = contacts_service.create_contact(
+                {"name": name, "email": email, "phone": phone, "notes": notes},
+                org_id, source="manual")
+        except contacts_service.ContactError as exc:
+            return "Not created: %s" % exc
+        return "Added contact #%d (%s)." % (row["id"], row["name"] or row["email"])
+
+    return create_contact
+
+
+register("create_contact", "Add a contact to this client's CRM.",
+         _build_create_contact)
+
+
 register("create_template",
          "Write an email template for this client; returns the id a send step needs.",
          _build_create_template)
