@@ -218,6 +218,12 @@ def start_verifier():
                 verify_pending()
             except Exception:
                 pass
+            try:
+                import automations
+
+                automations.run_due()
+            except Exception:
+                pass
             time.sleep(minutes * 60)
 
     threading.Thread(target=_tick, name="site-verify", daemon=True).start()

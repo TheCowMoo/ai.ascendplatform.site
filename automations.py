@@ -664,6 +664,56 @@ def start_for_event(org_id, event, requester_id=None, context=None):
     return started
 
 
+def run_due(limit=20):
+    """Start automations whose schedule has come round. Returns how many started.
+
+    The editor offered "on a schedule" before anything swept for due runs, which is the
+    same broken promise as a tool step that refused to execute: the UI said yes and the
+    backend never looked. ``next_run_at`` already existed on the row; this is what writes
+    it and what reads it.
+    """
+    import datetime as _dt
+
+    from db import get_connection
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, org_id, trigger_config, next_run_at FROM automations "
+            "WHERE enabled = 1 AND trigger_type = 'schedule' LIMIT %d" % max(1, int(limit))
+        ).fetchall()
+
+    started = 0
+    for row in rows:
+        due_at = row["next_run_at"]
+        if due_at:
+            try:
+                when = _dt.datetime.strptime(str(due_at)[:19], "%Y-%m-%d %H:%M:%S")
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            except ValueError:
+                when = None
+            if when and when > now:
+                continue
+        try:
+            config = json.loads(row["trigger_config"] or "{}")
+        except ValueError:
+            config = {}
+        try:
+            every = max(1, int(config.get("every_minutes") or 1440))
+        except (TypeError, ValueError):
+            every = 1440
+        try:
+            start(row["id"], row["org_id"])
+            started += 1
+        except Exception:
+            continue          # one broken automation must not stop the others
+        with get_connection() as conn:
+            conn.execute("UPDATE automations SET next_run_at = ? WHERE id = ?",
+                         ((now + _dt.timedelta(minutes=every)).strftime("%Y-%m-%d %H:%M:%S"),
+                          row["id"]))
+    return started
+
+
 def delete(automation_id, org_id):
     from db import get_connection
 
