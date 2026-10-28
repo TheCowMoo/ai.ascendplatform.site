@@ -449,6 +449,27 @@ async def _execute(step, automation, emit, job_id=None, context=None):
 
         resolved = tool_registry.resolve([name], job_id=job_id)
         if not resolved:
+            # Not a built-in: an approved agent-written recipe is the other possibility.
+            # Only 'approved' rows are considered, so a pending proposal cannot run.
+            import agent_tools
+            import recipes
+            from db import get_connection
+
+            org_id = None
+            if job_id:
+                with get_connection() as conn:
+                    row = conn.execute("SELECT org_id FROM jobs WHERE id = ?",
+                                       (job_id,)).fetchone()
+                org_id = row["org_id"] if row else None
+            match = next((tool for tool in agent_tools.approved_tools(org_id)
+                          if tool["name"] == name), None) if org_id else None
+            if match and match["kind"] == "recipe":
+                values = dict(context or {})
+                values["org_id"] = org_id
+                results = recipes.run(match["body"], args, values)
+                ok = all(entry[1] for entry in results)
+                detail = "; ".join("%s: %s" % (entry[0], entry[2]) for entry in results)
+                return ("%s %s" % ("recipe" if ok else "recipe failed -", detail))[:400]
             return "Unknown tool '%s' - nothing ran." % name
         try:
             reply = await resolved[0].run_json(args, CancellationToken())

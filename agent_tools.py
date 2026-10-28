@@ -50,12 +50,14 @@ def propose(data, org_id, created_by=None, job_id=None):
         except ValueError:
             raise AgentToolError("args_schema must be JSON.")
     if kind == "recipe":
-        # Recipes are declarative, so a body that is not JSON can never be executed.
-        if not isinstance(body, (dict, list)):
-            try:
-                body = json.loads(body)
-            except ValueError:
-                raise AgentToolError("A recipe body must be JSON.")
+        # Recipes are declarative, so a body that is not JSON can never be executed - and
+        # the verb set plus the host allow list are checked here, at proposal time, so the
+        # review screen only ever shows a recipe that could actually run.
+        import recipes
+
+        problems = recipes.validate(body)
+        if problems:
+            raise AgentToolError(" ".join(problems))
     with get_connection() as conn:
         existing = conn.execute(
             "SELECT id, status FROM agent_tools WHERE org_id = ? AND name = ?",
