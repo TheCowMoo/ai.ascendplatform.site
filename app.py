@@ -2348,8 +2348,39 @@ def contacts_lead_token():
     if org is None:
         return jsonify({"error": "Pick a client in the workspace switcher first"}), 400
     token = lead_token(org)
-    return jsonify({"token": token,
-                    "url": request.url_root.rstrip("/") + "/api/public/lead/" + token})
+    url = request.url_root.rstrip("/") + "/api/public/lead/" + token
+    # A form they can paste into an existing site. Built here rather than in the console so
+    # the URL cannot drift from the token, and so the honeypot travels with it.
+    snippet = """<form id="lead-form">
+  <input name="name" placeholder="Your name" required>
+  <input name="email" type="email" placeholder="Email" required>
+  <input name="phone" placeholder="Phone (optional)">
+  <input name="company" tabindex="-1" autocomplete="off"
+         style="position:absolute;left:-9999px" aria-hidden="true">
+  <button type="submit">Send</button>
+</form>
+<script>
+(function () {
+  var form = document.getElementById('lead-form');
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    if (form.company.value) { return; }          // honeypot: bots fill it, people do not
+    fetch(%(url)r, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name: form.name.value, email: form.email.value, phone: form.phone.value,
+        source: 'form'
+      })
+    }).then(function (response) {
+      if (!response.ok) { throw new Error('Could not save your details'); }
+      form.reset();
+      form.insertAdjacentHTML('afterend', '<p>Thanks - we will be in touch.</p>');
+    }).catch(function (error) { alert(error.message); });
+  });
+})();
+</script>""" % {"url": url}
+    return jsonify({"token": token, "url": url, "snippet": snippet})
 
 
 @app.route("/api/templates", methods=["GET"])

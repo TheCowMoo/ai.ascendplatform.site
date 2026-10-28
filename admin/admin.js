@@ -3702,6 +3702,23 @@
         }).catch(function () { toast('Copy failed', false); });
       };
       capture.appendChild(copy);
+      if (d.snippet) {
+        capture.appendChild(el('p', 'fine-print', 'Or paste a ready-made form into an ' +
+          'existing page - it posts to the URL above and hides a honeypot field from bots.'));
+        var code = el('pre', 'code-block', d.snippet);
+        code.style.whiteSpace = 'pre-wrap';
+        code.style.maxHeight = '220px';
+        code.style.overflow = 'auto';
+        capture.appendChild(code);
+        var copyForm = el('button', 'btn btn-ghost btn-sm', 'Copy form');
+        copyForm.onclick = function () {
+          navigator.clipboard.writeText(d.snippet).then(function () {
+            copyForm.textContent = 'Copied';
+            setTimeout(function () { copyForm.textContent = 'Copy form'; }, 1200);
+          }).catch(function () { toast('Copy failed', false); });
+        };
+        capture.appendChild(copyForm);
+      }
     }).catch(function () { capture.style.display = 'none'; });
 
     var body = el('div', 'mt');
