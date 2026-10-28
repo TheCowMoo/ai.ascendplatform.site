@@ -238,13 +238,12 @@ template. GET /api/templates/<id>/preview renders subject and body through
 templates_service.render - the same function a send uses - with a sample contact, and
 returns sandboxed HTML for an iframe. Nothing is sent.
 
-OPEN BUG (found 2026-10-29, not yet diagnosed): form.submitted does not visibly start
-a run. forms.submit calls automations.start_for_event correctly, and start_for_event
-skips nothing obvious (enabled, trigger_type event, event name match), but a form
-submission on a published form with an enabled form.submitted automation produced zero
-rows in automation_runs. The likely cause is that automations.start() raises and
-start_for_event swallows it (its own comment says failures must not break the cause),
-so the automation silently never runs. Note also: automation_runs has NO org_id column -
-scope it through automation_id. Next step: call automations.start() directly with the
-same graph and read the exception instead of the swallowed result, then decide whether
-the swallow should log a run row with status failed rather than vanish.
+TRIGGER, VERIFIED (2026-10-29): form.submitted does start an automation run end to
+end - POST /api/public/forms/<slug> on a published form creates a row in
+automation_runs for an enabled automation whose trigger event matches. It briefly
+looked broken because the test created the automation under one client and
+submitted a form from another; start_for_event correctly scopes by client, so the
+empty result was the test being wrong, not the product. Two traps for next time: a
+public submission counts against the ten-a-minute rate limit before validation (pass
+a distinct X-Forwarded-For in tests), and automation_runs has no org_id column -
+scope through automation_id. Assertion now lives at the end of tests/smoke_forms.py.

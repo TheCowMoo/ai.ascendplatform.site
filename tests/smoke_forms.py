@@ -266,6 +266,31 @@ def main():
     check("deleting a form with answers archives it",
           (removed.get_json() or {}).get("archived"), True)
 
+    # --- the trigger, end to end ---------------------------------------------
+    # A submission must start a real run - but only for automations belonging to the *same
+    # client as the form*, which is what the earlier version of this test got wrong: it
+    # created the automation under one client and submitted a form from another, then called
+    # the empty result a bug. The forwarded IP keeps the public rate limit out of the way.
+    import automations as automations_service
+
+    auto_id = automations_service.create(
+        org, "React to a quiz answer",
+        [{"id": "note", "type": "notify", "title": "Log it", "next": []}],
+        trigger_type="event", trigger_config={"event": "form.submitted"}, enabled=True)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM automation_runs WHERE automation_id = ?", (auto_id,))
+    fired = api.post("/api/public/forms/%s" % slug,
+                     json={"answers": {"start": "Sea", "sea": "Lisbon", "always": "hi"}},
+                     headers={"X-Forwarded-For": "203.0.113.9"})
+    check("the submission that should fire the trigger was accepted", fired.status_code, 201,
+          fired.status_code)
+    with db.get_connection() as conn:
+        runs = conn.execute("SELECT * FROM automation_runs WHERE automation_id = ?",
+                            (auto_id,)).fetchall()
+        conn.execute("DELETE FROM automation_runs WHERE automation_id = ?", (auto_id,))
+        conn.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
+    check("a submission starts the automation that listens for it", len(runs) >= 1, True)
+
     cleanup(console_org)
     cleanup(other_org)
     cleanup(org)
