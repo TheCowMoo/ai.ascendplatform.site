@@ -3715,6 +3715,23 @@
             '<td><span class="badge">' + esc(row.source) + '</span></td>' +
             '<td><span class="badge">' + esc(row.status) + '</span></td>' +
             '<td class="muted">' + esc(String(row.created_at || '').slice(0, 16)) + '</td>';
+          tr.style.cursor = 'pointer';
+          tr.title = 'Edit status, tags and notes';
+          tr.onclick = function () {
+            formModal('Edit ' + (row.name || row.email || 'contact'), [
+              { name: 'status', label: 'Status', type: 'select',
+                options: ['new', 'contacted', 'qualified', 'customer', 'archived'] },
+              { name: 'tags', label: 'Tags (comma separated)',
+                value: (row.tags || []).join(', ') },
+              { name: 'notes', label: 'Notes', value: row.notes || '' }
+            ], function (data, fail, ok) {
+              api('PUT', '/api/contacts/' + row.id, data).then(function () {
+                ok();
+                toast('Contact updated', true);
+                refresh();
+              }).catch(function (e) { fail(e.message); });
+            });
+          };
           tbody.appendChild(tr);
         });
         table.appendChild(tbody);
