@@ -946,6 +946,10 @@ _ADDITIVE_COLUMNS = (
     ("bots", "webhook_url", "webhook_url TEXT NOT NULL DEFAULT ''"),
     ("bots", "profile_id", "profile_id INTEGER"),
     ("bots", "use_profile_kb", "use_profile_kb INTEGER NOT NULL DEFAULT 1"),
+    # Delays park a run for hours or days: it needs its trigger and its wake time, and an
+    # existing database needs them added the same way every other column was.
+    ("automation_runs", "context", "context TEXT NOT NULL DEFAULT '{}'"),
+    ("automation_runs", "wake_at", "wake_at TEXT"),
     ("users", "org_id", "org_id INTEGER"),
     ("bots", "org_id", "org_id INTEGER"),
     ("sites", "org_id", "org_id INTEGER"),

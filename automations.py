@@ -10,7 +10,7 @@ validator refuses it. That is the whole safety story, in one function.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 NODE_TYPES = ("agent", "tool", "condition", "gate", "notify", "stop", "delay")
 TRIGGER_TYPES = ("manual", "schedule", "event")
@@ -366,18 +366,40 @@ def start(automation_id, org_id, requester_id=None, context=None):
     return {"run_id": run_id, "job_id": job_id}
 
 
-def _finish(run_id, status, error="", resume_at=None):
+def _delay_minutes(step):
+    """Minutes to wait, from config days/hours/minutes. Validation has already run."""
+    config = step.get("config") or {}
+    total = 0
+    for unit, factor in (("days", 1440), ("hours", 60), ("minutes", 1)):
+        try:
+            total += max(0, int((config or {}).get(unit) or 0)) * factor
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _finish(run_id, status, error="", resume_at=None, wake_at=None, context=None):
     from db import get_connection
 
+    stopped = status in ("awaiting_approval", "waiting")
     with get_connection() as conn:
+        # A parked run is not a finished run: stamping finished_at here made a waiting run
+        # look done in the list, which is how "it silently did nothing" happens.
         conn.execute(
-            "UPDATE automation_runs SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?", (status, error, run_id),
+            "UPDATE automation_runs SET status = ?, error = ?, "
+            "finished_at = CASE WHEN ? THEN NULL ELSE CURRENT_TIMESTAMP END WHERE id = ?",
+            (status, error, 1 if stopped else 0, run_id),
         )
         if resume_at is not None:
-            # Where to pick up: the gate node, so resume does not re-run earlier work.
+            # Where to pick up: the gate or delay node, so resume does not re-run work.
             conn.execute("UPDATE automation_runs SET resume_at = ? WHERE id = ?",
                          (resume_at, run_id))
+        if wake_at is not None:
+            conn.execute("UPDATE automation_runs SET wake_at = ? WHERE id = ?",
+                         (wake_at, run_id))
+        if context is not None:
+            conn.execute("UPDATE automation_runs SET context = ? WHERE id = ?",
+                         (json.dumps(context), run_id))
 
 
 def resume(automation_id, org_id, requester_id=None):
@@ -591,7 +613,7 @@ def walk(steps, resume_after=None, org_id=None):
     out = []
     for node_id in order:
         out.append(node_id)
-        if by_id[node_id].get("type") in ("stop", "gate"):
+        if by_id[node_id].get("type") in ("stop", "gate", "delay"):
             break
     return out
 
@@ -626,6 +648,15 @@ async def run_task(job, emit):
         if step.get("type") == "gate":
             _finish(run_id, "awaiting_approval", resume_at=node_id)
             return "Parked at the approval gate “%s”." % (step.get("title") or node_id)
+        if step.get("type") == "delay":
+            minutes = _delay_minutes(step)
+            wake = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).strftime(
+                "%Y-%m-%d %H:%M:%S")
+            # Park instead of sleeping: a worker that sleeps through a day of waiting is a
+            # worker that cannot run anything else, and it dies with the container.
+            _finish(run_id, "waiting", resume_at=node_id, wake_at=wake,
+                    context=payload.get("context") or {})
+            return "Waiting until %s UTC before “%s”." % (wake, step.get("title") or node_id)
     _finish(run_id, "done")
     return "Ran %d steps." % len(order)
 
@@ -818,3 +849,39 @@ def delete(automation_id, org_id):
         )
         return cur.rowcount > 0
 
+
+
+def wake_due(limit=10):
+    """Queue a resume job for every parked run whose delay has passed.
+
+    The guard that matters: wake_at is cleared in the same pass that selects the row, so a
+    run cannot be woken twice even if two sweeps overlap.
+    """
+    import jobs
+    from db import get_connection
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT r.id, r.automation_id, r.resume_at, r.context, a.org_id "
+            "FROM automation_runs r JOIN automations a ON a.id = r.automation_id "
+            "WHERE r.status = 'waiting' AND r.wake_at IS NOT NULL AND r.wake_at <= ? "
+            "ORDER BY r.wake_at LIMIT %d" % max(1, int(limit)), (now,)).fetchall()
+        for row in rows:
+            conn.execute("UPDATE automation_runs SET status = 'queued', wake_at = NULL "
+                         "WHERE id = ? AND status = 'waiting'", (row["id"],))
+    woken = 0
+    for row in rows:
+        try:
+            context = json.loads(row["context"] or "{}")
+        except ValueError:
+            context = {}
+        job_id = jobs.create_job(
+            "Automation: resume after a wait",
+            json.dumps({"automation_id": row["automation_id"], "run_id": row["id"],
+                        "resume_after": row["resume_at"], "context": context}),
+            None, "selector", "automation", org_id=row["org_id"],
+        )
+        jobs.submit(job_id)
+        woken += 1
+    return woken

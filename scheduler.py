@@ -222,6 +222,7 @@ def start_verifier():
                 import automations
 
                 automations.run_due()
+                automations.wake_due()
             except Exception:
                 pass
             time.sleep(minutes * 60)
