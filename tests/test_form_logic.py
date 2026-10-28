@@ -227,7 +227,48 @@ def test_contact_capture():
     check("it is marked as coming from a form", row["source"], "form")
 
 
-def test_service_round_trip():
+def test_the_agent_can_build_a_form():
+    """The loop the whole feature exists for: a sentence in, a live quiz out."""
+    import asyncio
+
+    import db
+    import jobs
+    import tools
+    from autogen_core import CancellationToken
+
+    db.init_db()
+    org = 990022
+    with db.get_connection() as conn:
+        for table in ("form_responses", "forms"):
+            conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
+    job_id = jobs.create_job("form", "make a quiz", None, "selector", "chat", org_id=org)
+    create = tools.resolve(["create_form"], job_id=job_id)[0]
+    said = asyncio.run(create.run_json({
+        "name": "Trip quiz", "kind": "quiz",
+        "questions": [
+            {"label": "Sea or mountains?", "type": "radio", "required": True,
+             "options": ["Sea", "Mountains"],
+             "logic": [{"when": {"q": "q1", "op": "is_set"}, "goto": "end"}]},
+            {"label": "Favourite sea town?", "type": "radio", "options": ["Lisbon", "Porto"],
+             "score": {"points": 2, "correct": "Lisbon"}},
+        ]}, CancellationToken()))
+    check("the agent can create a form", "Created the quiz" in said, True)
+    check("and is told the link", "/f/trip-quiz" in said, True)
+
+    import json
+    listing = asyncio.run(tools.resolve(["list_forms"], job_id=job_id)[0].run_json(
+        {}, CancellationToken()))
+    rows = json.loads(listing)
+    check("the agent can see what it built", rows[0]["questions"], 2)
+    check("and that it is a draft", rows[0]["status"], "draft")
+
+    check("without a client it refuses",
+          asyncio.run(tools.resolve(["create_form"], job_id=None)[0].run_json(
+              {"name": "x"}, CancellationToken())),
+          "Pick a client first - a form belongs to a client.")
+    with db.get_connection() as conn:
+        for table in ("form_responses", "forms"):
+            conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
     import db
     import forms
 
@@ -301,6 +342,7 @@ if __name__ == "__main__":
     test_answer_types()
     test_definition_is_validated()
     test_contact_capture()
+    test_the_agent_can_build_a_form()
     test_service_round_trip()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

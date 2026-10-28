@@ -207,6 +207,8 @@ def _build_describe_capabilities(emit, job_id=None):
                 "template": "create_template(name, subject, body) - do this instead of "
                             "telling the user to make one",
                 "contact": "create_contact(name, email, phone, notes)",
+                "form": "create_form(name, kind, questions) - a form, survey or quiz at its "
+                        "own link, and it triggers form.submitted when answered",
                 "tag": "tag_contact(contact_id, tags) inside a graph",
                 "draft": "save_deliverable(kind, title, content)",
                 "automation": "propose_automation(name, steps) - a draft the user applies",
@@ -431,6 +433,74 @@ def _build_create_site(emit, job_id=None):
 
 register("create_site", "Add a website for this client; the domain must come from the user.",
          _build_create_site)
+
+
+def _build_create_form(emit, job_id=None):
+    async def create_form(name: str, kind: str = "form", questions: list = None) -> str:
+        """Create a form, survey or quiz for this client and return its link.
+
+        Each question is an object: {"id", "label", "type", "page", "required", "options",
+        "score": {"points", "correct"}, "logic": [{"when": {"q", "op", "value"},
+        "goto": "<question id>" | "page:<n>" | "end"}]}. Types are text, email, phone,
+        textarea, number, date, select, radio, checkbox and rating. Give every choice a list
+        of options; give a quiz question points and the correct answer, which must match an
+        option. A rule is what makes a branch: after this answer, jump somewhere.
+        """
+        import forms as forms_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - a form belongs to a client."
+        rows = []
+        for index, item in enumerate(questions or []):
+            if not isinstance(item, dict):
+                return "Not created: every question must be an object."
+            row = dict(item)
+            row.setdefault("id", "q%d" % (index + 1))
+            row.setdefault("type", "text")
+            row.setdefault("page", 0)
+            rows.append(row)
+        try:
+            form = forms_service.create_form(
+                {"name": name, "kind": (kind or "form").strip().lower(), "questions": rows},
+                org_id)
+        except forms_service.FormServiceError as exc:
+            return "Not created: %s" % exc
+        return ("Created the %s “%s” (#%d) as a draft at /f/%s. It collects answers as soon "
+                "as it is published - ask me to publish it, or press Publish in Forms."
+                % (form["kind"], form["name"], form["id"], form["slug"]))
+
+    return create_form
+
+
+def _build_list_forms(emit, job_id=None):
+    async def list_forms() -> str:
+        """Forms this client already has, with their links and how many answers arrived."""
+        import json
+
+        import forms as forms_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first."
+        rows = forms_service.list_forms(org_id)
+        if not rows:
+            return "No forms yet."
+        return json.dumps([{"id": row["id"], "name": row["name"], "kind": row["kind"],
+                            "status": row["status"], "slug": row["slug"],
+                            "questions": row["question_count"],
+                            "responses": row["responses"]} for row in rows])
+
+    return list_forms
+
+
+register("create_form",
+         "Create a form, survey or quiz for this client; returns the link it will live at.",
+         _build_create_form)
+
+
+register("list_forms", "List this client's forms, with their links and answer counts.",
+         _build_list_forms)
 
 
 register("create_contact", "Add a contact to this client's CRM.",

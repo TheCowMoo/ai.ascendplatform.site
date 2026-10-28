@@ -4394,7 +4394,7 @@
       panel.appendChild(trigger);
 
       var eventField = el('input', 'auto-event');
-      eventField.placeholder = 'contact.created';
+      eventField.placeholder = 'contact.created or form.submitted';
       eventField.setAttribute('aria-label', 'Event name');
       eventField.value = ((a && a.trigger_config) || {}).event || '';
       eventField.style.display = trigger.value === 'event' ? '' : 'none';
