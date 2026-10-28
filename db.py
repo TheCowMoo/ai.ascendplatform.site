@@ -246,6 +246,10 @@ automation_runs = Table(
     Column("job_id", Integer),
     Column("status", Text, nullable=False, server_default=_literal("queued")),
     Column("resume_at", Text),
+    # A delay parks the run for hours or days, so the thing that triggered it has to
+    # survive the pause: without this, email two of a drip goes to nobody.
+    Column("context", Text, nullable=False, server_default=_literal("{}")),
+    Column("wake_at", Text),
     _created_at(),
     Column("finished_at", Text),
     Column("error", Text, nullable=False, server_default=_literal("")),
