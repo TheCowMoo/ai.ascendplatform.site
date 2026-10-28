@@ -3954,6 +3954,78 @@
       panel.appendChild(graph);
       panel.appendChild(el('p', 'fine-print', 'Drag a step to move it.'));
 
+      // A draft from the agent is offered here, never applied silently: preview swaps the
+      // canvas over to the proposed graph, Apply is the only thing that saves it.
+      var bannerHost = el('div');
+      panel.appendChild(bannerHost);
+      var previewOf = null;
+
+      if (a) {
+        api('GET', '/api/automations/proposals?status=pending').then(function (d) {
+          var draft = (d.proposals || []).filter(function (p) {
+            return String(p.automation_id) === String(a.id);
+          })[0];
+          if (!draft) return;
+          var bar = el('div', 'auto-proposal');
+          var label = el('div');
+          label.innerHTML = '<strong>A draft is waiting</strong>' +
+            '<div class="fine-print">' + (draft.steps || []).length + ' steps · proposed ' +
+            esc(String(draft.created_at || '').slice(11, 16)) + '</div>';
+          bar.appendChild(label);
+
+          var view = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          var savedSteps = null;
+          var savedLayout = null;
+          view.onclick = function () {
+            if (savedSteps) {
+              steps = savedSteps;
+              Object.keys(layout).forEach(function (key) { delete layout[key]; });
+              Object.keys(savedLayout).forEach(function (key) { layout[key] = savedLayout[key]; });
+              savedSteps = null;
+              savedLayout = null;
+              view.textContent = 'Preview';
+              draw();
+              return;
+            }
+            savedSteps = steps;
+            savedLayout = JSON.parse(JSON.stringify(layout));
+            steps = draft.steps;
+            steps.forEach(function (step, index) {
+              if (!layout[step.id]) layout[step.id] = { x: 20, y: 20 + index * 84 };
+            });
+            view.textContent = 'Hide preview';
+            draw();
+          };
+
+          var apply = el('button', 'btn btn-primary btn-sm', 'Apply');
+          apply.onclick = function () {
+            apply.disabled = true;
+            api('POST', '/api/automations/proposals/' + draft.id + '/apply').then(function () {
+              toast('Applied - the automation is updated', true);
+              modal.parentNode.removeChild(modal);
+              refresh();
+            }).catch(function (e) {
+              apply.disabled = false;
+              toast(e.message, false);
+            });
+          };
+
+          var drop = el('button', 'btn btn-ghost btn-sm', 'Discard');
+          drop.onclick = function () {
+            api('POST', '/api/automations/proposals/' + draft.id + '/discard').then(function () {
+              bannerHost.innerHTML = '';
+              toast('Draft discarded', true);
+            }).catch(function (e) { toast(e.message, false); });
+          };
+
+          bar.appendChild(view);
+          bar.appendChild(apply);
+          bar.appendChild(drop);
+          bannerHost.appendChild(bar);
+          previewOf = draft;
+        }).catch(function () { /* no banner is not an error */ });
+      }
+
       // Live states: the job already emits {"node": id, "status": ...} per step, so this
       // only has to recolour boxes - no new backend, no websocket.
       function followRun(jobId, runBtn) {
