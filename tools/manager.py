@@ -400,6 +400,39 @@ def _build_create_contact(emit, job_id=None):
     return create_contact
 
 
+def _build_create_site(emit, job_id=None):
+    async def create_site(domain: str) -> str:
+        """Add a website for this client.
+
+        The domain is a required argument on purpose: it costs money and points at a real
+        server, so it is the user's to give. Never invent one - ask.
+        """
+        import provisioner
+        import sites as sites_service
+
+        org_id, requester = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - a site belongs to a client."
+        name = (domain or "").strip().lower()
+        if "." not in name or " " in name:
+            return ("That is not a domain (%r). Ask the user for the exact one, then add it."
+                    % domain)
+        try:
+            site = sites_service.create_site({"domain": name, "target": "local"},
+                                            owner_id=requester, org_id=org_id)
+        except Exception as exc:
+            return "Not created: %s" % str(exc)[:200]
+        ip = provisioner.server_ip() or "this server's IP"
+        return ("Added %s (#%s), pending DNS. Point its A record at %s, then run "
+                "Check again in Domains." % (name, (site or {}).get("id", "?"), ip))
+
+    return create_site
+
+
+register("create_site", "Add a website for this client; the domain must come from the user.",
+         _build_create_site)
+
+
 register("create_contact", "Add a contact to this client's CRM.",
          _build_create_contact)
 

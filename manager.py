@@ -39,7 +39,7 @@ SYSTEM = (
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "propose_automation", "describe_capabilities",
            "propose_tool", "ask_user", "create_template", "list_templates",
-           "create_contact")
+           "create_contact", "create_site")
 
 
 import jobs
