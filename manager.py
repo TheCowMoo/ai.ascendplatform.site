@@ -22,6 +22,10 @@ SYSTEM = (
     "You cannot send email, publish, or touch servers - those are jobs with approvals, "
     "so delegate them with start_job and say that they await approval. Never claim "
     "something is published or sent.\n"
+    "Report what blocks the work. describe_capabilities tells you whether email is "
+    "configured and which templates exist; if templates is empty or email_ready is false, "
+    "say so plainly before or alongside any draft, because a send step cannot work yet. "
+    "Always end with a sentence: never finish a turn having only called a tool.\n"
     "Be brief: one short paragraph or a few bullets. Use the client's numbers when you "
     "have them, and say so when you do not."
 )
@@ -49,8 +53,46 @@ async def chat_task(job, emit):
         model_client=llm.get_model_client(provider),
         system_message=SYSTEM,
         tools=tools,
+        # Without this AutoGen returns the tool's result and stops, so a turn that needed
+        # two calls (capabilities, then a draft) ended in silence - the job "finished" with
+        # no message and looked broken. Six calls is enough for describe -> propose.
+        reflect_on_tool_use=True,
+        max_tool_iterations=6,
     )
     emit("system", "system", "Manager is thinking…")
     result = await agent.run(task=job.get("prompt") or "")
     messages = getattr(result, "messages", []) or []
-    return str(getattr(messages[-1], "content", "") or "") if messages else ""
+
+    for message in messages:
+        for call in _tool_calls(message):
+            emit("Manager", "tool", call)
+    return _answer_from(messages)
+
+
+def _tool_calls(message):
+    """Names of the functions a message asked to run, if any."""
+    content = getattr(message, "content", "")
+    if "FunctionCall" not in type(message).__name__ or not isinstance(content, list):
+        return []
+    return [getattr(call, "name", "") or "" for call in content if getattr(call, "name", "")]
+
+
+def _answer_from(messages):
+    """The last thing the manager actually *said*, never an empty string.
+
+    With tool use the final message is often a function result rather than text; returning
+    that empty content is what made a completed chat look like a silent failure.
+    """
+    said = ""
+    ran = []
+    for message in messages or []:
+        content = getattr(message, "content", "")
+        ran.extend(_tool_calls(message))
+        if isinstance(content, str) and content.strip():
+            said = content
+    if said:
+        return said
+    if ran:
+        return ("I ran %s but did not write an answer. Tell me what you want done with the "
+                "result and I will do it." % ", ".join(sorted(set(ran))))
+    return "I finished without saying anything - open the job transcript to see what ran."
