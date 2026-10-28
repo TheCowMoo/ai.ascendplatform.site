@@ -170,6 +170,73 @@ def main():
     else:
         print("skip preview checks: no org %s for the operator to act as" % org)
 
+    # --- the console API -----------------------------------------------------
+    api = appmod.app.test_client()
+    check("the console API refuses an anonymous create",
+          api.post("/api/forms", json={"name": "x"}).status_code, 401)
+    check("and an anonymous list", api.get("/api/forms").status_code, 401)
+    api.post("/api/auth/login",
+             json={"email": "admin@example.com", "password": "admin123"})
+    orgs = api.get("/api/orgs").get_json().get("orgs") or []
+    check("the operator has a client to act as", bool(orgs), True)
+    console_org = orgs[0]["id"] if orgs else org
+    api.post("/api/session/org", json={"org_id": console_org})
+
+    made = api.post("/api/forms", json={"name": "Console form %s" % TOKEN, "kind": "survey",
+                                        "questions": [{"id": "a", "type": "text",
+                                                       "label": "Your name", "page": 0},
+                                                      {"id": "b", "type": "email",
+                                                       "label": "Email", "page": 0}]})
+    check("a form can be created from the console", made.status_code, 201, made.status_code)
+    console_form = (made.get_json() or {}).get("form") or {}
+    check("and is a draft until published", console_form.get("status"), "draft")
+    check("the list answers for this client",
+          any(item["id"] == console_form.get("id")
+              for item in (api.get("/api/forms").get_json() or {}).get("forms", [])), True)
+
+    bad = api.post("/api/forms", json={"name": "Empty", "questions": []})
+    check("an invalid form is refused with a sentence", bad.status_code, 400)
+    check("and the reason is readable",
+          "at least one question" in (bad.get_json() or {}).get("error", ""), True)
+
+    live = api.put("/api/forms/%s" % console_form["id"], json={"status": "published"})
+    check("publishing works over the API",
+          (live.get_json() or {}).get("form", {}).get("status"), "published")
+    check("a published form is now reachable",
+          api.get("/f/%s" % console_form["slug"]).status_code, 200)
+
+    api.post("/api/public/forms/%s" % console_form["slug"],
+             json={"answers": {"a": "Ada", "b": "ada@example.test"}})
+    rows = api.get("/api/forms/%s/responses" % console_form["id"]).get_json() or {}
+    check("the console can read its answers", len(rows.get("responses") or []), 1)
+    check("the answer text is intact",
+          (rows["responses"][0]["answers"] or {}).get("b"), "ada@example.test")
+    check("the attempt created a contact", bool(rows["responses"][0]["contact_id"]), True)
+    csv_resp = api.get("/api/forms/%s/responses.csv" % console_form["id"])
+    check("the CSV downloads", csv_resp.status_code, 200)
+    check("as a CSV", csv_resp.headers["Content-Type"].startswith("text/csv"))
+    check("with a column per question", "Your name" in csv_resp.get_data(as_text=True))
+
+    other_org = orgs[1]["id"] if len(orgs) > 1 else None
+    if other_org:
+        other = appmod.app.test_client()
+        other.post("/api/auth/login",
+                   json={"email": "admin@example.com", "password": "admin123"})
+        other.post("/api/session/org", json={"org_id": other_org})
+        check("another client cannot read the form",
+              other.get("/api/forms/%s" % console_form["id"]).status_code, 404)
+        check("nor its answers",
+              other.get("/api/forms/%s/responses" % console_form["id"]).status_code, 404)
+        check("nor overwrite it",
+              other.put("/api/forms/%s" % console_form["id"],
+                        json={"name": "hijack"}).status_code, 404)
+    else:
+        print("skip cross-client checks: only one client exists")
+    removed = api.delete("/api/forms/%s" % console_form["id"])
+    check("deleting a form with answers archives it",
+          (removed.get_json() or {}).get("archived"), True)
+
+    cleanup(console_org)
     cleanup(org)
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

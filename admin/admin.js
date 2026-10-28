@@ -31,6 +31,7 @@
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
         { id: 'domains', label: 'Domains', icon: 'server', hash: '#/app/domains' },
         { id: 'contacts', label: 'Contacts', icon: 'user', hash: '#/app/contacts' },
+        { id: 'forms', label: 'Forms', icon: 'form', hash: '#/app/forms' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
         { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
@@ -4940,6 +4941,210 @@
     });
   }
 
+  // ---------- Forms: what a client sends people, and what comes back ----------
+  // The list is deliberately plain - name, kind, live state, answers so far - because those
+  // are the three things a client checks. Editing arrives next; today a form can be created,
+  // published and read, which is enough to start collecting real answers.
+  function viewForms() {
+    var container = el('div');
+    var head = el('div');
+    head.innerHTML = '<h2>Forms</h2><p class="muted">Forms, surveys and quizzes. Each one ' +
+      'lives at its own link, and every answer lands in the list beside it.</p>';
+    container.appendChild(head);
+
+    var bar = el('div', 'chip-input');
+    var add = el('button', 'btn btn-primary', 'New form');
+    var refresh = el('button', 'btn btn-ghost', 'Refresh');
+    bar.appendChild(add);
+    bar.appendChild(refresh);
+    container.appendChild(bar);
+
+    var body = el('div');
+    container.appendChild(body);
+
+    function load() {
+      body.innerHTML = '';
+      api('GET', '/api/forms').then(function (d) {
+        var rows = d.forms || [];
+        if (!rows.length) {
+          var empty = el('div', 'panel-card empty-state');
+          empty.innerHTML = '<p><strong>No forms yet.</strong></p>' +
+            '<p class="muted">Create one, or ask the assistant for a quiz and it will draft it.</p>';
+          body.appendChild(empty);
+          return;
+        }
+        rows.forEach(function (item) { body.appendChild(card(item)); });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function card(item) {
+      var box = el('div', 'panel-card auto-card');
+      var link = location.origin + '/f/' + item.slug;
+      var status = item.status === 'published' ? 'Live'
+        : (item.status === 'archived' ? 'Archived' : 'Draft');
+      box.innerHTML = '<div class="auto-head"><div><div class="auto-name">' + esc(item.name) +
+        '</div><div class="auto-meta">' + esc(item.kind) + ' · ' + item.question_count +
+        (item.question_count === 1 ? ' question' : ' questions') + ' · ' +
+        (item.responses || 0) + ' answer' + ((item.responses || 0) === 1 ? '' : 's') +
+        ' · <span class="run-status ' + esc(item.status) + '">' + esc(status) + '</span></div>' +
+        '</div></div><div class="fine-print">' + esc(link) + '</div>';
+
+      var actions = el('div', 'auto-actions');
+
+      var open = el('button', 'btn btn-ghost btn-sm', 'Open');
+      open.onclick = function () { window.open(link, '_blank', 'noopener'); };
+
+      var copy = el('button', 'btn btn-ghost btn-sm', 'Copy link');
+      copy.onclick = function () {
+        navigator.clipboard.writeText(link)
+          .then(function () { toast('Link copied', true); })
+          .catch(function () { toast('Copy failed', false); });
+      };
+
+      var answers = el('button', 'btn btn-ghost btn-sm', 'Responses');
+      answers.onclick = function () { location.hash = '#/app/forms/' + item.id + '/responses'; };
+
+      var toggle = el('button', 'btn btn-sm',
+                      item.status === 'published' ? 'Unpublish' : 'Publish');
+      toggle.onclick = function () {
+        toggle.disabled = true;
+        api('PUT', '/api/forms/' + item.id,
+            { status: item.status === 'published' ? 'draft' : 'published' })
+          .then(function () {
+            toast(item.status === 'published' ? 'Unpublished'
+                                              : 'Live at /f/' + item.slug, true);
+            load();
+          })
+          .catch(function (e) { toggle.disabled = false; toast(e.message, false); });
+      };
+
+      var drop = el('button', 'btn btn-ghost btn-sm', 'Delete');
+      drop.onclick = function () {
+        if (!window.confirm('Delete “' + item.name + '”? A form with answers is archived ' +
+                            'instead of removed.')) return;
+        api('DELETE', '/api/forms/' + item.id).then(function (d) {
+          toast(d.archived ? 'Archived - it has ' + d.responses + ' answers' : 'Deleted', true);
+          load();
+        }).catch(function (e) { toast(e.message, false); });
+      };
+
+      [open, copy, answers, toggle, drop].forEach(function (button) {
+        actions.appendChild(button);
+      });
+      box.appendChild(actions);
+      return box;
+    }
+
+    add.onclick = function () {
+      var modal = el('div', 'auto-modal');
+      var panel = el('div', 'auto-panel');
+      panel.appendChild(el('h3', 'card-title', 'New form'));
+      var name = el('input');
+      name.placeholder = 'e.g. Trip planner quiz';
+      name.setAttribute('aria-label', 'Form name');
+      var kind = el('select');
+      ['form', 'survey', 'quiz'].forEach(function (option) {
+        var item = el('option', null, option);
+        item.value = option;
+        kind.appendChild(item);
+      });
+      panel.appendChild(name);
+      panel.appendChild(kind);
+      panel.appendChild(el('p', 'fine-print', 'It starts with one question you can edit; ' +
+        'pages, branching and scoring arrive in the builder.'));
+      var row = el('div', 'chip-input');
+      var save = el('button', 'btn btn-primary', 'Create');
+      var cancel = el('button', 'btn', 'Cancel');
+      function close() { if (modal.parentNode) modal.parentNode.removeChild(modal); }
+      cancel.onclick = close;
+      save.onclick = function () {
+        save.disabled = true;
+        api('POST', '/api/forms', {
+          name: (name.value || '').trim() || 'Untitled form',
+          kind: kind.value,
+          questions: [{ id: 'q1', type: 'text', label: 'What would you like to know?', page: 0 }]
+        }).then(function (d) {
+          close();
+          toast('Created “' + d.form.name + '”', true);
+          load();
+        }).catch(function (e) { save.disabled = false; toast(e.message, false); });
+      };
+      row.appendChild(save);
+      row.appendChild(cancel);
+      panel.appendChild(row);
+      modal.appendChild(panel);
+      document.body.appendChild(modal);
+      name.focus();
+    };
+    refresh.onclick = load;
+    load();
+    return container;
+  }
+
+  // Every answer to one form, newest first. The CSV is the same rows, so nobody has to retype
+  // a report out of a table.
+  function viewFormResponses(formId) {
+    var container = el('div');
+    var head = el('div');
+    container.appendChild(head);
+    var bar = el('div', 'chip-input');
+    var back = el('button', 'btn btn-ghost', 'Back to forms');
+    back.onclick = function () { location.hash = '#/app/forms'; };
+    var csv = el('a', 'btn btn-ghost', 'Download CSV');
+    csv.href = '/api/forms/' + formId + '/responses.csv';
+    bar.appendChild(back);
+    bar.appendChild(csv);
+    container.appendChild(bar);
+    var body = el('div');
+    container.appendChild(body);
+
+    api('GET', '/api/forms/' + formId + '/responses').then(function (d) {
+      var item = d.form || {};
+      var rows = d.responses || [];
+      var questions = item.questions || [];
+      head.innerHTML = '<h2>' + esc(item.name || 'Form') + '</h2><p class="muted">' +
+        esc(item.kind || '') + ' · ' + rows.length + ' answer' +
+        (rows.length === 1 ? '' : 's') + ' · /f/' + esc(item.slug || '') + ' · ' +
+        esc(item.status || 'draft') + '</p>';
+      if (!rows.length) {
+        var empty = el('div', 'panel-card empty-state');
+        empty.innerHTML = '<p><strong>No answers yet.</strong></p>' +
+          '<p class="muted">Publish the form and share its link.</p>';
+        body.appendChild(empty);
+        return;
+      }
+      var table = el('table', 'table');
+      table.innerHTML = '<thead><tr><th>When</th><th>Score</th>' +
+        questions.map(function (question) {
+          return '<th>' + esc(question.label || question.id) + '</th>';
+        }).join('') + '</tr></thead>';
+      var tbody = el('tbody');
+      rows.forEach(function (row) {
+        var cells = questions.map(function (question) {
+          var value = (row.answers || {})[question.id];
+          if (Array.isArray(value)) value = value.join(', ');
+          return '<td>' + esc(value === undefined || value === '' ? '-' : String(value)) +
+            '</td>';
+        }).join('');
+        tbody.innerHTML += '<tr><td>' + esc(String(row.created_at || '').slice(0, 16)) +
+          '</td><td>' + (row.max_score ? row.score + '/' + row.max_score : '-') +
+          '</td>' + cells + '</tr>';
+      });
+      table.appendChild(tbody);
+      body.appendChild(table);
+      if (item.kind === 'quiz') {
+        body.appendChild(el('p', 'fine-print', 'Scores count only the questions each ' +
+          'visitor was actually asked, so a branching quiz is marked out of its own path.'));
+      }
+    }).catch(function (e) {
+      var problem = el('div', 'panel-card empty-state');
+      problem.innerHTML = '<p><strong>' + esc(e.message) + '</strong></p>';
+      body.appendChild(problem);
+      toast(e.message, false);
+    });
+    return container;
+  }
+
   // ---------- Workspace switcher ----------
   // One row under the logo. The operator picks a client to act as; a client just sees
   // their own name. The choice lives in the session, so every scoped view follows it.
@@ -5184,6 +5389,8 @@
     else if (tab === 'conversations') view = viewConversationsIndex();
     else if (tab === 'domains') view = viewDomains(rest[0]);
     else if (tab === 'contacts') view = viewContacts();
+    else if (tab === 'forms' && rest[1] === 'responses') view = viewFormResponses(rest[0]);
+    else if (tab === 'forms') view = viewForms();
     else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();

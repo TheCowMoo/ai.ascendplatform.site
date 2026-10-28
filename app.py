@@ -2498,6 +2498,111 @@ def public_form_submit(slug):
                     "score": result["score"], "preview": preview}), 201
 
 
+# ---------- Forms in the console ----------
+# Owner-scoped CRUD, responses and a CSV. Every query is filtered by the session's tenant;
+# a form id belonging to somebody else is a 404, not a 403, because whether a row exists is
+# not something one client should learn about another.
+
+def _forms_org():
+    org = current_org()
+    if org is None:
+        return None, (jsonify({"error": "Pick a client in the workspace switcher first"}), 400)
+    return org, None
+
+
+@app.route("/api/forms", methods=["GET"])
+@client_admin_required
+def api_forms_index():
+    import forms as forms_service
+    import forms_engine
+
+    org, problem = _forms_org()
+    if problem:
+        return problem
+    return jsonify({"forms": forms_service.list_forms(org),
+                    "kinds": list(forms_engine.KINDS),
+                    "types": list(forms_engine.QUESTION_TYPES)})
+
+
+@app.route("/api/forms", methods=["POST"])
+@client_admin_required
+def api_forms_create():
+    import forms as forms_service
+
+    org, problem = _forms_org()
+    if problem:
+        return problem
+    data = request.get_json(silent=True) or {}
+    try:
+        item = forms_service.create_form(data, org, owner_id=session.get("user_id"))
+    except forms_service.FormServiceError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"form": item}), 201
+
+
+@app.route("/api/forms/<int:form_id>", methods=["GET", "PUT", "DELETE"])
+@client_admin_required
+def api_form(form_id):
+    import forms as forms_service
+
+    org, problem = _forms_org()
+    if problem:
+        return problem
+    if request.method == "GET":
+        item = forms_service.get_form(form_id, org)
+        if not item:
+            return jsonify({"error": "No such form"}), 404
+        return jsonify({"form": item})
+    if request.method == "DELETE":
+        result = forms_service.delete_form(form_id, org)
+        if not result:
+            return jsonify({"error": "No such form"}), 404
+        return jsonify(dict(result, ok=True))
+    data = request.get_json(silent=True) or {}
+    try:
+        item = forms_service.update_form(form_id, org, data)
+    except forms_service.FormServiceError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not item:
+        return jsonify({"error": "No such form"}), 404
+    return jsonify({"form": item})
+
+
+@app.route("/api/forms/<int:form_id>/responses", methods=["GET"])
+@client_admin_required
+def api_form_responses(form_id):
+    import forms as forms_service
+
+    org, problem = _forms_org()
+    if problem:
+        return problem
+    item = forms_service.get_form(form_id, org)
+    if not item:
+        return jsonify({"error": "No such form"}), 404
+    return jsonify({"form": item,
+                    "responses": forms_service.list_responses(form_id, org)})
+
+
+@app.route("/api/forms/<int:form_id>/responses.csv", methods=["GET"])
+@client_admin_required
+def api_form_responses_csv(form_id):
+    import forms as forms_service
+
+    org, problem = _forms_org()
+    if problem:
+        return problem
+    item = forms_service.get_form(form_id, org)
+    if not item:
+        return jsonify({"error": "No such form"}), 404
+    body = forms_service.responses_csv(item, forms_service.list_responses(form_id, org))
+    response = app.make_response(body)
+    response.headers["Content-Type"] = "text/csv; charset=utf-8"
+    response.headers["Content-Disposition"] = (
+        'attachment; filename="%s.csv"' % (item.get("slug") or "form"))
+    return response
+
+
+
 
 @app.route("/api/agent-tools", methods=["GET"])
 @login_required
