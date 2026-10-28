@@ -50,6 +50,38 @@ def check_imports():
     print("imports OK | tasks:", sorted(jobs.TASKS))
 
 
+def check_worker_tasks():
+    """The worker must register every task the app can create.
+
+    This is the bug that broke automations in production: `chat`, `automation` and
+    `site_review` were registered at the bottom of app.py, which the worker never imports,
+    so JOB_BACKEND=redis meant the worker refused all three with "Unknown task". Every
+    local test passed because they import app. So the check runs in a subprocess that
+    imports *only* what worker.py imports - the same isolation the bug needed to hide in.
+    """
+    if not shutil.which("git") and os.name != "nt":
+        pass    # keep going: this check needs no git
+    expected = {"agent_team", "automation", "chat", "echo", "site_provision", "site_review"}
+    code = (
+        "import json, os\n"
+        "os.environ.pop('ALLOW_LIVE_ACTIONS', None)\n"
+        "import worker\n"
+        "import jobs\n"
+        "print(json.dumps(sorted(jobs.TASKS)))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise AssertionError("worker.py failed to import:\n" + (result.stderr or "")[-800:])
+    import json as _json
+
+    have = set(_json.loads(result.stdout.strip() or "[]"))
+    missing = sorted(expected - have)
+    assert not missing, ("the worker cannot run %s - register the task in its own module and "
+                         "import that module from worker.py" % ", ".join(missing))
+    print("worker registers:", ", ".join(sorted(have)))
+
+
 def check_compose():
     """The worker runs provisioning, so it needs the same site paths as the app.
 
@@ -192,6 +224,7 @@ def main():
     check_compose()
     check_caddyfile()
     check_icons()
+    check_worker_tasks()
     check_deploy_script()
     try:
         check_js()
