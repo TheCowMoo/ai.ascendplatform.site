@@ -21,7 +21,8 @@ SYSTEM = (
 )
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
-           "save_deliverable", "propose_automation", "describe_capabilities")
+           "save_deliverable", "propose_automation", "describe_capabilities",
+           "propose_tool")
 
 
 async def chat_task(job, emit):

@@ -165,6 +165,16 @@ register("propose_automation",
          _build_propose_automation)
 
 
+def _approved_tools(org_id):
+    """Approved agent-written tools. Empty is the normal state: none can run yet."""
+    try:
+        import agent_tools
+
+        return agent_tools.approved_tools(org_id)
+    except Exception:
+        return []
+
+
 def _build_describe_capabilities(emit, job_id=None):
     async def describe_capabilities() -> str:
         """What this client can build automations from right now.
@@ -194,8 +204,11 @@ def _build_describe_capabilities(emit, job_id=None):
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
+            "agent_tools": [tool["name"] for tool in _approved_tools(org_id)],
             "note": ("Outward tools (send_email, publish_site, provision_site) need a gate "
-                     "node before them or the graph is refused."),
+                     "node before them or the graph is refused. If what you need is not "
+                     "listed, say so and call propose_tool - it is recorded for approval "
+                     "and does not run."),
         }, indent=2)
 
     return describe_capabilities
@@ -231,6 +244,37 @@ def _build_tag_contact(emit, job_id=None):
         return "Tagged contact %s: %s" % (cid, ", ".join(merged))
 
     return tag_contact
+
+
+def _build_propose_tool(emit, job_id=None):
+    async def propose_tool(name: str, description: str, kind: str = "recipe",
+                           args_schema: str = "{}", body: str = "") -> str:
+        """Ask for a capability that does not exist yet.
+
+        The tool is written to a proposals table and is NOT usable: a human approves it
+        first, and no executor exists yet either. Say what you need and why.
+        """
+        import agent_tools
+
+        org_id, requester = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - tools are per client."
+        try:
+            row = agent_tools.propose({"name": name, "description": description, "kind": kind,
+                                       "args_schema": args_schema, "body": body},
+                                      org_id, created_by=requester, job_id=job_id)
+        except agent_tools.AgentToolError as exc:
+            return "Not recorded: %s" % exc
+        return ("Recorded %s as a proposed tool (#%d, %s). It cannot run yet: a human has to "
+                "approve it, and this build has no executor for either kind."
+                % (row["name"], row["id"], row["kind"]))
+
+    return propose_tool
+
+
+register("propose_tool",
+         "Propose a new tool for this client (recorded, not executed until approved).",
+         _build_propose_tool)
 
 
 register("tag_contact", "Add tags to a contact, e.g. tags=\"welcome, sequence\".",
