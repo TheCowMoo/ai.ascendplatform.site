@@ -25,6 +25,7 @@
       home: '#/app/',
       nav: [
         { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
+        { id: 'assistant', label: 'Assistant', icon: 'chat', hash: '#/app/assistant' },
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
@@ -3675,6 +3676,128 @@
     return container;
   }
 
+  // ---------- Assistant: a conversation, not a one-shot command ----------
+  // Same endpoint and the same job underneath as the floating widget, but the thread
+  // persists, so answering a question is typing in the same box rather than a new errand.
+  function viewAssistant() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Assistant</h2><p class="muted">Describe what you want. It ' +
+      'asks when the brief is thin, drafts when it is not, and keeps the thread.</p></div>';
+    container.appendChild(head);
+
+    var thread = el('div', 'assistant-thread');
+    thread.style.cssText = 'display:flex;flex-direction:column;gap:10px;min-height:340px;' +
+      'max-height:52vh;overflow-y:auto;padding:12px;border:1px solid var(--line);' +
+      'border-radius:12px;background:#fcfcfd;margin-bottom:10px';
+    container.appendChild(thread);
+
+    var box = el('textarea', 'prompt-box');
+    box.placeholder = 'Build me an automation that…';
+    container.appendChild(box);
+    var send = el('button', 'btn btn-primary', 'Send');
+    container.appendChild(send);
+
+    var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
+    var key = 'chat:' + orgKey + ':' + ((state.user && state.user.id) || 0);
+    var threadState = { messages: [] };
+    try {
+      threadState = JSON.parse(localStorage.getItem(key) || '{"messages":[]}');
+      if (!Array.isArray(threadState.messages)) threadState.messages = [];
+    } catch (e) { threadState = { messages: [] }; }
+    function save() {
+      try { localStorage.setItem(key, JSON.stringify(threadState)); } catch (e) { /* private mode */ }
+    }
+    function bubble(who, text) {
+      var line = el('div', 'assistant-msg ' + who, text);
+      line.style.cssText = who === 'me'
+        ? 'align-self:flex-end;max-width:80%;background:var(--accent-soft);padding:8px 12px;' +
+          'border-radius:12px 12px 2px 12px;white-space:pre-wrap'
+        : 'align-self:flex-start;max-width:85%;background:#fff;border:1px solid var(--line);' +
+          'padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap';
+      thread.appendChild(line);
+      thread.scrollTop = thread.scrollHeight;
+      return line;
+    }
+    threadState.messages.forEach(function (message) {
+      bubble(message.role === 'user' ? 'me' : 'them', message.content);
+    });
+
+    function questionCard(questions) {
+      var card = el('div', 'panel-card');
+      card.appendChild(el('strong', null, 'The team needs a little more'));
+      var inputs = questions.map(function (question) {
+        card.appendChild(el('p', 'fine-print', String(question)));
+        var input = el('input');
+        card.appendChild(input);
+        return input;
+      });
+      var reply = el('button', 'btn btn-primary btn-sm', 'Send answers');
+      reply.onclick = function () {
+        var parts = inputs.map(function (input, index) {
+          var text = (input.value || '').trim();
+          return text ? questions[index] + ' ' + text : '';
+        }).filter(function (part) { return part; });
+        if (!parts.length) {
+          toast('Answer at least one question', false);
+          return;
+        }
+        card.parentNode.removeChild(card);
+        box.value = parts.join(' ');
+        send.click();
+      };
+      card.appendChild(reply);
+      thread.appendChild(card);
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    send.onclick = function () {
+      var text = (box.value || '').trim();
+      if (!text) {
+        toast('Say what you want first', false);
+        return;
+      }
+      box.value = '';
+      bubble('me', text);
+      threadState.messages.push({ role: 'user', content: text });
+      save();
+      send.disabled = true;
+      var thinking = bubble('them', 'Thinking…');
+      api('POST', '/api/manager/chat', {
+        message: text,
+        history: threadState.messages.slice(-8),
+        automation_id: 0
+      }).then(function (d) {
+        watchJob(d.job_id, el('span', 'activity running'), function () {
+          api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
+            if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+            var said = (r.events || []).filter(function (ev) {
+              return ev.source === 'Manager' && ev.type === 'message';
+            }).pop();
+            var answer = said ? said.content : 'No answer - open job #' + d.job_id + ' to see why.';
+            bubble('them', answer);
+            threadState.messages.push({ role: 'assistant', content: answer });
+            save();
+            var asked = (r.events || []).filter(function (ev) {
+              return ev.source === 'Manager' && ev.type === 'question';
+            }).pop();
+            if (asked) {
+              var questions = [];
+              try { questions = JSON.parse(asked.content || '[]'); } catch (e) { questions = []; }
+              if (questions.length) questionCard(questions);
+            }
+            send.disabled = false;
+          }).catch(function () { send.disabled = false; });
+        });
+      }).catch(function (e) {
+        if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+        bubble('them', e.message);
+        send.disabled = false;
+      });
+    };
+    return container;
+  }
+
   // ---------- Contacts: the mini CRM ----------
   // Deliberately no GoHighLevel anywhere on this screen: a client without one gets the
   // same product, and the form endpoint is the thing most people come here for.
@@ -4865,6 +4988,7 @@
     else if (tab === 'conversations') view = viewConversationsIndex();
     else if (tab === 'domains') view = viewDomains(rest[0]);
     else if (tab === 'contacts') view = viewContacts();
+    else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();
