@@ -4079,6 +4079,32 @@
       nameField.value = a ? a.name : '';
       panel.appendChild(nameField);
 
+      // Trigger. Without this only the agent could set "when a contact is created", which
+      // made the most useful trigger in the product unreachable from the screen.
+      var trigger = el('select', 'auto-trigger');
+      trigger.setAttribute('aria-label', 'When this runs');
+      [
+        { value: 'manual', label: 'Run by hand' },
+        { value: 'schedule', label: 'On a schedule' },
+        { value: 'event', label: 'When something happens' }
+      ].forEach(function (option) {
+        var node = el('option', null, option.label);
+        node.value = option.value;
+        trigger.appendChild(node);
+      });
+      trigger.value = (a && a.trigger_type) || 'manual';
+      panel.appendChild(trigger);
+
+      var eventField = el('input', 'auto-event');
+      eventField.placeholder = 'contact.created';
+      eventField.setAttribute('aria-label', 'Event name');
+      eventField.value = ((a && a.trigger_config) || {}).event || '';
+      eventField.style.display = trigger.value === 'event' ? '' : 'none';
+      trigger.onchange = function () {
+        eventField.style.display = trigger.value === 'event' ? '' : 'none';
+      };
+      panel.appendChild(eventField);
+
       var steps = a ? a.steps : STARTER;
       var list = el('div', 'auto-steps');
       list.innerHTML = '<div class="auto-step-head">Steps</div>';
@@ -4257,7 +4283,9 @@
                 'to save your own edits', false);
           return;
         }
-        var payload = { name: nameField.value, steps: steps, trigger_type: 'manual',
+        var payload = { name: nameField.value, steps: steps, trigger_type: trigger.value,
+                        trigger_config: trigger.value === 'event'
+                          ? { event: (eventField.value || '').trim() } : {},
                         layout: layout };
         var req = a ? api('PUT', '/api/automations/' + a.id, payload)
                     : api('POST', '/api/automations', payload);
