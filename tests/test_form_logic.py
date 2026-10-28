@@ -269,6 +269,7 @@ def test_the_agent_can_build_a_form():
     with db.get_connection() as conn:
         for table in ("form_responses", "forms"):
             conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
+def test_service_round_trip():
     import db
     import forms
 
