@@ -119,6 +119,10 @@ def digest(brief_data, domain, proposals=None):
     return "Weekly review: %s" % domain, html
 
 
+import jobs as _jobs
+
+
+@_jobs.task("site_review")
 async def site_review(job, emit):
     """Run one weekly review for a job. Registered in jobs.py as task ``site_review``."""
     import agents

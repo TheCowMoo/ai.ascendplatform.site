@@ -25,6 +25,10 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "propose_tool")
 
 
+import jobs
+
+
+@jobs.task("chat")
 async def chat_task(job, emit):
     """One manager turn. Registered as task ``chat``."""
     from autogen_agentchat.agents import AssistantAgent

@@ -564,6 +564,10 @@ def walk(steps, resume_after=None, org_id=None):
     return out
 
 
+import jobs
+
+
+@jobs.task("automation")
 async def run_task(job, emit):
     """Registered as task ``automation``: walks the graph, one event per node."""
     try:

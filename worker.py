@@ -25,7 +25,10 @@ from arq.connections import RedisSettings
 
 from db import init_db
 import jobs  # noqa: F401  (registers the job tasks)
-import agents  # noqa: F401  (registers the agent_team task)
+import agents  # noqa: F401  (registers agent_team, site_provision)
+import manager  # noqa: F401  (registers chat)
+import automations  # noqa: F401  (registers automation)
+import review  # noqa: F401  (registers site_review)
 
 REDIS_URL = (os.environ.get("REDIS_URL") or "redis://localhost:6379/0").strip()
 JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "900"))
