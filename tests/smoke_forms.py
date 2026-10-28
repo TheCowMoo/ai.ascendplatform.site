@@ -241,7 +241,13 @@ def main():
         "questions": [{"id": "a", "type": "radio", "label": "No options", "page": 0}]})
     check("a half-built question is refused on save", refused.status_code, 400)
 
-    other_org = orgs[1]["id"] if len(orgs) > 1 else None
+    # A second client, so the isolation assertions actually run instead of skipping. The
+    # operator can act as any client, so an org row is all it takes to be "another tenant".
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO orgs (name, slug) VALUES (?, ?)",
+                     ("Form test client", "form-test-%s" % TOKEN))
+        other_org = conn.execute("SELECT id FROM orgs WHERE slug = ?",
+                                 ("form-test-%s" % TOKEN,)).fetchone()["id"]
     if other_org:
         other = appmod.app.test_client()
         other.post("/api/auth/login",
@@ -261,7 +267,10 @@ def main():
           (removed.get_json() or {}).get("archived"), True)
 
     cleanup(console_org)
+    cleanup(other_org)
     cleanup(org)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM orgs WHERE id = ?", (other_org,))
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)
