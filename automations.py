@@ -387,7 +387,7 @@ def resume(automation_id, org_id, requester_id=None):
     return {"run_id": run_id, "job_id": job_id}
 
 
-def _execute(step, automation, emit):
+async def _execute(step, automation, emit, job_id=None):
     """Do one node's work and return a short human note for the transcript.
 
     Agent nodes dispatch a job and move on: the automation orchestrates, it does not sit
@@ -412,7 +412,26 @@ def _execute(step, automation, emit):
         _, note = evaluate_condition(step, automation.get("org_id"))
         return note
     if kind == "tool":
-        return "Tool '%s' is not executed by the walker yet." % config.get("tool", "unknown")
+        # A tool node runs through the same registry the agents use, so the approval gate
+        # and the policy checks that guard a chat-driven send guard this too - the
+        # validator already refuses an outward tool without a gate upstream.
+        name = (config.get("tool") or "").strip()
+        if not name:
+            return "This step names no tool, so nothing ran."
+        args = config.get("args") or {}
+        if not isinstance(args, dict):
+            return "This step's args must be an object."
+        import tools as tool_registry
+        from autogen_core import CancellationToken
+
+        resolved = tool_registry.resolve([name], job_id=job_id)
+        if not resolved:
+            return "Unknown tool '%s' - nothing ran." % name
+        try:
+            reply = await resolved[0].run_json(args, CancellationToken())
+        except Exception as exc:
+            return "Tool '%s' failed: %s" % (name, str(exc)[:200])
+        return str(reply)[:400]
     return "Gate." if kind == "gate" else "Nothing to do."
 
 
@@ -482,7 +501,7 @@ async def run_task(job, emit):
         step = steps[node_id]
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "running"}))
-        note = _execute(step, automation, emit)
+        note = await _execute(step, automation, emit, job.get("id"))
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "done", "note": note}))
         emit("message", "Automation", "%s — %s" % (step.get("title") or node_id, note))
