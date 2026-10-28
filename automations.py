@@ -592,6 +592,36 @@ def discard_proposal(proposal_id, org_id):
         return cur.rowcount > 0
 
 
+def start_for_event(org_id, event, requester_id=None):
+    """Start every enabled automation whose trigger is this event.
+
+    This is the wire between "somebody signed up" and "the sequence begins". Failures are
+    contained: an automation that cannot start must never break the thing that caused it,
+    because the cause is a real person's form submission.
+    """
+    started = []
+    try:
+        rows = list_for_org(org_id)
+    except Exception:
+        return started
+    for automation in rows:
+        if not automation.get("enabled"):
+            continue
+        if (automation.get("trigger_type") or "manual") != "event":
+            continue
+        config = automation.get("trigger_config") or {}
+        wanted = (config.get("event") or "").strip()
+        if wanted and wanted != event:
+            continue
+        try:
+            result = start(automation["id"], org_id, requester_id)
+            started.append({"automation": automation["id"], "run": result.get("run_id"),
+                            "job": result.get("job_id")})
+        except Exception:
+            continue
+    return started
+
+
 def delete(automation_id, org_id):
     from db import get_connection
 

@@ -54,7 +54,16 @@ def create_contact(data, org_id, source=None):
              (data.get("notes") or "")[:4000], now_str(), now_str()),
         )
         row = conn.execute("SELECT * FROM contacts WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return contact_out(row)
+    item = contact_out(row)
+    # The event fires *after* the row exists, and cannot fail the capture: a broken
+    # automation must never lose a lead.
+    try:
+        import automations
+
+        automations.start_for_event(org_id, "contact.created")
+    except Exception:
+        pass
+    return item
 
 
 def list_contacts(org_id, status=None, limit=200):
