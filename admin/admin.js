@@ -3757,10 +3757,18 @@
           box.appendChild(actions);
 
           if (report.reason) box.appendChild(el('p', 'form-error', report.reason));
-          var cert = report.ok && site.ssl_status === 'verified'
-            ? 'Certificate verified over HTTPS.'
-            : 'Certificate: ' + (site.ssl_status || 'pending') +
-              ' - issued after the site answers, so this is not a failure yet.';
+          var probe = d.probe || {};
+          var cert;
+          if (probe.ok) {
+            cert = 'Certificate: ' + (probe.issuer || 'issued') +
+              (probe.expires ? ' · expires ' + probe.expires : '') +
+              ' · HTTPS answered ' + probe.status_code;
+          } else if (probe.error) {
+            cert = 'Certificate: ' + (probe.hint || probe.error);
+          } else {
+            cert = 'Certificate: pending — issued after the site answers, so this is not ' +
+              'a failure yet.';
+          }
           box.appendChild(el('p', 'fine-print', cert));
         }).catch(function (e) {
           box.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';

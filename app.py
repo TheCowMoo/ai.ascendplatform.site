@@ -1992,15 +1992,19 @@ def site_dns_report(site_id):
     if not site:
         return jsonify({"error": "Not found"}), 404
     report = provisioner.dns_report(site["domain"])
+    # One handshake per panel open: it is what tells the tab whether a certificate exists
+    # and until when, and on a site nobody has visited it is also what asks Caddy for one.
+    probe = provisioner.live_probe(site["domain"])
     return jsonify({
         "site": site,
         "report": report,
         "records": provisioner.dns_records(site["domain"], report["expected"]),
         "server_ip": report["expected"],
         "server_ip_source": report["expected_source"],
+        "probe": probe,
         # Only a probe may claim HTTPS works - a finished job has not proven anything.
         "ssl_status": site.get("ssl_status"),
-        "ssl_verified": site.get("ssl_status") == "verified",
+        "ssl_verified": probe["ok"] or site.get("ssl_status") == "verified",
     })
 
 
