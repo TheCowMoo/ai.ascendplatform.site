@@ -58,6 +58,7 @@ services:
       - ./Caddyfile:/app/Caddyfile:ro
       - ./sites:/srv/sites
       - ./sites-conf:/etc/caddy/sites
+      - ./runner-queue:/srv/runner-queue
     command: >
       sh -c "python -m alembic upgrade head &&
              uvicorn asgi:app --host 0.0.0.0 --port 8000 --workers 2"
@@ -101,6 +102,7 @@ services:
       - ./Caddyfile:/app/Caddyfile:ro
       - ./sites:/srv/sites
       - ./sites-conf:/etc/caddy/sites
+      - ./runner-queue:/srv/runner-queue
     command: ["python", "-m", "worker"]
     restart: unless-stopped
 
@@ -119,6 +121,26 @@ services:
       - ./sites:/srv/sites:ro
     depends_on:
       - app
+    restart: unless-stopped
+
+  # Isolated executor for agent-written Python: no network, read-only filesystem, own user,
+  # and hard limits. The app talks to it through a directory, because it cannot reach one.
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    network_mode: none
+    read_only: true
+    user: "10002"
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ./runner-queue:/queue
     restart: unless-stopped
 
   # Optional LiteLLM gateway (stage S4): one OpenAI-compatible endpoint for every

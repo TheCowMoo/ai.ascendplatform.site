@@ -1,0 +1,16 @@
+# The isolated executor for agent-written Python. No network, read-only filesystem, its own
+# unprivileged user: it can compute, and it can touch nothing else.
+FROM python:3.12-slim
+
+RUN useradd --create-home --uid 10002 runner
+
+WORKDIR /app
+COPY runner_loop.py /app/runner_loop.py
+
+# The mailbox is a directory, because the container has no network to talk to a broker.
+RUN mkdir -p /queue/incoming /queue/outgoing && chown -R runner:runner /queue /app
+
+USER runner
+ENV RUNNER_QUEUE=/queue
+
+CMD ["python", "/app/runner_loop.py"]

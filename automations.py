@@ -470,6 +470,44 @@ async def _execute(step, automation, emit, job_id=None, context=None):
                 ok = all(entry[1] for entry in results)
                 detail = "; ".join("%s: %s" % (entry[0], entry[2]) for entry in results)
                 return ("%s %s" % ("recipe" if ok else "recipe failed -", detail))[:400]
+
+            if match and match["kind"] == "python":
+                # Written to a directory the isolated runner watches. This process never
+                # executes the code - that is the whole point of the container.
+                import json as _json
+                import os
+                import time
+
+                import runner_protocol
+
+                values = dict(context or {})
+                values["org_id"] = org_id
+                try:
+                    request = runner_protocol.build_request(match, args, values)
+                except runner_protocol.RunnerError as exc:
+                    return "Not run: %s" % exc
+                queue = os.environ.get("RUNNER_QUEUE_DIR") or "/srv/runner-queue"
+                incoming = os.path.join(queue, "incoming")
+                result_path = os.path.join(queue, "outgoing", "%d.json" % request["tool_id"])
+                os.makedirs(incoming, exist_ok=True)
+                stamp = "%d-%d.json" % (request["tool_id"], int(time.time() * 1000))
+                with open(os.path.join(incoming, stamp), "w", encoding="utf-8") as handle:
+                    _json.dump(request, handle)
+                deadline = time.time() + request["timeout"] + 15
+                while time.time() < deadline:
+                    if os.path.exists(result_path):
+                        try:
+                            with open(result_path, encoding="utf-8") as handle:
+                                payload = _json.load(handle)
+                            os.remove(result_path)
+                        except (OSError, ValueError):
+                            break
+                        result = runner_protocol.parse_result(payload)
+                        runner_protocol.record_result(match["id"], org_id, result)
+                        return runner_protocol.summarize(result)
+                    time.sleep(0.5)
+                return ("Queued for the runner, but nothing came back within %ss."
+                        % request["timeout"])
             return "Unknown tool '%s' - nothing ran." % name
         try:
             reply = await resolved[0].run_json(args, CancellationToken())
