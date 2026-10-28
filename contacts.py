@@ -60,7 +60,8 @@ def create_contact(data, org_id, source=None):
     try:
         import automations
 
-        automations.start_for_event(org_id, "contact.created")
+        automations.start_for_event(org_id, "contact.created",
+                                    context={"contact.id": item["id"]})
     except Exception:
         pass
     return item

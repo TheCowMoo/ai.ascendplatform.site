@@ -317,8 +317,12 @@ def update(automation_id, org_id, **fields):
     return get(automation_id, org_id)
 
 
-def start(automation_id, org_id, requester_id=None):
-    """Queue one run. Returns the run row and the job that will walk the graph."""
+def start(automation_id, org_id, requester_id=None, context=None):
+    """Queue one run. Returns the run row and the job that will walk the graph.
+
+    ``context`` is what triggered the run - {"contact.id": 12} for a captured lead - and
+    travels in the job payload so a step's args can use ``{{contact.id}}``.
+    """
     import jobs
     from db import get_connection
 
@@ -333,7 +337,8 @@ def start(automation_id, org_id, requester_id=None):
         run_id = cur.lastrowid
     job_id = jobs.create_job(
         "Automation: %s" % automation["name"],
-        json.dumps({"automation_id": automation_id, "run_id": run_id}),
+        json.dumps({"automation_id": automation_id, "run_id": run_id,
+                    "context": context or {}}),
         requester_id, "selector", "automation", org_id,
     )
     jobs.submit(job_id)          # mandatory: a created job that is never submitted queues forever
@@ -387,7 +392,25 @@ def resume(automation_id, org_id, requester_id=None):
     return {"run_id": run_id, "job_id": job_id}
 
 
-async def _execute(step, automation, emit, job_id=None):
+def _fill_args(args, context):
+    """Substitute {{contact.id}}-style keys in a step's args from the triggering event.
+
+    Substitution happens on the JSON text rather than on the parsed values, so a whole arg
+    can be a placeholder ({"contact_id": "{{contact.id}}"}) without caring whether the
+    value is a string or a number.
+    """
+    if not context or not args:
+        return args
+    text = json.dumps(args)
+    for key, value in (context or {}).items():
+        text = text.replace("{{%s}}" % key, str(value))
+    try:
+        return json.loads(text)
+    except ValueError:
+        return args
+
+
+async def _execute(step, automation, emit, job_id=None, context=None):
     """Do one node's work and return a short human note for the transcript.
 
     Agent nodes dispatch a job and move on: the automation orchestrates, it does not sit
@@ -418,7 +441,7 @@ async def _execute(step, automation, emit, job_id=None):
         name = (config.get("tool") or "").strip()
         if not name:
             return "This step names no tool, so nothing ran."
-        args = config.get("args") or {}
+        args = _fill_args(config.get('args') or {}, context)
         if not isinstance(args, dict):
             return "This step's args must be an object."
         import tools as tool_registry
@@ -501,7 +524,7 @@ async def run_task(job, emit):
         step = steps[node_id]
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "running"}))
-        note = await _execute(step, automation, emit, job.get("id"))
+        note = await _execute(step, automation, emit, job.get("id"), payload.get("context"))
         emit("node", "Automation", json.dumps(
             {"node": node_id, "type": step.get("type"), "status": "done", "note": note}))
         emit("message", "Automation", "%s — %s" % (step.get("title") or node_id, note))
@@ -611,7 +634,7 @@ def discard_proposal(proposal_id, org_id):
         return cur.rowcount > 0
 
 
-def start_for_event(org_id, event, requester_id=None):
+def start_for_event(org_id, event, requester_id=None, context=None):
     """Start every enabled automation whose trigger is this event.
 
     This is the wire between "somebody signed up" and "the sequence begins". Failures are
@@ -633,7 +656,7 @@ def start_for_event(org_id, event, requester_id=None):
         if wanted and wanted != event:
             continue
         try:
-            result = start(automation["id"], org_id, requester_id)
+            result = start(automation["id"], org_id, requester_id, context)
             started.append({"automation": automation["id"], "run": result.get("run_id"),
                             "job": result.get("job_id")})
         except Exception:
