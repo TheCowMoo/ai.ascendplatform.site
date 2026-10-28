@@ -3790,7 +3790,8 @@
       { id: 'draft', type: 'agent', title: 'Draft the work',
         config: { prompt: 'Write a short launch email for this client.' }, next: ['approve'] },
       { id: 'approve', type: 'gate', title: 'Approve before anything leaves', next: ['report'] },
-      { id: 'report', type: 'notify', title: 'Report back to the client', next: [] }
+      { id: 'report', type: 'notify', title: 'Report back to the client', next: ['end'] },
+      { id: 'end', type: 'stop', title: 'Done', next: [] }
     ];
 
     function card(a) {

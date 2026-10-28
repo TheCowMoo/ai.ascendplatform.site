@@ -128,9 +128,6 @@ def validate_graph(steps, trigger_type="manual"):
         elif kind in ("stop",):
             if edges:
                 problems.append("Step '%s' is a stop, so it cannot link onward." % node_id)
-        elif not edges:
-            problems.append("Step '%s' leads nowhere - add a next step or make it a stop."
-                            % node_id)
         elif kind == "condition":
             # First link = when true, second = when false. One link is a one-sided branch.
             if len(edges) > 2:

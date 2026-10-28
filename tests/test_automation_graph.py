@@ -206,6 +206,42 @@ def test_resuming_with_nothing_parked_is_refused():
     print("resume refused when nothing is parked")
 
 
+def test_a_step_with_no_next_link_simply_ends_the_run():
+    """Requiring an explicit stop was ceremony: walk() already ends on an empty link set,
+    and the built-in starter template failed its own rules because of it."""
+    steps = [{"id": "a", "type": "agent", "title": "A", "next": ["b"]},
+             {"id": "b", "type": "notify", "title": "B", "next": []}]
+    assert automations.validate_graph(steps) == [], automations.validate_graph(steps)
+    assert automations.walk(steps) == ["a", "b"]
+    print("a terminal step needs no stop node")
+
+
+def test_the_built_in_starter_graph_is_valid():
+    """The template in the builder has to pass the validator it is demonstrating."""
+    starter = [
+        {"id": "draft", "type": "agent", "title": "Draft the work",
+         "config": {"prompt": "Write a short launch email for this client."}, "next": ["approve"]},
+        {"id": "approve", "type": "gate", "title": "Approve before anything leaves",
+         "next": ["report"]},
+        {"id": "report", "type": "notify", "title": "Report back to the client", "next": ["end"]},
+        {"id": "end", "type": "stop", "title": "Done", "next": []},
+    ]
+    assert automations.validate_graph(starter) == [], automations.validate_graph(starter)
+    print("the starter graph saves")
+
+
+def test_loops_and_unreachable_steps_are_still_refused():
+    """Relaxing terminal links must not relax the checks that matter."""
+    loop = [{"id": "a", "type": "agent", "title": "A", "next": ["b"]},
+            {"id": "b", "type": "notify", "title": "B", "next": ["a"]}]
+    assert any("loop" in p for p in automations.validate_graph(loop))
+
+    stranded = [{"id": "a", "type": "agent", "title": "A", "next": []},
+                {"id": "b", "type": "notify", "title": "B", "next": []}]
+    assert any("Unreachable" in p for p in automations.validate_graph(stranded))
+    print("loops and stranded steps are still errors")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
