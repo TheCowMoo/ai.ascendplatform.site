@@ -12,7 +12,7 @@ validator refuses it. That is the whole safety story, in one function.
 import json
 from datetime import datetime, timezone
 
-NODE_TYPES = ("agent", "tool", "condition", "gate", "notify", "stop")
+NODE_TYPES = ("agent", "tool", "condition", "gate", "notify", "stop", "delay")
 TRIGGER_TYPES = ("manual", "schedule", "event")
 OUTWARD_TOOLS = ("send_email", "publish_site", "provision_site")
 MAX_NODES = 12
@@ -128,6 +128,23 @@ def validate_graph(steps, trigger_type="manual"):
         elif kind in ("stop",):
             if edges:
                 problems.append("Step '%s' is a stop, so it cannot link onward." % node_id)
+        elif kind == "delay":
+            # Pacing for a drip sequence: "one email a day" needs a node that parks the
+            # run, not a worker that sleeps. Duration is validated here so a graph cannot
+            # park for a year by accident.
+            minutes = 0
+            config = step.get("config") or {}
+            if isinstance(config, dict):
+                for unit, factor in (("minutes", 1), ("hours", 60), ("days", 1440)):
+                    try:
+                        minutes += max(0, int(config.get(unit) or 0)) * factor
+                    except (TypeError, ValueError):
+                        problems.append("Step '%s' has a non-numeric %s." % (node_id, unit))
+            if minutes <= 0:
+                problems.append("Step '%s' waits for nothing - set days, hours or minutes."
+                                % node_id)
+            elif minutes > 43200:
+                problems.append("Step '%s' waits longer than 30 days." % node_id)
         elif kind == "condition":
             # First link = when true, second = when false. One link is a one-sided branch.
             if len(edges) > 2:
@@ -514,7 +531,22 @@ async def _execute(step, automation, emit, job_id=None, context=None):
         except Exception as exc:
             return "Tool '%s' failed: %s" % (name, str(exc)[:200])
         return str(reply)[:400]
-    return "Gate." if kind == "gate" else "Nothing to do."
+    if kind == "delay":
+        config = step.get("config") or {}
+        label = []
+        for unit in ("days", "hours", "minutes"):
+            try:
+                value = int((config or {}).get(unit) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value:
+                label.append("%d %s" % (value, unit))
+        # Validation accepts the node; parking it is the next commit. Say what it is rather
+        # than pretending the wait happened.
+        return "Waits %s (pacing is validated but not yet scheduled)." % (
+            ", ".join(label) or "for no time")
+    if kind == "gate":
+        return "Gate."
 
 
 def _chain(steps, org_id=None):
