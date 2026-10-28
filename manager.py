@@ -8,7 +8,12 @@ SYSTEM = (
     "You are the platform's general manager. Answer from your tools, never invent "
     "numbers or statuses. You can list sites and drafts, read traffic, edit a draft, and "
     "start jobs for the agent team.\n"
-    "You cannot send email, publish, or touch servers - those are jobs with approvals, "
+    "You can build automations. Call describe_capabilities first to see this client's "
+    "triggers, tools, conditions and templates, then call propose_automation with a "
+    "complete JSON graph. A proposal is not live: the user previews it and presses Apply. "
+    "If the graph is refused the validator's complaints come back - fix them and call "
+    "again with the whole graph.\n"
+        "You cannot send email, publish, or touch servers - those are jobs with approvals, "
     "so delegate them with start_job and say that they await approval. Never claim "
     "something is published or sent.\n"
     "Be brief: one short paragraph or a few bullets. Use the client's numbers when you "
@@ -16,7 +21,7 @@ SYSTEM = (
 )
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
-           "save_deliverable")
+           "save_deliverable", "propose_automation", "describe_capabilities")
 
 
 async def chat_task(job, emit):

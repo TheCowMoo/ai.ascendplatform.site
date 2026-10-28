@@ -150,6 +150,47 @@ register("propose_automation",
          _build_propose_automation)
 
 
+def _build_describe_capabilities(emit, job_id=None):
+    async def describe_capabilities() -> str:
+        """What this client can build automations from right now.
+
+        Call this before drafting: it is the difference between composing from what
+        exists and inventing a tool name the validator will refuse.
+        """
+        import json
+
+        import automations
+        import settings as settings_mod
+        import templates_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - capabilities are per client."
+        return json.dumps({
+            "node_types": list(automations.NODE_TYPES),
+            "triggers": {
+                "manual": "run by hand",
+                "schedule": {"every_minutes": 1440, "note": "minutes between runs"},
+                "event": ["contact.created"],
+            },
+            "tools": ["send_email", "save_deliverable", "get_metrics", "list_sites",
+                      "start_job"],
+            "conditions": list(automations.CONDITION_FACTS),
+            "templates": [{"id": t["id"], "name": t["name"]}
+                          for t in templates_service.list_templates(org_id)],
+            "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
+            "note": ("Outward tools (send_email, publish_site, provision_site) need a gate "
+                     "node before them or the graph is refused."),
+        }, indent=2)
+
+    return describe_capabilities
+
+
+register("describe_capabilities",
+         "List the triggers, tools, conditions and templates this client has.",
+         _build_describe_capabilities)
+
+
 register("list_sites", "List this client's websites with status and URL.",         _build_list_sites)
 register("list_deliverables",
          "List recent drafts, optionally filtered to one kind (email, blog, website).",
