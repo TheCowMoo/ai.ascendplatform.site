@@ -3783,6 +3783,57 @@
     var add = el('button', 'btn btn-primary', 'New automation');
     head.appendChild(add);
     container.appendChild(head);
+
+    // Drafts for automations that do not exist yet. The first thing an agent produces is
+    // a brand new one, and until this strip there was nowhere to accept it.
+    var draftsHost = el('div');
+    container.appendChild(draftsHost);
+
+    function loadDrafts() {
+      api('GET', '/api/automations/proposals?status=pending').then(function (d) {
+        draftsHost.innerHTML = '';
+        var fresh = (d.proposals || []).filter(function (p) { return !p.automation_id; });
+        if (!fresh.length) return;
+        var card = el('div', 'panel-card mt');
+        card.appendChild(el('h3', 'card-title', 'Drafts from the team (' + fresh.length + ')'));
+        fresh.forEach(function (draft) {
+          var row = el('div', 'auto-proposal');
+          var label = el('div');
+          label.innerHTML = '<strong>' + esc(draft.name || 'Untitled') + '</strong>' +
+            '<div class="fine-print">' + (draft.steps || []).length + ' steps · ' +
+            esc((draft.steps || []).map(function (s) { return s.title || s.id; }).join(' → ')) +
+            '</div>';
+          row.appendChild(label);
+
+          var apply = el('button', 'btn btn-primary btn-sm', 'Apply');
+          apply.onclick = function () {
+            apply.disabled = true;
+            api('POST', '/api/automations/proposals/' + draft.id + '/apply').then(function (res) {
+              toast('Saved as “' + ((res.automation || {}).name || draft.name) + '”', true);
+              loadDrafts();
+              refresh();
+            }).catch(function (e) {
+              apply.disabled = false;
+              toast(e.message, false);
+            });
+          };
+
+          var drop = el('button', 'btn btn-ghost btn-sm', 'Discard');
+          drop.onclick = function () {
+            api('POST', '/api/automations/proposals/' + draft.id + '/discard').then(function () {
+              toast('Draft discarded', true);
+              loadDrafts();
+            }).catch(function (e) { toast(e.message, false); });
+          };
+
+          row.appendChild(apply);
+          row.appendChild(drop);
+          card.appendChild(row);
+        });
+        draftsHost.appendChild(card);
+      }).catch(function () { /* no drafts is not an error */ });
+    }
+
     var body = el('div');
     container.appendChild(body);
 
@@ -4090,6 +4141,7 @@
 
     add.onclick = function () { openEditor(null); };
     refresh();
+    loadDrafts();
     return container;
   }
 
