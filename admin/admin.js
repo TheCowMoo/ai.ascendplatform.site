@@ -3985,6 +3985,45 @@
     head.appendChild(add);
     container.appendChild(head);
 
+    // Ask in words, on this page: the draft it produces lands in the strip below, so the
+    // question and the answer share a screen instead of living in the floating widget.
+    var composer = el('div', 'panel-card mt');
+    composer.innerHTML = '<h3 class="card-title">Describe an automation</h3>' +
+      '<p class="fine-print">e.g. “when a contact signs up, tag them and send the welcome ' +
+      'email, after I approve it”. The team drafts it — you preview and apply.</p>';
+    var askBox = el('textarea', 'prompt-box');
+    askBox.placeholder = 'Build me an automation that…';
+    composer.appendChild(askBox);
+    var askBtn = el('button', 'btn btn-primary', 'Draft it');
+    askBtn.onclick = function () {
+      var text = (askBox.value || '').trim();
+      if (!text) {
+        toast('Say what it should do first', false);
+        return;
+      }
+      askBtn.disabled = true;
+      api('POST', '/api/manager/chat', { message: text, history: [], automation_id: 0 })
+        .then(function () {
+          toast('The team is drafting — the draft will appear below', true);
+          askBox.value = '';
+          var tries = 0;
+          var timer = setInterval(function () {
+            tries += 1;
+            loadDrafts();
+            if (tries >= 20) {
+              clearInterval(timer);
+              askBtn.disabled = false;
+            }
+          }, 3000);
+        })
+        .catch(function (e) {
+          askBtn.disabled = false;
+          toast(e.message, false);
+        });
+    };
+    composer.appendChild(askBtn);
+    container.appendChild(composer);
+
     // Drafts for automations that do not exist yet. The first thing an agent produces is
     // a brand new one, and until this strip there was nowhere to accept it.
     var draftsHost = el('div');
