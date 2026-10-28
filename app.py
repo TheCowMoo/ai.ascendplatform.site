@@ -2383,6 +2383,122 @@ def contacts_lead_token():
     return jsonify({"token": token, "url": url, "snippet": snippet})
 
 
+# ---------- Hosted forms: a page a visitor can actually open ----------
+# The visitor-facing side of forms/surveys/quizzes. Two rules shape these routes:
+# nothing about scoring is sent to the browser, and the browser never decides what comes
+# next - /step runs the same engine the submit route does, so branching has one
+# implementation and cannot be rewritten in devtools before submitting.
+
+def _client_ip():
+    return ((request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            or request.remote_addr or "?")
+
+
+def _ip_hash(ip):
+    """A stable fingerprint for abuse control, not a record of who visited."""
+    import hashlib
+
+    return hashlib.sha256((str(ip) + str(app.secret_key or "")).encode()).hexdigest()[:32]
+
+
+def _form_for(slug, preview=False):
+    """The form behind a public URL, or None.
+
+    A published form is public. A draft is reachable only through ``preview=1`` by somebody
+    logged in whose session tenant owns it - the tenant comes from the session, never from
+    the query string.
+    """
+    import forms as forms_service
+
+    if not preview:
+        return forms_service.get_by_slug(slug, published_only=True)
+    if not session.get("user_id"):
+        return None
+    org = current_org()
+    if org is None:
+        return None
+    return forms_service.get_by_slug(slug, published_only=False, org_id=org)
+
+
+def _wants_preview():
+    return request.args.get("preview") in ("1", "true", "yes")
+
+
+@app.route("/f/<slug>", methods=["GET"])
+def public_form_page(slug):
+    """The page a client links to or embeds. No login: a form nobody can open is not a form."""
+    import forms_page
+
+    preview = _wants_preview()
+    form = _form_for(slug, preview=preview)
+    if not form:
+        return ("This form is not available.", 404,
+                {"Content-Type": "text/plain; charset=utf-8"})
+    suffix = "?preview=1" if preview else ""
+    body = forms_page.page(
+        form, forms_page.payload_for(form, {}),
+        "/api/public/forms/%s/step%s" % (slug, suffix),
+        "/api/public/forms/%s%s" % (slug, suffix))
+    response = app.make_response(body)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    # The page is self-contained: no CDN, no fonts, nothing to leak a visitor's IP onward.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "connect-src 'self'; form-action 'self'; img-src 'self' data:; base-uri 'none'")
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.route("/api/public/forms/<slug>/step", methods=["POST"])
+def public_form_step(slug):
+    """The next group of questions, decided by the server.
+
+    Answers travel back and forth but nothing is written here: a form is only a submission
+    when it is submitted, so an abandoned visit leaves no half-row behind.
+    """
+    import forms_page
+
+    form = _form_for(slug, preview=_wants_preview())
+    if not form:
+        return jsonify({"error": "Unknown form"}), 404
+    data = request.get_json(silent=True) or {}
+    answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
+    payload = forms_page.payload_for(form, answers)
+    payload["ok"] = True
+    return jsonify(payload)
+
+
+@app.route("/api/public/forms/<slug>", methods=["POST"])
+def public_form_submit(slug):
+    """Validate, score and store one submission."""
+    import forms as forms_service
+    import forms_page
+
+    preview = _wants_preview()
+    form = _form_for(slug, preview=preview)
+    if not form:
+        return jsonify({"error": "Unknown form"}), 404
+    data = request.get_json(silent=True) or request.form or {}
+    if str(data.get("company") or "").strip():
+        # The honeypot. Answer as though it worked: a bot that learns this form rejects it
+        # goes and tries another one, and there is nothing here for it to learn from.
+        return jsonify({"ok": True, "message": "Thanks - we have your answer."}), 202
+    ip = _client_ip()
+    if not preview and not _lead_rate_ok(ip):
+        return jsonify({"error": "Too many submissions - try again in a minute"}), 429
+    answers = data.get("answers") if isinstance(data.get("answers"), dict) else data
+    try:
+        result = forms_service.submit(form, answers, ip_hash=_ip_hash(ip),
+                                      create_contact=not preview, store=not preview)
+    except forms_service.FormServiceError as exc:
+        return jsonify({"error": str(exc)}), 400
+    said = forms_page.summary(form, result)
+    return jsonify({"ok": True, "message": said["message"], "label": said["label"],
+                    "score": result["score"], "preview": preview}), 201
+
+
+
 @app.route("/api/agent-tools", methods=["GET"])
 @login_required
 def list_agent_tools():

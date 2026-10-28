@@ -72,12 +72,22 @@ def get_form(form_id, org_id):
     return form_out(row)
 
 
-def get_by_slug(slug, published_only=True):
+def get_by_slug(slug, published_only=True, org_id=None):
+    """The form behind a public URL.
+
+    ``org_id`` exists for the editor's preview, which must reach a draft that the public
+    endpoint would refuse - so it is passed only by a caller that already knows the tenant
+    from the session, never from request input.
+    """
     query = "SELECT * FROM forms WHERE slug = ?"
+    params = [slug]
     if published_only:
         query += " AND status = 'published'"
+    if org_id is not None:
+        query += " AND org_id = ?"
+        params.append(org_id)
     with get_connection() as conn:
-        row = conn.execute(query, (slug,)).fetchone()
+        row = conn.execute(query, tuple(params)).fetchone()
     return form_out(row)
 
 
@@ -205,8 +215,13 @@ def _contact_from(form, answers, org_id):
         return None      # a broken CRM must never lose the answer itself
 
 
-def submit(form, answers, ip_hash=None, create_contact=True):
-    """Validate, score, store - and only then tell the automations."""
+def submit(form, answers, ip_hash=None, create_contact=True, store=True):
+    """Validate, score, store - and only then tell the automations.
+
+    ``store=False`` is the editor's preview: the visitor's run is scored exactly as a real
+    one would be, and nothing is written - so testing a quiz does not leave fake answers in
+    the client's reports.
+    """
     answers = answers if isinstance(answers, dict) else {}
     problems = forms_engine.validate_answers(form, answers)
     if problems:
@@ -215,26 +230,29 @@ def submit(form, answers, ip_hash=None, create_contact=True):
     bucket = forms_engine.outcome(form, result)
     org_id = form["org_id"]
     wants_contact = (form.get("settings") or {}).get("create_contact", True)
+    response_id = None
     contact_id = None
-    if create_contact and wants_contact:
+    if store and create_contact and wants_contact:
         contact_id = _contact_from(form, answers, org_id)
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO form_responses (org_id, form_id, contact_id, answers, score, "
-            "max_score, outcome, ip_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (org_id, form["id"], contact_id, json.dumps(answers), result["score"],
-             result["max_score"], (bucket or {}).get("label", ""), ip_hash or "", now_str()))
-        response_id = cur.lastrowid
-    try:
-        import automations
-        automations.start_for_event(org_id, "form.submitted", context={
-            "form.id": form["id"],
-            "contact.id": contact_id,
-            "form.score": result["score"],
-            "form.percent": result["percent"],
-        })
-    except Exception:
-        pass
+    if store:
+        with get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO form_responses (org_id, form_id, contact_id, answers, score, "
+                "max_score, outcome, ip_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (org_id, form["id"], contact_id, json.dumps(answers), result["score"],
+                 result["max_score"], (bucket or {}).get("label", ""), ip_hash or "",
+                 now_str()))
+            response_id = cur.lastrowid
+        try:
+            import automations
+            automations.start_for_event(org_id, "form.submitted", context={
+                "form.id": form["id"],
+                "contact.id": contact_id,
+                "form.score": result["score"],
+                "form.percent": result["percent"],
+            })
+        except Exception:
+            pass
     return {"response_id": response_id, "contact_id": contact_id,
             "score": result, "outcome": bucket}
 

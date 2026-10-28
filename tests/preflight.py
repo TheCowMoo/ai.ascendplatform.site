@@ -25,6 +25,7 @@ FAST_SUITES = (
     "test_markup_calls",
     "test_graph_canvas",
     "test_form_logic",
+    "smoke_forms",
     "smoke_automations",
     "smoke_analytics",
     "smoke_deliverables",

@@ -220,9 +220,21 @@ def outcome(form, result):
 
 
 def validate_answers(form, answers):
-    """Everything wrong with a set of answers, as sentences. An empty list means fine."""
+    """Everything wrong with a set of answers, as sentences. An empty list means fine.
+
+    Only the questions the visitor actually *reached* count: everything up to the first
+    unanswered **required** question. Without that cut, picking "Sea" makes the never-seen
+    "Mountains" branch required too, and a visitor is told off for a question they were
+    never shown. Optional questions never cut the list - the visitor would have seen them.
+    """
     problems = []
-    for question in visible_questions(form, answers):
+    shown = visible_questions(form, answers)
+    cut = len(shown)
+    for index, question in enumerate(shown):
+        if question.get("required") and not normalise((answers or {}).get(question["id"])):
+            cut = index + 1
+            break
+    for question in shown[:cut]:
         value = (answers or {}).get(question["id"])
         value = value if value is not None else ""
         label = str(question.get("label") or question.get("id") or "A question").strip()
