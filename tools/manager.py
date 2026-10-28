@@ -203,6 +203,15 @@ def _build_describe_capabilities(emit, job_id=None):
             "conditions": list(automations.CONDITION_FACTS),
             "delays": {"config": "days, hours or minutes", "max_days": 30,
                        "note": "a delay parks the run and wakes it; use it for drip pacing"},
+            "can_create": {
+                "template": "create_template(name, subject, body) - do this instead of "
+                            "telling the user to make one",
+                "contact": "create_contact(name, email, phone, notes)",
+                "tag": "tag_contact(contact_id, tags) inside a graph",
+                "draft": "save_deliverable(kind, title, content)",
+                "automation": "propose_automation(name, steps) - a draft the user applies",
+                "never": ["SMTP settings", "API keys", "the domain a site lives on"],
+            },
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
