@@ -4058,6 +4058,35 @@
             });
           };
 
+          // The chart, before you commit to it: the same renderer the editor uses, so a
+          // draft looks exactly like the automation it will become.
+          var preview = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          preview.onclick = function () {
+            var modal = el('div', 'auto-modal');
+            var panel = el('div', 'auto-panel');
+            var top = el('div', 'auto-panel-head');
+            top.appendChild(el('h3', 'card-title', draft.name || 'Draft'));
+            var close = el('button', 'btn', 'Close');
+            close.onclick = function () { modal.parentNode.removeChild(modal); };
+            top.appendChild(close);
+            panel.appendChild(top);
+            panel.appendChild(el('p', 'fine-print', 'A draft — nothing is saved until you ' +
+              'press Apply.'));
+            var graph = el('div', 'auto-graph');
+            var layout = {};
+            (draft.steps || []).forEach(function (step, index) {
+              layout[step.id] = { x: 20, y: 20 + index * 84 };
+            });
+            graph.innerHTML = graphSvg(draft.steps || [], layout, {});
+            panel.appendChild(graph);
+            panel.appendChild(el('p', 'fine-print', (draft.steps || []).map(function (step) {
+              return (step.title || step.id) + ' (' + step.type + ')';
+            }).join(' → ')));
+            modal.appendChild(panel);
+            document.body.appendChild(modal);
+          };
+          row.appendChild(preview);
+
           var drop = el('button', 'btn btn-ghost btn-sm', 'Discard');
           drop.onclick = function () {
             api('POST', '/api/automations/proposals/' + draft.id + '/discard').then(function () {
