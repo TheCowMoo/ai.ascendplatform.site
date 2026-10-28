@@ -173,8 +173,8 @@ def _build_describe_capabilities(emit, job_id=None):
                 "schedule": {"every_minutes": 1440, "note": "minutes between runs"},
                 "event": ["contact.created"],
             },
-            "tools": ["send_email", "save_deliverable", "get_metrics", "list_sites",
-                      "start_job"],
+            "tools": ["send_email", "tag_contact", "save_deliverable", "get_metrics",
+                      "list_sites", "start_job"],
             "conditions": list(automations.CONDITION_FACTS),
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
@@ -184,6 +184,42 @@ def _build_describe_capabilities(emit, job_id=None):
         }, indent=2)
 
     return describe_capabilities
+
+
+def _build_tag_contact(emit, job_id=None):
+    async def tag_contact(contact_id: str = "", tags: str = "") -> str:
+        """Add tags to a contact. Internal, so no approval gate is needed.
+
+        Used as a step inside an automation: ``{"contact_id": "{{contact.id}}",
+        "tags": "welcome-sequence"}`` tags whoever triggered the run.
+        """
+        import contacts as contacts_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "This job has no client, so there is no contact to tag."
+        try:
+            wanted = [part.strip() for part in str(tags or "").split(",") if part.strip()]
+        except Exception:
+            wanted = []
+        if not wanted:
+            return "No tags given, so nothing changed."
+        try:
+            cid = int(str(contact_id).strip())
+        except (TypeError, ValueError):
+            return "contact_id must be a number; got %r." % contact_id
+        contact = contacts_service.get_contact(cid, org_id)
+        if not contact:
+            return "No contact %s for this client." % cid
+        merged = list(dict.fromkeys((contact.get("tags") or []) + wanted))
+        contacts_service.update_contact(cid, org_id, {"tags": merged})
+        return "Tagged contact %s: %s" % (cid, ", ".join(merged))
+
+    return tag_contact
+
+
+register("tag_contact", "Add tags to a contact, e.g. tags=\"welcome, sequence\".",
+         _build_tag_contact)
 
 
 register("describe_capabilities",
