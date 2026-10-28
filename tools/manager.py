@@ -272,6 +272,40 @@ def _build_propose_tool(emit, job_id=None):
     return propose_tool
 
 
+def _build_ask_user(emit, job_id=None):
+    async def ask_user(questions: str) -> str:
+        """Ask for the details that would change what you build.
+
+        Pass a JSON list of at most three short questions. Nothing is built until the user
+        answers, and their answers arrive in the next turn.
+        """
+        import json
+
+        try:
+            parsed = json.loads(questions) if isinstance(questions, str) else questions
+        except ValueError:
+            parsed = [questions]
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        cleaned = [str(question).strip() for question in (parsed or [])
+                   if str(question).strip()][:3]
+        if not cleaned:
+            return "No questions given, so nothing was asked."
+        if emit:
+            # Type "question" so the console can show these as a card rather than as text
+            # that scrolls past in the transcript.
+            emit("Manager", "question", json.dumps(cleaned))
+        return ("Asked the user %d question(s). Wait for their answers in the next turn "
+                "before starting any work." % len(cleaned))
+
+    return ask_user
+
+
+register("ask_user",
+         "Ask up to three questions when the brief is missing something that matters.",
+         _build_ask_user)
+
+
 register("propose_tool",
          "Propose a new tool for this client (recorded, not executed until approved).",
          _build_propose_tool)

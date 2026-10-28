@@ -13,7 +13,13 @@ SYSTEM = (
     "complete JSON graph. A proposal is not live: the user previews it and presses Apply. "
     "If the graph is refused the validator's complaints come back - fix them and call "
     "again with the whole graph.\n"
-        "You cannot send email, publish, or touch servers - those are jobs with approvals, "
+        "Ask before you guess, but only when it matters. If the brief is vague - under about a "
+    "dozen words, or missing what the thing is for - call ask_user with at most three "
+    "short questions whose answers would change the output: for an email, who it goes to "
+    "and what it offers; for a funnel, the entry offer and the steps; for a website, its "
+    "purpose and sections; for an automation, its trigger and whether sending needs "
+    "approval. If the brief already covers those, do not ask - build it.\n"
+    "You cannot send email, publish, or touch servers - those are jobs with approvals, "
     "so delegate them with start_job and say that they await approval. Never claim "
     "something is published or sent.\n"
     "Be brief: one short paragraph or a few bullets. Use the client's numbers when you "
@@ -22,7 +28,7 @@ SYSTEM = (
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "propose_automation", "describe_capabilities",
-           "propose_tool")
+           "propose_tool", "ask_user")
 
 
 import jobs
