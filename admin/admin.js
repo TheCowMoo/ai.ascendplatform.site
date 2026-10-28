@@ -29,6 +29,7 @@
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
         { id: 'domains', label: 'Domains', icon: 'server', hash: '#/app/domains' },
+        { id: 'contacts', label: 'Contacts', icon: 'user', hash: '#/app/contacts' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
         { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
@@ -3609,6 +3610,85 @@
     return container;
   }
 
+  // ---------- Contacts: the mini CRM ----------
+  // Deliberately no GoHighLevel anywhere on this screen: a client without one gets the
+  // same product, and the form endpoint is the thing most people come here for.
+  function viewContacts() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Contacts</h2><p class="muted">Leads captured by a form, ' +
+      'the widget, a webhook or by hand.</p></div>';
+    var add = el('button', 'btn btn-primary', '+ New contact');
+    head.appendChild(add);
+    container.appendChild(head);
+
+    var capture = el('div', 'panel-card');
+    container.appendChild(capture);
+    api('GET', '/api/contacts/lead-token').then(function (d) {
+      capture.innerHTML = '<h3 class="card-title">Form endpoint</h3>' +
+        '<p class="fine-print">POST JSON here and the contact appears below. Safe to paste ' +
+        'into a page: it can add a contact and read nothing.</p>';
+      capture.appendChild(el('code', null, d.url));
+      var copy = el('button', 'btn btn-ghost btn-sm', 'Copy URL');
+      copy.onclick = function () {
+        navigator.clipboard.writeText(d.url).then(function () {
+          copy.textContent = 'Copied';
+          setTimeout(function () { copy.textContent = 'Copy URL'; }, 1200);
+        }).catch(function () { toast('Copy failed', false); });
+      };
+      capture.appendChild(copy);
+    }).catch(function () { capture.style.display = 'none'; });
+
+    var body = el('div', 'mt');
+    container.appendChild(body);
+
+    function refresh() {
+      api('GET', '/api/contacts').then(function (d) {
+        body.innerHTML = '';
+        var rows = d.contacts || [];
+        if (!rows.length) {
+          body.innerHTML = '<div class="empty-state"><strong>No contacts yet</strong>' +
+            '<p>Post a form to the endpoint above, or add one by hand.</p></div>';
+          return;
+        }
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Source</th>' +
+          '<th>Status</th><th>Added</th></tr></thead>';
+        var tbody = el('tbody');
+        rows.forEach(function (row) {
+          var tr = el('tr');
+          tr.innerHTML = '<td>' + esc(row.name || '—') + '</td>' +
+            '<td class="muted">' + esc(row.email || '—') + '</td>' +
+            '<td><span class="badge">' + esc(row.source) + '</span></td>' +
+            '<td><span class="badge">' + esc(row.status) + '</span></td>' +
+            '<td class="muted">' + esc(String(row.created_at || '').slice(0, 16)) + '</td>';
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+    }
+
+    add.onclick = function () {
+      formModal('New contact', [
+        { name: 'name', label: 'Name' },
+        { name: 'email', label: 'Email' },
+        { name: 'phone', label: 'Phone (optional)' }
+      ], function (data, fail, ok) {
+        api('POST', '/api/contacts', data).then(function () {
+          ok();
+          toast('Contact added', true);
+          refresh();
+        }).catch(function (e) { fail(e.message); });
+      });
+    };
+
+    refresh();
+    return container;
+  }
+
   // ---------- Domains: point it here, prove it, then go live ----------
   // The old DNS modal listed two records and a single yes/no. This shows every record
   // judged separately, what DNS actually answers, and whether a certificate exists -
@@ -4447,6 +4527,7 @@
     else if (tab === 'bots') view = viewBots();
     else if (tab === 'conversations') view = viewConversationsIndex();
     else if (tab === 'domains') view = viewDomains(rest[0]);
+    else if (tab === 'contacts') view = viewContacts();
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();
