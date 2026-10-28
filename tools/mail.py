@@ -64,9 +64,31 @@ def parse_recipients(to):
 
 
 def _build_send_email(emit, job_id=None):
-    async def send_email(to: str, subject: str, body: str) -> str:
-        """Send a plain-text email to one or more recipients."""
+    async def send_email(to: str = "", subject: str = "", body: str = "",
+                        template_id: int = 0, contact_id: int = 0) -> str:
+        """Send a plain-text email, optionally rendered from a saved template.
+
+        A sequence points at a template and a contact rather than carrying the wording:
+        ``template_id`` + ``contact_id`` fills in {{contact.email}}-style placeholders, and
+        ``to`` defaults to the contact's address when it is left empty.
+        """
         org = org_of(job_id)
+        if template_id:
+            import contacts as contacts_service
+            import templates_service
+
+            template = templates_service.get_template(int(template_id), org or 0) if org else None
+            if not template:
+                return "No template %s for this client." % template_id
+            contact = (contacts_service.get_contact(int(contact_id), org)
+                       if (org and contact_id) else None)
+            if contact_id and not contact:
+                return ("No contact %s for this client, so the template has no values to "
+                        "fill in." % contact_id)
+            subject = subject.strip() or templates_service.render(template["subject"], contact)
+            body = body.strip() or templates_service.render(template["body"], contact)
+            if not (to or "").strip() and contact:
+                to = contact["email"]
         recipients = parse_recipients(to)
         if not recipients:
             return "No recipient given."
