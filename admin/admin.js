@@ -4737,6 +4737,55 @@
                 : 'No answer - open job #' + d.job_id + ' to see why.';
               line(answer, 'mgr-msg');
               history.push({ role: 'assistant', content: answer });
+              // Questions arrive as their own event, so they get a card with inputs rather
+              // than being folded into the answer text where they scroll away.
+              var asked = (r.events || []).filter(function (ev) {
+                return ev.source === 'Manager' && ev.type === 'question';
+              }).pop();
+              if (asked) {
+                var questions = [];
+                try { questions = JSON.parse(asked.content || '[]'); } catch (e) { questions = []; }
+                if (questions.length) {
+                  var card = el('div', 'mgr-questions');
+                  card.appendChild(el('div', 'mgr-q-title', 'The team needs a little more'));
+                  var inputs = questions.map(function (question) {
+                    var field = el('div', 'mgr-q');
+                    field.appendChild(el('label', 'mgr-q-label', String(question)));
+                    var input = el('input', 'mgr-q-input');
+                    field.appendChild(input);
+                    card.appendChild(field);
+                    return input;
+                  });
+                  var reply = el('button', 'btn btn-primary btn-sm', 'Send answers');
+                  reply.onclick = function () {
+                    var parts = inputs.map(function (input, index) {
+                      var text = (input.value || '').trim();
+                      return text ? questions[index] + ' ' + text : '';
+                    }).filter(function (part) { return part; });
+                    if (!parts.length) {
+                      toast('Answer at least one question', false);
+                      return;
+                    }
+                    reply.disabled = true;
+                    line(parts.join(' '), 'mgr-msg me');
+                    history.push({ role: 'user', content: parts.join(' ') });
+                    card.parentNode.removeChild(card);
+                    // The send handler reads the widget's own box, so the answers go there
+                    // and a normal turn carries them - no second code path to keep in step.
+                    var host = log.closest ? log.closest('.mgr, .manager, .chat, .widget') : null;
+                    var box = (host || document).querySelector('textarea, input[type="text"]');
+                    if (!box) {
+                      toast('Type the answers into the box and send', false);
+                      reply.disabled = false;
+                      return;
+                    }
+                    box.value = parts.join(' ');
+                    send.click();
+                  };
+                  card.appendChild(reply);
+                  log.appendChild(card);
+                }
+              }
               send.disabled = false;
             }).catch(function () { send.disabled = false; });
           });
