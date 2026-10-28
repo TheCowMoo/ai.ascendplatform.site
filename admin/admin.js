@@ -2814,6 +2814,12 @@
     function load() {
       api('GET', '/api/deliverables?kind=website').then(function (d) {
         var items = d.deliverables || [];
+        // The endpoint returns at most 200. Say so, because a list that stops without
+        // saying so is how someone concludes a draft was never saved.
+        if (items.length >= 200) {
+          body.appendChild(el('p', 'fine-print',
+            'Showing the 200 most recent. Older drafts are in the client Library view.'));
+        }
         body.innerHTML = '';
         if (!items.length) {
           body.appendChild(el('p', 'muted', 'No pages yet. Ask the team above.'));
@@ -2945,6 +2951,12 @@
       api('GET', url).then(function (d) {
         body.innerHTML = '';
         var items = d.deliverables || [];
+        // The endpoint returns at most 200. Say so, because a list that stops without
+        // saying so is how someone concludes a draft was never saved.
+        if (items.length >= 200) {
+          body.appendChild(el('p', 'fine-print',
+            'Showing the 200 most recent. Older drafts are in the client Library view.'));
+        }
         var counts = d.counts || {};
         body.appendChild(el('p', 'muted',
           'Blogs ' + (counts.blog || 0) + ' · Funnels ' + (counts.funnel || 0) +
