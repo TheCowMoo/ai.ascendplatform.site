@@ -563,10 +563,9 @@ async def _execute(step, automation, emit, job_id=None, context=None):
                 value = 0
             if value:
                 label.append("%d %s" % (value, unit))
-        # Validation accepts the node; parking it is the next commit. Say what it is rather
-        # than pretending the wait happened.
-        return "Waits %s (pacing is validated but not yet scheduled)." % (
-            ", ".join(label) or "for no time")
+        # Parking happens in run_task; this note is what the run's transcript says when it
+        # reaches the node, so it has to describe the wait, not disclaim it.
+        return "Waits %s, then continues." % (", ".join(label) or "no time at all")
     if kind == "gate":
         return "Gate."
 
