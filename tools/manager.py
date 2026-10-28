@@ -131,6 +131,21 @@ def _build_propose_automation(emit, job_id=None):
         if not isinstance(steps, list) or not steps:
             return ("Pass steps as a list of node objects: id, type, title, next, and "
                     "config for an agent or condition node.")
+        # A tool name is otherwise only checked when the run reaches that step - after a
+        # human approved the graph and a real contact was waiting on the email. Check it
+        # while the model can still fix it.
+        import tools as tool_registry
+
+        unknown = []
+        for step in steps:
+            if not isinstance(step, dict) or step.get("type") != "tool":
+                continue
+            wanted = str(((step.get("config") or {}).get("tool") or "")).strip()
+            if wanted and not tool_registry.resolve([wanted], job_id=job_id):
+                unknown.append(wanted)
+        if unknown:
+            return ("Not saved: there is no tool called %s. Call describe_capabilities to "
+                    "see the tools this client has." % ", ".join(sorted(set(unknown))))
         draft, problems = automations.propose(
             org_id, name, steps, automation_id=int(automation_id) or None,
             created_by=requester, job_id=job_id,
