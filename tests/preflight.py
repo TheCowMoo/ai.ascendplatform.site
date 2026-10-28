@@ -110,10 +110,17 @@ def check_deploy_script():
         body = handle.read()
     assert "api/health" in body, "deploy.sh must check the site answers through Caddy"
     assert "git revert" in body, "deploy.sh must roll back when the check fails"
-    # Without --build a deploy recreates containers from the *previous* image: it looks
+    # Without a build a deploy recreates containers from the *previous* image: it looks
     # successful and ships nothing, which is exactly how a tab went missing for a day.
-    assert "--build" in body, "deploy.sh must rebuild - a recreate reuses the old image"
+    assert "docker compose build" in body, "deploy.sh must rebuild - a recreate reuses the old image"
     assert "APP_VERSION" in body, "deploy.sh must label the build"
+    # `--progress` is a `build` flag; compose rejects it on `up`, and that file write is
+    # the only thing standing between a working deploy and "unknown flag: --progress".
+    up_lines = [line for line in body.splitlines()
+                if "docker compose up" in line and not line.strip().startswith("#")]
+    for line in up_lines:
+        assert "--build" not in line and "--progress" not in line, (
+            "deploy.sh passes a build flag to `up` (%s) - build first, then up" % line.strip())
     if shutil.which("git"):
         listed = subprocess.run(["git", "ls-files", "-s", "deploy.sh"], cwd=ROOT,
                                 capture_output=True, text=True).stdout.strip()

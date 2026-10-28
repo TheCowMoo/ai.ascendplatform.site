@@ -51,10 +51,12 @@ export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "== Version $APP_VERSION ($GIT_COMMIT) at $BUILD_TIME"
 
-echo "== recreating caddy, app and worker (--build: the code is baked into the image, so a"
-echo "   plain recreate would happily serve the previous build; --progress=plain so a long"
-echo "   pip install shows its steps instead of a spinner)"
-docker compose up -d --build --progress=plain --force-recreate caddy app worker
+echo "== building app and worker (the code is COPYied into the image, so a recreate without"
+echo "   a build serves the previous one; build first so a compile failure stops us here)"
+docker compose build --progress=plain app worker
+
+echo "== recreating caddy, app and worker"
+docker compose up -d --force-recreate caddy app worker
 
 echo "== waiting for https://$ADMIN_DOMAIN/api/health"
 for attempt in $(seq 1 30); do
@@ -70,6 +72,7 @@ echo "!! $ADMIN_DOMAIN does not answer after 60s - last caddy lines:" >&2
 docker compose logs --tail=40 caddy >&2 || true
 echo "!! rolling back to the previous commit" >&2
 git revert --no-edit HEAD
-docker compose up -d --build --force-recreate caddy app worker
+docker compose build app worker
+docker compose up -d --force-recreate caddy app worker
 echo "!! rolled back; the site should be serving the previous version" >&2
 exit 1
