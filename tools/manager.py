@@ -280,11 +280,23 @@ def _build_ask_user(emit, job_id=None):
         answers, and their answers arrive in the next turn.
         """
         import json
+        import re
 
-        try:
-            parsed = json.loads(questions) if isinstance(questions, str) else questions
-        except ValueError:
-            parsed = [questions]
+        parsed = None
+        if isinstance(questions, str):
+            try:
+                parsed = json.loads(questions)
+            except ValueError:
+                parsed = None
+        else:
+            parsed = questions
+        if parsed is None:
+            # Models regularly send one string with numbered lines instead of a JSON list -
+            # the transcript that exposed this had all three questions inside a single
+            # element, which renders as one unusable input. Split on lines and numbering.
+            text = str(questions or "")
+            parsed = [part.strip(' []"\'') for part in
+                      re.split(r"\r?\n+|\s*\d+[).]\s*", text) if part.strip(' []"\'')]
         if isinstance(parsed, str):
             parsed = [parsed]
         cleaned = [str(question).strip() for question in (parsed or [])
