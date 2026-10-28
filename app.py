@@ -2402,6 +2402,21 @@ def manager_chat():
         if isinstance(turn, dict) and turn.get("content"):
             lines.append("%s: %s" % (turn.get("role", "user"), str(turn["content"])[:800]))
     prompt = ("%s\n\n%s" % ("\n".join(lines), message)) if lines else message
+    # The editor says what the user has open, so "add an approval before the publish step"
+    # revises that graph instead of drafting a new one. Plain text: the model needs the id
+    # in front of it to pass it to propose_automation.
+    open_id = data.get("automation_id")
+    if open_id:
+        try:
+            open_auto = automations_service.get(int(open_id), current_org() or 0)
+        except (TypeError, ValueError):
+            open_auto = None
+        if open_auto:
+            prompt = ("[context: the user has automation #%d “%s” open with %d steps. To "
+                      "change it, call propose_automation with automation_id=%d. Do not "
+                      "create a new automation unless they ask for one.]\n\n%s"
+                      % (open_auto["id"], open_auto.get("name") or "",
+                         len(open_auto.get("steps") or []), open_auto["id"], prompt))
     job_id = jobs.create_job(
         "Manager chat", prompt, session.get("user_id"), "selector", "chat",
         org_id=current_org(),

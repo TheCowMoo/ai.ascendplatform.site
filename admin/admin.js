@@ -3920,12 +3920,16 @@
 
     // The editor is a step list for now; the canvas arrives next, reading this same shape.
     function openEditor(a) {
+      state.openAutomation = a ? a.id : 0;
       var modal = el('div', 'auto-modal');
       var panel = el('div', 'auto-panel');
       var head = el('div', 'auto-panel-head');
       head.appendChild(el('h3', 'card-title', a ? a.name : 'New automation'));
       var close = el('button', 'btn', 'Close');
-      close.onclick = function () { modal.parentNode.removeChild(modal); };
+      close.onclick = function () {
+        state.openAutomation = 0;      // the manager must not keep editing a closed graph
+        modal.parentNode.removeChild(modal);
+      };
       head.appendChild(close);
       panel.appendChild(head);
 
@@ -4034,6 +4038,7 @@
               Object.keys(savedLayout).forEach(function (key) { layout[key] = savedLayout[key]; });
               savedSteps = null;
               savedLayout = null;
+              modal.dataset.previewing = '';
               view.textContent = 'Preview';
               draw();
               return;
@@ -4044,6 +4049,7 @@
             steps.forEach(function (step, index) {
               if (!layout[step.id]) layout[step.id] = { x: 20, y: 20 + index * 84 };
             });
+            modal.dataset.previewing = '1';
             view.textContent = 'Hide preview';
             draw();
           };
@@ -4103,6 +4109,13 @@
 
       var save = el('button', 'btn btn-primary', 'Save');
       save.onclick = function () {
+        // While previewing, the canvas shows the *draft*. Saving here would quietly write
+        // the agent's graph over the saved one and skip the whole review step.
+        if (modal.dataset.previewing) {
+          toast('You are previewing a draft - press Apply to accept it, or hide the preview ' +
+                'to save your own edits', false);
+          return;
+        }
         var payload = { name: nameField.value, steps: steps, trigger_type: 'manual',
                         layout: layout };
         var req = a ? api('PUT', '/api/automations/' + a.id, payload)
@@ -4330,7 +4343,13 @@
       var thinking = el('span', 'activity running');
       log.appendChild(thinking);
       send.disabled = true;
-      api('POST', '/api/manager/chat', { message: text, history: history.slice(-8) })
+      api('POST', '/api/manager/chat', {
+        message: text,
+        history: history.slice(-8),
+        // Tells the manager which graph the user is looking at, so a change request
+        // revises it instead of drafting a second automation.
+        automation_id: state.openAutomation || 0
+      })
         .then(function (d) {
           watchJob(d.job_id, thinking, function () {
             api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
