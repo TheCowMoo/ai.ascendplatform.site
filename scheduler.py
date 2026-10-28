@@ -145,9 +145,91 @@ def queue_reviews(now=None):
     return queued
 
 
+def verify_interval_minutes():
+    """How often to re-check domains waiting on DNS. 0 turns it off."""
+    try:
+        return max(0.0, float(os.environ.get("SITE_VERIFY_MINUTES", "60") or 0))
+    except ValueError:
+        return 60.0
+
+
+def _stamp():
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def verify_pending(limit=20):
+    """Re-check the domains that are waiting on DNS, and record what the web says.
+
+    This is what makes "point it here and SSL issues itself" true without a human: a
+    client who fixes a record at midnight finds the domain green in the morning. It is
+    read-only - a DNS lookup and an HTTPS handshake - so it needs no approval gate, and
+    the handshake is also what asks Caddy for a certificate on a site that has not been
+    visited yet.
+    """
+    import provisioner
+    import sites as sites_service
+
+    checked = 0
+    for site in sites_service.list_sites(limit=200):
+        if checked >= limit:
+            break
+        if site.get("status") not in ("pending_dns", "dns_ok"):
+            continue
+        if site.get("org_id") is None:
+            continue
+        try:
+            report = provisioner.dns_report(site["domain"])
+            probe = provisioner.live_probe(site["domain"])
+        except Exception:
+            continue          # a resolver hiccup must not stop the sweep
+        fields = {"dns_last_ip": ", ".join(report["resolved"])[:200],
+                  "dns_last_check": _stamp()}
+        if probe["ok"]:
+            fields.update({"status": "live", "ssl_status": "verified",
+                           "url": "https://" + site["domain"], "last_error": ""})
+        else:
+            fields["ssl_status"] = "failed" if probe["error"] else "pending"
+            fields["last_error"] = (probe["hint"] or probe["error"])[:200]
+            fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
+        try:
+            sites_service.update_site(site["id"], fields)
+            checked += 1
+        except Exception:
+            continue
+    return checked
+
+
+_verify_started = False
+
+
+def start_verifier():
+    """Hourly sweep in its own thread. Idempotent per process; 0 minutes disables it."""
+    global _verify_started
+    minutes = verify_interval_minutes()
+    if _verify_started or minutes <= 0:
+        return False
+    _verify_started = True
+
+    def _tick():
+        while True:
+            try:
+                verify_pending()
+            except Exception:
+                pass
+            time.sleep(minutes * 60)
+
+    threading.Thread(target=_tick, name="site-verify", daemon=True).start()
+    return True
+
+
 def start():
     """Begin the recurring sync if one is configured. Idempotent per process."""
     global _started
+    # Independent of the sync: the DNS sweep is useful in a deployment that has no site
+    # logs configured at all, which is every fresh install.
+    start_verifier()
     hours = sync_interval_hours()
     if _started or hours <= 0:
         return False

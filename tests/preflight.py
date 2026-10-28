@@ -45,6 +45,7 @@ def check_imports():
     assert "site_review" in jobs.TASKS, jobs.TASKS
     assert "proposal" in deliverables.KINDS, deliverables.KINDS
     assert callable(scheduler.queue_reviews)
+    assert callable(scheduler.verify_pending), "the DNS sweep is what makes SSL automatic"
     assert callable(automations.validate_graph)
     print("imports OK | tasks:", sorted(jobs.TASKS))
 
