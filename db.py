@@ -311,6 +311,29 @@ email_templates = Table(
 
 Index("idx_email_templates_org", email_templates.c.org_id)
 
+# Tools the *agent* proposes. A row here is inert: nothing executes until status='approved',
+# and no executor for either kind exists yet - the approval gate is being built before the
+# thing it guards, deliberately.
+agent_tools = Table(
+    "agent_tools",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("description", Text, nullable=False, server_default=_literal("")),
+    Column("kind", Text, nullable=False, server_default=_literal("recipe")),
+    Column("args_schema", Text, nullable=False, server_default=_literal("{}")),
+    Column("body", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("pending")),
+    Column("created_by", Integer),
+    Column("job_id", Integer),
+    Column("last_error", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("approved_at", Text),
+)
+
+Index("idx_agent_tools_org", agent_tools.c.org_id)
+
 # Files/images produced by a job.
 job_artifacts = Table(
     "job_artifacts", metadata,
