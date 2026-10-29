@@ -3960,6 +3960,52 @@
       'watch each record go green, then go live. A certificate is only reported once the ' +
       'site actually answers over HTTPS.</p></div>';
     container.appendChild(head);
+
+    // After a server move, a domain pointing at the old address looks healthy from here and
+    // dead from the visitor's side. One button asks DNS about every domain at once.
+    var auditBar = el('div', 'chip-input');
+    var auditBtn = el('button', 'btn', 'Check all domains');
+    var auditHost = el('div');
+    auditBar.appendChild(auditBtn);
+    container.appendChild(auditBar);
+    container.appendChild(auditHost);
+
+    auditBtn.onclick = function () {
+      auditBtn.disabled = true;
+      auditHost.innerHTML = '';
+      api('POST', '/api/domains/audit').then(function (d) {
+        auditBtn.disabled = false;
+        var stale = (d.rows || []).filter(function (r) { return r.status !== 'ok'; });
+        var card = el('div', 'panel-card');
+        card.innerHTML = '<h3 class="card-title">' + (d.checked || 0) + ' domain' +
+          (d.checked === 1 ? '' : 's') + ' checked against ' +
+          esc(d.server_ip || 'unknown') + '</h3>';
+        if (!stale.length) {
+          card.appendChild(el('p', 'muted', 'Every domain points at this server.'));
+        } else {
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Domain</th><th>Status</th><th>Resolves to</th>' +
+            '<th>Note</th></tr></thead>';
+          var tbody = el('tbody');
+          stale.forEach(function (r) {
+            var badge = r.status === 'missing' ? 'badge-queued' : 'badge-failed';
+            tbody.innerHTML += '<tr><td>' + esc(r.domain) + '</td><td>' +
+              '<span class="badge ' + badge + '">' + esc(r.status) + '</span></td>' +
+              '<td><code>' + esc((r.seen || []).join(', ') || '-') + '</code></td>' +
+              '<td class="fine-print">' + esc(r.note || '') + '</td></tr>';
+          });
+          table.appendChild(tbody);
+          card.appendChild(table);
+          card.appendChild(el('p', 'fine-print', 'A domain that moved on purpose is not ' +
+            'broken - this is the list to work through after changing servers.'));
+        }
+        auditHost.appendChild(card);
+      }).catch(function (e) {
+        auditBtn.disabled = false;
+        toast(e.message, false);
+      });
+    };
+
     var body = el('div', 'mt');
     container.appendChild(body);
 

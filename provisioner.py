@@ -288,6 +288,38 @@ def _www_row(domain, expected):
     return row
 
 
+def audit_domains(domains, expected=None, report_for=None):
+    """Every domain against the address it should point at.
+
+    This answers the question nobody asks until a server move: *which of these domains still
+    point at the old address?* It reports what DNS said rather than a verdict, so a domain
+    mid-move reads "elsewhere" instead of "broken" - a migration in progress is not a fault.
+    """
+    expected = expected or server_ip()
+    report_for = report_for or dns_report
+    out = []
+    for domain in domains or []:
+        try:
+            report = report_for(domain)
+        except Exception as exc:                      # a DNS failure is one row, not the sweep
+            out.append({"domain": domain, "status": "error", "expected": expected or "",
+                        "seen": [], "note": str(exc)[:160], "proxied": False})
+            continue
+        seen = list(report.get("resolved") or [])
+        if not expected:
+            status = "unknown"
+        elif expected in seen:
+            status = "ok"
+        elif not seen:
+            status = "missing"
+        else:
+            status = "elsewhere"
+        out.append({"domain": domain, "status": status, "expected": expected or "",
+                    "seen": seen, "note": report.get("reason") or "",
+                    "proxied": bool(report.get("proxied"))})
+    return out
+
+
 def dns_report(domain, server_ip_value=None):
     """Per-record truth for one domain: what to publish, what DNS says, and the verdict.
 

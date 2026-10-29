@@ -93,7 +93,52 @@ def test_preview_endpoint():
     check("and where the server IP came from", bool(data.get("server_ip_source")), True)
 
 
+def test_the_sweep():
+    """After a move: which domains still point at the old address?"""
+    def report(seen, reason="", proxied=False):
+        return {"resolved": list(seen), "reason": reason, "proxied": proxied}
+
+    table = {"here.test": report([IP]),
+             "moved.test": report(["198.51.100.9"], "points elsewhere"),
+             "gone.test": report([]),
+             "boom.test": None}
+
+    def resolver(domain, server_ip_value=None):
+        if table[domain] is None:
+            raise RuntimeError("no DNS for you")
+        return table[domain]
+
+    rows = provisioner.audit_domains(list(table), expected=IP, report_for=resolver)
+    status = {row["domain"]: row["status"] for row in rows}
+    check("a domain pointing here is ok", status["here.test"], "ok")
+    check("one left on the old address is elsewhere", status["moved.test"], "elsewhere")
+    check("an unpublished domain is missing", status["gone.test"], "missing")
+    check("a DNS failure is one row, not the whole sweep", status["boom.test"], "error")
+    check("it reports what it expected", rows[0]["expected"], IP)
+
+    client = appmod.app.test_client()
+    check("the sweep needs a login", client.post("/api/domains/audit").status_code, 401)
+    client.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin123"})
+    orgs = client.get("/api/orgs").get_json().get("orgs") or []
+    if orgs:
+        client.post("/api/session/org", json={"org_id": orgs[0]["id"]})
+    original = provisioner.audit_domains
+    provisioner.audit_domains = lambda domains, **kwargs: [
+        {"domain": d, "status": "ok", "expected": IP, "seen": [IP], "note": "",
+         "proxied": False} for d in domains]
+    try:
+        data = client.post("/api/domains/audit").get_json() or {}
+    finally:
+        provisioner.audit_domains = original
+    check("the endpoint answers with counts", isinstance(data.get("counts"), dict), True)
+    check("and says how many it checked", "checked" in data, True)
+    # With no domains there is nothing to compare, so the endpoint reports the server's own
+    # address - asserting a specific value here would only test the stub.
+    check("and the address it compared against", bool(data.get("server_ip")), True)
+
+
 def test_the_tab_wires_it_up():
+
     """Static, like the graph guard: the endpoint existing is not the same as being used."""
     script = open(os.path.join(ROOT, "admin", "admin.js"), encoding="utf-8").read()
     check("the Domains tab asks for a preview", "'/api/domains/preview'" in script, True)
@@ -102,12 +147,14 @@ def test_the_tab_wires_it_up():
     check("there is a copy-all in both places", script.count("'Copy all'") >= 2, True)
     check("adding a domain creates a site", "'/api/sites', { domain: d.domain" in script, True)
     check("the panel has a Check again", "'Check again'" in script, True)
+    check("the sweep is wired to a button", "'/api/domains/audit'" in script, True)
 
 
 if __name__ == "__main__":
     test_www_verdicts()
     test_the_list_and_the_copy()
     test_preview_endpoint()
+    test_the_sweep()
     test_the_tab_wires_it_up()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

@@ -1985,6 +1985,30 @@ def check_site(site_id):
     return jsonify({"site": updated, "check": info})
 
 
+@app.route("/api/domains/audit", methods=["POST"])
+@client_admin_required
+def domains_audit():
+    """Check every domain this client has against the server's current address.
+
+    After a move, the domains that still point at the old IP are silent: the site keeps
+    loading from the old machine until somebody notices. One DNS lookup each is cheap, and
+    the answer is more useful than a green tick on a page nobody re-reads.
+    """
+    import sites as sites_service
+
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    domains = [row["domain"] for row in sites_service.list_sites(org, limit=100)
+               if row.get("domain")]
+    rows = provisioner.audit_domains(domains)
+    counts = {}
+    for row in rows:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    return jsonify({"checked": len(rows), "counts": counts, "rows": rows,
+                    "server_ip": rows[0]["expected"] if rows else provisioner.server_ip()})
+
+
 @app.route("/api/domains/preview", methods=["POST"])
 @login_required
 def domain_preview():
