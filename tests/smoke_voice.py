@@ -148,6 +148,8 @@ def test_the_browser_half_is_wired():
     check("the tour remembers being seen", "'tour:' +" in admin_js, True)
     check("the sheet sends page context with the question",
           "the user is on the '" in admin_js, True)
+    check("and names the record when there is one",
+          "screen, record #" in admin_js, True)
 
 
 if __name__ == "__main__":

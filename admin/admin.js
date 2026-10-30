@@ -6053,14 +6053,20 @@
 
       say('them', 'Ask me to build, change or explain anything on this page.');
       var history = [];
-      var page = (location.hash.split('/')[2] || 'home');
+      // The hash is the only reliable statement of where the user is: #/app/forms/12/responses
+      // is a different question from "the forms screen", and the manager can only ask about a
+      // record it has the id for.
+      var parts = (location.hash || '').replace(/^#\/?/, '').split('/');
+      var page = parts[1] || 'home';
+      var record = parts[2] || '';
+      var where = record ? (page + ' screen, record #' + record) : (page + ' screen');
 
       function ask(text) {
         say('me', text);
         var wait = say('them', 'Working…');
         history.push({ role: 'user', content: text });
         api('POST', '/api/manager/chat', {
-          message: '[context: the user is on the ' + page + ' screen]\n' + text,
+          message: '[context: the user is on the ' + where + ']\n' + text,
           history: history.slice(-8), automation_id: 0
         }).then(function (d) {
           watchJob(d.job_id, el('span', 'activity running'), function () {
