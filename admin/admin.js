@@ -3775,6 +3775,34 @@
       thread.scrollTop = thread.scrollHeight;
     }
 
+    // The thinking state is driven by the job's own events, so the animation describes real
+    // work instead of spinning for a fixed two seconds and pretending.
+    function thinking() {
+      var box = el('div', 'assistant-msg them think');
+      var dots = el('span', 'think-dots');
+      dots.appendChild(el('span'));
+      dots.appendChild(el('span'));
+      dots.appendChild(el('span'));
+      box.appendChild(dots);
+      var phase = el('span', 'think-phase', 'Thinking');
+      box.appendChild(phase);
+      var steps = el('div', 'think-steps');
+      box.appendChild(steps);
+      thread.appendChild(box);
+      thread.scrollTop = thread.scrollHeight;
+      function scroll() { thread.scrollTop = thread.scrollHeight; }
+      return {
+        phase: function (text) { phase.textContent = text; scroll(); },
+        step: function (text, state) {
+          steps.appendChild(el('div', state === 'done' ? 'done' : 'running',
+                              (state === 'done' ? '✓ ' : '● ') + String(text).slice(0, 60)));
+          scroll();
+        },
+        done: function () { if (box.parentNode) box.parentNode.removeChild(box); },
+        node: box
+      };
+    }
+
     send.onclick = function () {
       var text = (box.value || '').trim();
       if (!text) {
@@ -3786,15 +3814,31 @@
       threadState.messages.push({ role: 'user', content: text });
       save();
       send.disabled = true;
-      var thinking = bubble('them', 'Thinking…');
+      var wait = thinking();
+      var seen = {};
       api('POST', '/api/manager/chat', {
         message: text,
         history: threadState.messages.slice(-8),
         automation_id: 0
       }).then(function (d) {
-        watchJob(d.job_id, el('span', 'activity running'), function () {
+        wait.phase('Reading your setup…');
+        // Poll the transcript while it works: each tool the manager runs becomes a ticked
+        // step, so the wait shows what is happening rather than three dots.
+        var poll = setInterval(function () {
           api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
-            if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+            (r.events || []).forEach(function (ev) {
+              if (ev.source !== 'Manager' || ev.type !== 'tool') return;
+              if (seen[ev.content + ':' + ev.id]) return;
+              seen[ev.content + ':' + ev.id] = true;
+              wait.step(String(ev.content).replace(/_/g, ' '), 'done');
+              wait.phase('Working…');
+            });
+          }).catch(function () { /* a poll that fails is not an error the user needs */ });
+        }, 1200);
+        watchJob(d.job_id, el('span', 'activity running'), function () {
+          clearInterval(poll);
+          api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
+            wait.done();
             var said = (r.events || []).filter(function (ev) {
               return ev.source === 'Manager' && ev.type === 'message';
             }).pop();
@@ -3814,7 +3858,7 @@
           }).catch(function () { send.disabled = false; });
         });
       }).catch(function (e) {
-        if (thinking.parentNode) thinking.parentNode.removeChild(thinking);
+        wait.done();
         bubble('them', e.message);
         send.disabled = false;
       });

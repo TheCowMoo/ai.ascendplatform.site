@@ -722,6 +722,33 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 .auto-graph.is-full .auto-svg { height: 100%; max-height: none; }
 .auto-graph.is-full .auto-zoom { right: 16px; bottom: 16px; }
 body.graph-full { overflow: hidden; }
+
+/* ---------- The assistant's thinking state ----------
+   Three dots and a phase line, driven by the job's real events: a spinner that runs for a
+   fixed time is a lie, and people learn to distrust it. */
+.assistant-msg.think { display: block; }
+.think { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.think-dots { display: inline-flex; gap: 4px; }
+.think-dots span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .35;
+  animation: think-pulse 1.1s var(--ease) infinite;
+}
+.think-dots span:nth-child(2) { animation-delay: .15s; }
+.think-dots span:nth-child(3) { animation-delay: .3s; }
+@keyframes think-pulse {
+  0%, 100% { opacity: .3; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+.think-phase { font-size: var(--fs-micro); color: var(--ink-400); }
+.think-steps {
+  margin-top: 6px; display: flex; flex-direction: column; gap: 2px;
+  font-size: var(--fs-micro); color: var(--ink-400);
+}
+.think-steps .done { color: #0f766e; }
+.think-steps .running { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .think-dots span { animation: none; opacity: .8; }
+}
 /* Domains tab: one row per domain, with the record panel underneath it. */
 .dom-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
 .dom-name { font: 600 var(--t-4)/1.3 inherit; color: var(--ink); }

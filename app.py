@@ -1985,6 +1985,95 @@ def check_site(site_id):
     return jsonify({"site": updated, "check": info})
 
 
+# ---------- The spoken assistant ----------
+# Gemini is the mouth; our agents are the hands. The browser holds the Live socket directly
+# using a one-use token minted here, so the key never leaves the server and no WSGI worker
+# holds a WebSocket open. The model gets one function, delegate_to_team, which creates a
+# normal manager job - so every guard a typed request passes applies to a spoken one.
+
+_VOICE_TURNS = {}
+
+
+@app.route("/api/voice/status", methods=["GET"])
+@login_required
+def voice_status():
+    import voice
+
+    return jsonify(voice.status(session.get("user_id")))
+
+
+@app.route("/api/voice/session", methods=["POST"])
+@login_required
+def voice_session():
+    """Mint a one-use token and the setup message that goes with it."""
+    import voice
+
+    state = voice.status(session.get("user_id"))
+    if not state["available"]:
+        expired = "minutes" in state["reason"]
+        return jsonify({"error": state["reason"], "fallback": "text"}), 429 if expired else 400
+    data = request.get_json(silent=True) or {}
+    page = str(data.get("page") or "").strip()[:40]
+    try:
+        token = voice.mint()
+    except voice.VoiceError as exc:
+        return jsonify({"error": str(exc), "fallback": "text"}), 502
+    # Counted up front, not on hang-up: a browser that never closes the socket cleanly must
+    # not become free minutes.
+    voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
+    session["voice_calls"] = 0
+    payload = voice.setup()
+    payload["setup"]["systemInstruction"]["parts"][0]["text"] = voice.instruction("", page)
+    return jsonify({
+        "token": token,
+        "setup": payload,
+        "endpoint": ("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage"
+                     ".v1alpha.GenerativeService.BidiGenerateContentConstrained"),
+        "seconds": voice.SESSION_SECONDS,
+        "calls": voice.SESSION_CALLS,
+        "remaining_minutes": round(voice.remaining_minutes(session.get("user_id")), 1),
+    })
+
+
+@app.route("/api/voice/tool", methods=["POST"])
+@login_required
+def voice_tool():
+    """The only tool the voice has: hand the work to our own agents.
+
+    The browser relays this call because the socket is browser-direct. That is safe because
+    this route - not the model - is what executes: it needs a login, takes the tenant from the
+    session, and starts the same manager job a typed request would.
+    """
+    import voice
+
+    data = request.get_json(silent=True) or {}
+    if str(data.get("name") or "") != "delegate_to_team":
+        return jsonify({"error": "The voice may only delegate to the team."}), 403
+    instruction_text = str((data.get("args") or {}).get("instruction") or "").strip()
+    if not instruction_text:
+        return jsonify({"error": "delegate_to_team needs an instruction"}), 400
+    calls = int(session.get("voice_calls") or 0)
+    if calls >= voice.SESSION_CALLS:
+        return jsonify({"error": "That is plenty for one spoken session - say continue, or "
+                                 "type it in the Assistant."}), 429
+    turn = str(data.get("turn_id") or "").strip()
+    seen = _VOICE_TURNS.setdefault(str(session.get("user_id")), {})
+    if turn and turn in seen:
+        # A model retry must not create the same form twice.
+        return jsonify({"ok": True, "job_id": seen[turn], "duplicate": True,
+                        "message": "Already on it."}), 200
+    job_id = jobs.create_job("Voice request", instruction_text, session.get("user_id"),
+                             "selector", "chat", org_id=current_org())
+    jobs.submit(job_id)
+    if turn:
+        seen[turn] = job_id
+        if len(seen) > 50:
+            seen.clear()
+    session["voice_calls"] = calls + 1
+    return jsonify({"ok": True, "job_id": job_id,
+                    "message": "Working on it - the team has the request."}), 202
+
+
 @app.route("/api/domains/audit", methods=["POST"])
 @client_admin_required
 def domains_audit():
