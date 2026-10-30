@@ -1350,7 +1350,7 @@ def _deliverable_for_request(deliverable_id):
 @app.route("/api/deliverables", methods=["GET"])
 @login_required
 def list_deliverables():
-    kind = (request.args.get("kind") or "").strip().lower() or None
+    kind = deliverables_service.canonical_kind(request.args.get("kind") or "") or None
     if kind and kind not in deliverables_service.KINDS:
         return jsonify({"error": "kind must be one of: %s"
                                  % ", ".join(deliverables_service.KINDS)}), 400
@@ -1361,6 +1361,25 @@ def list_deliverables():
         "kinds": list(deliverables_service.KINDS),
         "statuses": list(deliverables_service.STATUSES),
     })
+
+
+@app.route("/api/deliverables/unowned", methods=["GET"])
+@owner_required
+def list_unowned_deliverables():
+    """Drafts with no client. Only the operator can see or place them."""
+    return jsonify({"deliverables": deliverables_service.list_unowned()})
+
+
+@app.route("/api/deliverables/unowned/assign", methods=["POST"])
+@owner_required
+def assign_unowned_deliverables():
+    """Give unowned drafts to one client. Only rows with org_id NULL are touched."""
+    data = request.get_json(silent=True) or {}
+    try:
+        assigned = deliverables_service.assign_unowned(data.get("ids"), data.get("org_id"))
+    except deliverables_service.DeliverableError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"assigned": assigned})
 
 
 @app.route("/api/deliverables", methods=["POST"])

@@ -2869,6 +2869,89 @@
     return card;
   }
 
+  // Older drafts can have no client: they were saved before the client switcher was
+  // required, so they appear in no client's tab. This is the operator's way to put them
+  // where their owner will find them, without needing the repair_orphans.py script.
+  function unownedDraftsCard(onAssigned) {
+    if (!isOwner(state.user)) return null;
+    var host = el('div');
+
+    function load() {
+      host.innerHTML = '';
+      api('GET', '/api/deliverables/unowned').then(function (d) {
+        var rows = d.deliverables || [];
+        if (!rows.length) return;
+        var card = el('div', 'panel-card mt');
+        card.appendChild(el('h3', 'card-title', 'Unowned drafts (' + rows.length + ')'));
+        card.appendChild(el('p', 'muted',
+          'These were saved while no client was selected, so they appear in no ' +
+          'client\'s tab. Assign them to the client they belong to.'));
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th></th><th>Title</th><th>Kind</th>' +
+          '<th>Created</th></tr></thead>';
+        var tbody = el('tbody');
+        var boxes = [];
+        rows.forEach(function (item) {
+          var tr = el('tr');
+          var tick = el('td');
+          var box = el('input');
+          box.type = 'checkbox';
+          box.value = String(item.id);
+          boxes.push(box);
+          tick.appendChild(box);
+          tr.appendChild(tick);
+          tr.appendChild(el('td', null, item.title || '(untitled)'));
+          tr.appendChild(el('td', null, item.kind));
+          tr.appendChild(el('td', 'muted', (item.created_at || '').slice(0, 16)));
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        card.appendChild(table);
+
+        var actions = el('div', 'row-actions');
+        var pick = el('select');
+        pick.style.width = '220px';
+        pick.style.minHeight = '36px';
+        var blank = el('option', null, 'Choose a client…');
+        blank.value = '';
+        pick.appendChild(blank);
+        api('GET', '/api/orgs').then(function (o) {
+          (o.orgs || []).forEach(function (org) {
+            var opt = el('option', null, org.name);
+            opt.value = String(org.id);
+            pick.appendChild(opt);
+          });
+        }).catch(function () { /* the picker stays empty */ });
+        var go = el('button', 'btn btn-primary btn-sm', 'Assign selected');
+        go.onclick = function () {
+          var ids = boxes.filter(function (box) { return box.checked; }).map(function (box) {
+            return Number(box.value);
+          });
+          if (!ids.length) { toast('Select at least one draft', false); return; }
+          if (!pick.value) { toast('Choose the client they belong to', false); return; }
+          go.disabled = true;
+          api('POST', '/api/deliverables/unowned/assign', {
+            org_id: Number(pick.value), ids: ids
+          }).then(function (r) {
+            var n = r.assigned || 0;
+            var name = pick.options[pick.selectedIndex].text;
+            toast(n ? 'Assigned ' + n + ' draft(s) to ' + name
+                    : 'Those drafts were already assigned', !!n);
+            load();
+            if (onAssigned) onAssigned();
+          }).catch(function (e) { go.disabled = false; toast(e.message, false); });
+        };
+        actions.appendChild(pick);
+        actions.appendChild(go);
+        card.appendChild(actions);
+        host.appendChild(card);
+      }).catch(function () { /* the tab still works */ });
+    }
+
+    load();
+    return host;
+  }
+
   function viewDeliverables(tab) {
     var meta = CONTENT_TABS[tab] || CONTENT_TABS.library;
     var container = el('div', 'container');
@@ -2880,6 +2963,8 @@
     head.appendChild(add);
     container.appendChild(head);
     container.appendChild(el('p', 'muted', meta.blurb));
+    var unowned = unownedDraftsCard(refresh);
+    if (unowned) container.appendChild(unowned);
     var composerHost = el('div');
     container.appendChild(composerHost);
     var templatesHost = el('div');

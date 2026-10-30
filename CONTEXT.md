@@ -112,8 +112,12 @@ returns the operator to the all-clients overview. A client session cannot set it
 
 With no client selected, work is refused rather than orphaned: `POST /api/jobs`,
 `start_job` (manager) and `save_deliverable` all say so instead of writing. Rows that already
-have `org_id IS NULL` are listed - and only reassigned with explicit ids - by
-`repair_orphans.py`.
+have `org_id IS NULL` appear in **Library -> Unowned drafts** for the operator and are
+assigned to a client from there (or with `repair_orphans.py`). A draft's kind is canonical:
+`canonical_kind()` maps aliases (`landing_page` → `funnel`, `blog_post` → `blog`), and
+`save_deliverable` enforces the tab brief in the job prompt, so a job started from Funnels
+cannot save as a website. Existing wrong-tab rows are fixed with
+`repair_deliverable_kinds.py --apply`.
 
 ## The three core flows
 

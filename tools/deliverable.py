@@ -42,6 +42,15 @@ def _job_context(job_id):
     return row["org_id"], row["requester_id"]
 
 
+def _job_requested_kind(job_id):
+    """The tab kind the job's prompt asked for, or ``""``."""
+    if not job_id:
+        return ""
+    with get_connection() as conn:
+        row = conn.execute("SELECT prompt FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return deliverables_service.requested_kind(row["prompt"] if row else "")
+
+
 def _artifact_images(job_id):
     """The images this job saved, as URLs the browser can actually load."""
     import os
@@ -135,6 +144,18 @@ def _build_save_deliverable(emit, job_id=None):
                 "belong to nobody. Pick a client in the workspace switcher, then run "
                 "this again."
             )
+        # The tab that started the job owns the kind. The model can describe a funnel as
+        # "a website page", and saving that literally is how a draft ended up in Pages
+        # instead of Funnels. The brief is in the prompt; the model's argument is not
+        # allowed to overrule it.
+        requested = _job_requested_kind(job_id)
+        model_kind = deliverables_service.canonical_kind(kind)
+        if requested and requested != model_kind and emit is not None:
+            emit("system", "system",
+                 "This job was started from the %s tab; saving as %s instead of %s."
+                 % (deliverables_service.TABS.get(requested, "Library"),
+                    requested, model_kind or "unspecified"))
+        kind = requested or model_kind
         # A refinement names an existing draft; anything else is a new one.
         target = deliverables_service.get_deliverable(int(deliverable_id)) if deliverable_id else None
         if target and org_id is not None and target.get("org_id") not in (None, org_id):
@@ -146,13 +167,14 @@ def _build_save_deliverable(emit, job_id=None):
             if existing:
                 item = deliverables_service.update_deliverable(
                     existing["id"],
-                    {"content": content, "summary": summary or existing.get("summary") or ""},
+                    {"kind": kind, "content": content,
+                     "summary": summary or existing.get("summary") or ""},
                 )
                 verb = "Updated"
             else:
                 item = deliverables_service.create_deliverable(
                     {
-                        "kind": (kind or "").strip().lower(),
+                        "kind": kind,
                         "title": title,
                         "content": content,
                         "summary": summary,

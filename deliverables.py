@@ -19,6 +19,49 @@ from db import get_connection, now_str
 KINDS = ("blog", "funnel", "email", "website", "proposal", "asset")
 STATUSES = ("draft", "scheduled", "published", "failed")
 
+# Models describe content in their own words ("landing page", "blog post",
+# "email campaign"). Those are the same tabs under a different name; refusing them
+# used to lose the draft entirely, which is indistinguishable from a tab that never
+# received it. Normalise before validation.
+KIND_ALIASES = {
+    "article": "blog", "post": "blog", "blog_post": "blog", "blogpost": "blog",
+    "landing": "funnel", "landing_page": "funnel", "funnel_page": "funnel",
+    "opt_in": "funnel", "optin": "funnel", "opt_in_page": "funnel",
+    "campaign": "email", "email_campaign": "email", "email_sequence": "email",
+    "newsletter": "email", "sequence": "email", "message": "email",
+    "page": "website", "web_page": "website", "webpage": "website",
+    "site": "website", "site_page": "website", "website_page": "website",
+    "image": "asset", "photo": "asset", "images": "asset",
+}
+
+
+def canonical_kind(value):
+    """The tab kind a model's wording means, or the cleaned value unchanged."""
+    kind = re.sub(r"[\s-]+", "_", (value or "").strip().lower())
+    return KIND_ALIASES.get(kind, kind)
+
+
+_KIND_REQUEST = re.compile(
+    r"save_deliverable[^\n]{0,80}?kind\s*(?:[=:]\s*)?[\"']?([A-Za-z][A-Za-z _-]{1,30})[\"']?",
+    re.I,
+)
+
+
+def requested_kind(prompt):
+    """The kind a console tab asked for in a job prompt, or ``""``.
+
+    The tab composer prepends ``save_deliverable using kind "funnel"`` and the refine
+    route names ``save_deliverable(kind='email', ...)``. The model still chooses the
+    argument, so this is what lets the server keep the draft in the tab the user
+    started from.
+    """
+    match = _KIND_REQUEST.search(str(prompt or ""))
+    if not match:
+        return ""
+    kind = canonical_kind(match.group(1))
+    return kind if kind in KINDS else ""
+
+
 # Kind -> the console tab it appears in. Used by the save_deliverable tool's reply so
 # the model can tell the user where to look.
 TABS = {
@@ -82,6 +125,55 @@ def get_deliverable(deliverable_id):
     return out(row) if row else None
 
 
+def list_unowned(limit=200):
+    """Drafts with no client. They appear in no client's tab until assigned."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM deliverables WHERE org_id IS NULL "
+            "ORDER BY updated_at DESC, id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [out(row) for row in rows]
+
+
+def assign_unowned(ids, org_id):
+    """Give unowned drafts to one client. Returns how many rows changed.
+
+    Only ``org_id IS NULL`` rows are touched: an explicit assign is how an older
+    orphan is recovered, never a way to move another client's draft.
+    """
+    try:
+        org_id = int(org_id)
+    except (TypeError, ValueError):
+        raise DeliverableError("Choose the client these drafts belong to.")
+    if isinstance(ids, str):
+        ids = [part for part in ids.replace(" ", "").split(",") if part]
+    try:
+        wanted = sorted({int(value) for value in (ids or [])})
+    except (TypeError, ValueError):
+        raise DeliverableError("Choose at least one draft.")
+    if not wanted:
+        raise DeliverableError("Choose at least one draft.")
+
+    marks = ",".join("?" for _ in wanted)
+    with get_connection() as conn:
+        org = conn.execute("SELECT id FROM orgs WHERE id = ?", (org_id,)).fetchone()
+        if not org:
+            raise DeliverableError("No client with id %s." % org_id)
+        found = conn.execute(
+            "SELECT id FROM deliverables WHERE id IN (%s) AND org_id IS NULL" % marks,
+            tuple(wanted),
+        ).fetchall()
+        if not found:
+            return 0
+        conn.execute(
+            "UPDATE deliverables SET org_id = ?, updated_at = ? "
+            "WHERE id IN (%s) AND org_id IS NULL" % marks,
+            tuple([org_id, now_str()] + wanted),
+        )
+    return len(found)
+
+
 def counts(org_id=None):
     """``{kind: count}`` plus ``all``, for the tab badges."""
     query = "SELECT kind, COUNT(*) AS n FROM deliverables WHERE 1 = 1"
@@ -103,7 +195,7 @@ def counts(org_id=None):
 
 def _clean(data, partial=False):
     """Validate a payload. ``partial`` keeps absent fields absent, for a PATCH."""
-    kind = (data.get("kind") or "blog").strip().lower()
+    kind = canonical_kind(data.get("kind") or "blog")
     if kind not in KINDS:
         raise DeliverableError("kind must be one of: %s" % ", ".join(KINDS))
     status = (data.get("status") or "draft").strip().lower()

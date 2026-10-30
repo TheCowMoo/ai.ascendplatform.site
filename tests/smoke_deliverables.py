@@ -254,6 +254,80 @@ def test_a_save_without_content_is_explained():
     print("missing content refused with a message the model can act on")
 
 
+def test_kind_aliases_and_tab_enforcement():
+    """A funnel stays a funnel even when the model calls it a website page."""
+    assert deliverables.canonical_kind("landing page") == "funnel"
+    assert deliverables.canonical_kind("blog post") == "blog"
+    assert deliverables.canonical_kind("email campaign") == "email"
+    assert deliverables.canonical_kind("web page") == "website"
+    assert deliverables.requested_kind(
+        'save_deliverable using kind "funnel"') == "funnel"
+    assert deliverables.requested_kind(
+        "save_deliverable(kind='email', title='x'") == "email"
+    assert deliverables.requested_kind(
+        "save_deliverable(kind, title, content)") == ""
+
+    org = _org("Deliverable Tab Client")
+    job_id = jobs.create_job(
+        "funnel",
+        'Write a funnel page. When it is finished, save it with save_deliverable '
+        'using kind "funnel".',
+        None, "selector", "agent_team",
+    )
+    with db.get_connection() as conn:
+        conn.execute("UPDATE jobs SET org_id = ? WHERE id = ?", (org["id"], job_id))
+    reply = asyncio.run(_save_tool(job_id).run_json(
+        {"kind": "website", "title": "Spring funnel",
+         "content": "<html><body>Opt in</body></html>", "summary": "Funnel"}, DRY))
+    print("tab-enforced reply:", reply)
+    assert "Funnels" in reply, reply
+    assert len(deliverables.list_deliverables("funnel", org["id"])) == 1
+    assert deliverables.list_deliverables("website", org["id"]) == []
+
+    alias_job = _job_in_org(org["id"])
+    alias_reply = asyncio.run(_save_tool(alias_job).run_json(
+        {"kind": "landing page", "title": "Opt-in page",
+         "content": "<html><body>Alias</body></html>", "summary": ""}, DRY))
+    print("alias reply:", alias_reply)
+    assert "Funnels" in alias_reply, alias_reply
+    assert len(deliverables.list_deliverables("funnel", org["id"])) == 2
+    print("aliases and tab briefs land in the right tab")
+
+
+def test_unowned_drafts_can_be_assigned():
+    """An old org_id NULL draft is visible to the operator and can be placed."""
+    org = _org("Deliverable Unowned Client")
+    orphan = deliverables.create_deliverable(
+        {"kind": "email", "title": "Lost email %s" % TOKEN,
+         "content": "<html>lost</html>"})
+    assert orphan["org_id"] is None
+
+    client = appmod.app.test_client()
+    resp = client.post("/api/auth/login",
+                       json={"email": "admin@example.com", "password": "admin123"})
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    listed = client.get("/api/deliverables/unowned").get_json()
+    assert orphan["id"] in [item["id"] for item in listed["deliverables"]], listed
+
+    assigned = client.post("/api/deliverables/unowned/assign",
+                           json={"org_id": org["id"], "ids": [orphan["id"]]})
+    assert assigned.status_code == 200, assigned.get_data(as_text=True)
+    assert assigned.get_json()["assigned"] == 1, assigned.get_json()
+    assert deliverables.get_deliverable(orphan["id"])["org_id"] == org["id"]
+
+    picked = client.post("/api/session/org", json={"org_id": org["id"]})
+    assert picked.status_code == 200, picked.get_data(as_text=True)
+    rows = client.get("/api/deliverables?kind=email").get_json()["deliverables"]
+    assert any(row["id"] == orphan["id"] for row in rows), rows
+
+    anon = appmod.app.test_client()
+    assert anon.get("/api/deliverables/unowned").status_code in (401, 403)
+    assert anon.post("/api/deliverables/unowned/assign",
+                     json={}).status_code in (401, 403)
+    deliverables.delete_deliverable(orphan["id"])
+    print("unowned draft visible to the operator and assigned to its client")
+
+
 def main():
     test_tool_saves_a_draft_in_the_jobs_org()
     test_the_tool_refuses_an_unknown_kind()
@@ -267,6 +341,8 @@ def main():
     test_publish_route_validates_the_kind_and_the_session()
     test_a_second_save_updates_the_same_draft()
     test_a_save_without_content_is_explained()
+    test_kind_aliases_and_tab_enforcement()
+    test_unowned_drafts_can_be_assigned()
     print("\nDELIVERABLES OK")
 
 
