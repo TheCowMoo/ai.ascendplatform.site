@@ -12,6 +12,7 @@ Audio is never stored. What is kept is the transcript, which is the same text th
 
 import datetime
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -129,7 +130,9 @@ def remaining_minutes(user_id):
 
 
 AUTH_TOKENS_URL = ("https://generativelanguage.googleapis.com/%s/auth_tokens")
-MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+MODELS_URL = "https://generativelanguage.googleapis.com/%s/models"
+MODELS_CACHE_SECONDS = 300
+_MODELS_CACHE = {}
 
 
 def _post(url, payload, timeout=15):
@@ -237,29 +240,13 @@ def instruction(org_name="", page=""):
         % (client, where))
 
 
-def live_models(timeout=12):
-    """Which Live models this key can actually see.
+def _normalise_version(value):
+    value = str(value or "").strip().lower()
+    return value if value in API_VERSIONS else API_VERSION
 
-    A wrong model id is the quietest failure in the whole feature: the socket opens, the
-    setup is refused, and the close carries nothing useful to the user. This lets Settings
-    answer the question with Google's own list instead of a guess.
 
-    Returns ``{ok, models, error}`` and never raises.
-    """
-    key = api_key()
-    if not key:
-        return {"ok": False, "models": [], "error": "No Google Gemini key is configured."}
-    url = MODELS_URL + "?pageSize=1000&key=" + urllib.parse.quote(key)
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            data = json.loads(response.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:300]
-        return {"ok": False, "models": [],
-                "error": "Gemini refused the model list (%s): %s" % (exc.code, detail)}
-    except Exception as exc:
-        return {"ok": False, "models": [], "error": "Could not reach Gemini: %s" % exc}
-
+def _live_model_names(data):
+    """The model ids in a Google models.list response that can speak Live."""
     found = []
     for row in data.get("models") or []:
         name = str(row.get("name") or "").replace("models/", "", 1).strip()
@@ -277,7 +264,122 @@ def live_models(timeout=12):
             live = "live" in name
         if live:
             found.append(name)
-    return {"ok": True, "models": sorted(set(found)), "error": ""}
+    return sorted(set(found))
+
+
+def _live_models_for(version, timeout=12, force=False):
+    """Cached models.list for one API version. Returns {ok, models, version, error}."""
+    version = _normalise_version(version)
+    key = api_key()
+    if not key:
+        return {"ok": False, "models": [], "version": version,
+                "error": "No Google Gemini key is configured."}
+    cache_key = (key, version)
+    cached = _MODELS_CACHE.get(cache_key)
+    if cached and not force and (time.time() - cached[0]) < MODELS_CACHE_SECONDS:
+        return dict(cached[1])
+    url = (MODELS_URL % version) + "?pageSize=1000&key=" + urllib.parse.quote(key)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            data = json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        return {"ok": False, "models": [], "version": version,
+                "error": "Gemini refused the %s model list (%s): %s"
+                         % (version, exc.code, detail)}
+    except Exception as exc:
+        return {"ok": False, "models": [], "version": version,
+                "error": "Could not reach Gemini for the %s model list: %s"
+                         % (version, exc)}
+    result = {"ok": True, "models": _live_model_names(data), "version": version,
+              "error": ""}
+    _MODELS_CACHE[cache_key] = (time.time(), result)
+    return dict(result)
+
+
+def live_models(version=None, timeout=12, force=False):
+    """Which Live models this key can actually see on one API version."""
+    return _live_models_for(version or api_version(), timeout, force)
+
+
+def live_models_by_version(timeout=12, force=False):
+    """Both API versions, so Settings can name a version mismatch instead of guessing."""
+    versions = {version: live_models(version, timeout, force) for version in API_VERSIONS}
+    return {
+        "ok": any(info.get("ok") for info in versions.values()),
+        "models": sorted({model_id for info in versions.values()
+                          for model_id in (info.get("models") or [])}),
+        "versions": versions,
+        "error": " ".join(info["error"] for info in versions.values()
+                          if info.get("error")),
+    }
+
+
+def model_availability(force=False, timeout=6):
+    """Whether the configured Live model is listed for the API version the session uses.
+
+    A model listed on v1beta is not proof that the v1alpha socket can use it; that
+    mismatch is what made a socket open and then time out without setupComplete. This
+    returns ``checked=False`` when Google cannot be reached, so a transient network
+    failure never makes the microphone disappear unnecessarily.
+    """
+    wanted = model()
+    session_version = api_version()
+    current = live_models(session_version, timeout=timeout, force=force)
+    base = {
+        "model": wanted,
+        "version": session_version,
+        "available_models": current.get("models") or [],
+        "live_error": current.get("error") or "",
+    }
+    if not current.get("ok"):
+        other_versions = {}
+        elsewhere = []
+        for version in API_VERSIONS:
+            if version == session_version:
+                continue
+            info = live_models(version, timeout=timeout, force=force)
+            other_versions[version] = info
+            if info.get("ok") and wanted in (info.get("models") or []):
+                elsewhere.append(version)
+        if elsewhere:
+            error = (
+                "The %s model list failed (%s), but the live model %s is listed on %s. "
+                "Switch Live API version to %s, or choose a model that %s lists. "
+                "Open Settings -> Voice -> Test." %
+                (session_version, current.get("error") or "unknown error", wanted,
+                 ", ".join(elsewhere), elsewhere[0], session_version))
+            return dict(base, ok=False, checked=True, error=error,
+                        other_versions=other_versions, elsewhere=elsewhere)
+        return dict(base, ok=True, checked=False, error="")
+    if wanted in (current.get("models") or []):
+        return dict(base, ok=True, checked=True, error="")
+
+    other_versions = {}
+    elsewhere = []
+    for version in API_VERSIONS:
+        if version == session_version:
+            continue
+        info = live_models(version, timeout=timeout, force=force)
+        other_versions[version] = info
+        if info.get("ok") and wanted in (info.get("models") or []):
+            elsewhere.append(version)
+
+    if elsewhere:
+        error = (
+            "The live model %s is not available on %s, but it is listed on %s. "
+            "Switch Live API version to %s, or choose a model that %s lists. "
+            "Open Settings -> Voice -> Test." %
+            (wanted, session_version, ", ".join(elsewhere), elsewhere[0], session_version))
+    else:
+        available = ", ".join((base["available_models"] or [])[:8]) or "none"
+        error = (
+            "The live model %s is not available on %s. Live models on %s: %s. "
+            "Open Settings -> Voice -> Test; the Live model is separate from the "
+            "Gemini text model in AI providers." %
+            (wanted, session_version, session_version, available))
+    return dict(base, ok=False, checked=True, error=error,
+                other_versions=other_versions, elsewhere=elsewhere)
 
 
 def status(user_id=None, probe=False):
@@ -289,7 +391,10 @@ def status(user_id=None, probe=False):
         "remaining_minutes": round(remaining_minutes(user_id or 0), 1),
     }
     if probe:
-        details["live_models"] = live_models()
+        probe_all = live_models_by_version()
+        details["live_models"] = probe_all["versions"].get(
+            api_version(), {"ok": False, "models": []})
+        details["live_versions"] = probe_all
     key = api_key()
     if not key:
         return dict(details, available=False, remaining_minutes=0,

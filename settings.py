@@ -95,7 +95,8 @@ SPEC = [
             _f("ANTHROPIC_MODEL", "Claude model", default="claude-sonnet-4-5"),
             _f("GEMINI_API_KEY", "Google Gemini API key", secret=True,
                help="Also used by the Image Artist for generate_image."),
-            _f("GEMINI_MODEL", "Gemini model", default="gemini-2.5-flash"),
+            _f("GEMINI_MODEL", "Gemini model", default="gemini-2.5-flash",
+               help="Text model only; voice uses the Live model in the Voice group."),
             _f("GEMINI_IMAGE_MODEL", "Gemini image model",
                default="gemini-2.5-flash-image"),
         ],
@@ -107,13 +108,16 @@ SPEC = [
         "blurb": "The spoken assistant: the Live model, its voice, and the daily cap.",
         "test": "voice",
         "fields": [
-            _f("GEMINI_LIVE_MODEL", "Gemini live voice model",
+            _f("GEMINI_LIVE_MODEL", "Gemini Live voice model",
                default="gemini-3.8-live",
-               help="Leave blank for the default. Test lists the live models this key can see."),
+               help="A Live-capable model, separate from the Gemini text model in AI "
+                    "providers. Leave blank for the default; Test lists what this key can "
+                    "open and the API version where it is available."),
             _f("GEMINI_LIVE_API_VERSION", "Live API version", kind="choice",
                choices=("v1alpha", "v1beta"), default="v1alpha",
-               help="Ephemeral tokens are v1alpha in the installed SDK. Switch only if "
-                    "your key answers on v1beta."),
+               help="Use the version where Test lists your Live model. Ephemeral tokens "
+                    "are v1alpha by default; switch only when Test says the model is on "
+                    "v1beta."),
             _f("GEMINI_VOICE", "Spoken voice", default="Kore",
                help="Kore, Puck, Charon, Aoede or Fenrir"),
             _f("VOICE_DAILY_MINUTES", "Voice minutes per user per day", kind="int",
@@ -725,19 +729,40 @@ def _test_voice(org_id=None):
                                             state["voice"])]
     if state.get("model_note"):
         lines.append(state["model_note"])
-    probe = voice.live_models()
-    if not probe["ok"]:
-        lines.append(probe["error"])
-        return {"ok": False, "output": " ".join(lines)}
-    available = probe["models"]
-    if state["model"] in available:
-        lines.append("Ready: the key can open a Live session with this model.")
+    probe = voice.live_models_by_version(force=True)
+    versions = probe.get("versions") or {}
+    for version in voice.API_VERSIONS:
+        info = versions.get(version) or {}
+        if info.get("ok"):
+            models = info.get("models") or []
+            lines.append("%s Live models: %s." %
+                         (version, ", ".join(models[:8]) or "none"))
+        else:
+            lines.append("%s model list failed: %s" %
+                         (version, info.get("error") or "unknown error"))
+    session_version = state["api_version"]
+    session_models = (versions.get(session_version) or {}).get("models") or []
+    if state["model"] in session_models:
+        try:
+            voice.mint()
+            lines.append("Session token mint: OK.")
+        except voice.VoiceError as exc:
+            lines.append("Session token mint failed on %s: %s" %
+                         (session_version, exc))
+            return {"ok": False, "output": " ".join(lines)}
+        lines.append("Model and token check passed on %s. Press Talk to confirm the "
+                     "socket setup." % session_version)
         return {"ok": True, "output": " ".join(lines)}
-    if available:
-        lines.append("Not available to this key. Live models here: %s."
-                     % ", ".join(available[:8]))
+    elsewhere = [version for version in voice.API_VERSIONS
+                 if state["model"] in ((versions.get(version) or {}).get("models") or [])]
+    if elsewhere:
+        lines.append("Not available on %s, but listed on %s. Switch Live API version "
+                     "to %s, or choose a model listed for %s." %
+                     (session_version, ", ".join(elsewhere), elsewhere[0],
+                      session_version))
     else:
-        lines.append("Gemini returned no Live models for this key.")
+        lines.append("Not available on %s. Choose one of the Live models listed above, "
+                     "or use a key/project with Live access." % session_version)
     return {"ok": False, "output": " ".join(lines)}
 
 

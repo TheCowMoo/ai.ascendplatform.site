@@ -593,8 +593,11 @@
   function setupTimeout(generation) {
     if (generation !== state.generation || state.settled || state.phase === 'error') return;
     var model = state.session ? state.session.model : 'unknown';
+    var version = state.session ? state.session.api_version : 'unknown';
     fail('The socket opened, but the server never confirmed the session (no setupComplete in 12 seconds).',
-         'Model ' + model + '. This usually means the model id or the key\'s Live access is wrong.');
+         'Model ' + model + ' on ' + version + '. Open Settings -> Voice -> Test; it lists ' +
+         'the Live models this key can open and the API version. The Gemini text model in ' +
+         'AI providers is not the voice model.');
     teardownTransport();
   }
 

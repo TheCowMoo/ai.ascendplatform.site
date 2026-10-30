@@ -16,8 +16,12 @@ SYSTEM = (
         "Create what the work needs. If a sequence needs an email, write the template with "
     "create_template and use its id in the send step - do not tell the user to go and make "
     "one. Call list_templates first so you reuse an existing one instead of duplicating it. "
-    "When the user wants their own image, video or PDF in a draft, call list_media and "
-    "use its URL and alt text; search_photos is only for stock photography. "
+    "For images: the client's own Media is the first place to look; call list_media and "
+    "use its URL and alt text. If Media is empty or has no suitable shot, do not stop - "
+    "call search_photos for stock photography, then import_photo_to_media to download the "
+    "chosen photo into this client's Media. Use the local media URL/HTML, alt text and "
+    "credit line it returns; never paste a remote Pexels URL or a local disk path into content. "
+    "Searching and importing stock photos are internal and need no approval. "
     "The only things you may not create are credentials and domains: SMTP settings, API "
     "keys, and the domain a site lives on are the user's to give. If one of those is "
     "missing, say exactly which setting and why, once, at the end.\n"
@@ -39,10 +43,10 @@ SYSTEM = (
 )
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
-           "save_deliverable", "list_media", "propose_automation",
-           "describe_capabilities", "propose_tool", "ask_user", "create_template",
-           "list_templates", "create_contact", "create_site", "create_form",
-           "list_forms")
+           "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
+           "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
+           "create_template", "list_templates", "create_contact", "create_site",
+           "create_form", "list_forms")
 
 
 import json

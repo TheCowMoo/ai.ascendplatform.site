@@ -217,6 +217,13 @@ def _build_describe_capabilities(emit, job_id=None):
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
+            "stock_photos": {
+                "configured": bool(settings_mod.get("PEXELS_API_KEY")),
+                "flow": "search_photos -> import_photo_to_media -> use the returned media URL/HTML",
+                "requires_approval": False,
+                "note": ("Use this instead of stopping when list_media is empty. The photo "
+                         "is stored in this client's Media."),
+            },
             "agent_tools": [tool["name"] for tool in _approved_tools(org_id)],
             "note": ("Outward tools (send_email, publish_site, provision_site) need a gate "
                      "node before them or the graph is refused. If what you need is not "

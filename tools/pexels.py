@@ -2,20 +2,21 @@
 Pexels stock-photo tools (stage S6).
 
 Lets the team pull real photography into the content it builds - hero images,
-blog art, social cards - instead of only generating them. Two tools:
+blog art, social cards - instead of only generating them. Three tools:
 
   * ``search_photos`` - query the Pexels API and return each result's download
     URL, dimensions, photographer credit and page link.
   * ``fetch_photo``   - download one result into ``artifacts/images/``.
+  * ``import_photo_to_media`` - download one result into the client's Media
+    library, with alt text and credit, and return the local URL/HTML.
 
 Outbound HTTP uses ``urllib``, matching ``meta.py`` and ``app.py`` (no extra
 dependency).
 
 Safety: downloads are locked to Pexels image hosts over HTTPS. Without that check
 the tool would be a ready-made SSRF probe, since a model could hand it any URL.
-It also goes through ``tools.policy`` (path confinement) and ``actions.gate``
-(approval), like every other side effect. Searching is read-only, so it needs no
-approval - it only spends API quota.
+Path-confinement applies to artifacts. Searching is read-only; downloading into an
+artifact or the client's own Media library is internal and needs no approval gate.
 
 Pexels' licence does not require attribution, but the photographer and page URL
 are returned with every result so the content can credit them.
@@ -23,12 +24,15 @@ are returned with every result so the content can credit them.
 
 import json
 import os
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import actions
+import media_library
 import settings
+from db import get_connection
 from tools import policy
 from tools import register
 from tools import safe_filename
@@ -228,7 +232,11 @@ def _build_search_photos(emit, job_id=None):
             emit("pexels", "system", "Pexels: %d photo(s) for %r" % (len(photos), query))
         result = {"query": query, "total_results": payload.get("total_results", 0), "photos": photos}
         if photos:
-            result["next_step"] = "Call fetch_photo with a download_url to save one locally."
+            result["next_step"] = (
+                "Call import_photo_to_media with download_url, alt, description and credit "
+                "to store the chosen photo in this client's Media, then use the URL/HTML it "
+                "returns. Do not paste the remote Pexels URL into content."
+            )
         return json.dumps(result, indent=1)
 
     return search_photos
@@ -281,4 +289,105 @@ register(
     "fetch_photo",
     "Download a Pexels photo (from search_photos) into artifacts/images/.",
     _build_fetch_photo,
+)
+
+
+def _build_import_photo(emit, job_id=None):
+    async def import_photo_to_media(url: str, alt: str = "", description: str = "",
+                                    credit: str = "", filename: str = "") -> str:
+        """Download a Pexels photo into this client's Media library.
+
+        Internal storage, not an outward action: there is no approval gate and no
+        dry-run. The returned media URL/HTML is what the team should put in content.
+        """
+        if not (url or "").strip():
+            return "A Pexels download_url is required."
+        decision = check_download_url(url)
+        if not decision.allowed:
+            return "Refused to import the photo: %s" % decision.reason
+        org_id, requester = _job_context(job_id)
+        if org_id is None:
+            return ("I can't put a photo in Media without a client. Pick a client in "
+                    "the workspace switcher, then ask again.")
+        alt_text = (str(alt or "").strip()[:media_library.MAX_ALT]
+                    or "Stock photograph from Pexels")
+        note = str(credit or "").strip()
+        desc = str(description or "").strip()
+        if note and note.lower() not in desc.lower():
+            desc = (desc + "\n\n" + note).strip() if desc else note
+        if not desc:
+            desc = "Stock photograph from Pexels."
+        temp_path = ""
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                prefix="pexels-", suffix=".img", delete=False)
+            temp_path = handle.name
+            handle.close()
+            download(url, temp_path)
+            name = (os.path.basename(urllib.parse.urlparse(url).path)
+                    or filename or "pexels.jpg")
+            with open(temp_path, "rb") as stream:
+                row = media_library.create_media(
+                    _Upload(stream, name), org_id, alt_text,
+                    desc[:media_library.MAX_DESCRIPTION], created_by=requester)
+            base = media_library.public_base()
+            item = media_library.out(row, base)
+            result = {
+                "media_id": item["id"],
+                "url": item["url"],
+                "path": item["path"],
+                "alt": item["alt_text"],
+                "description": item["description"],
+                "credit": note,
+                "html": item["site_html"],
+            }
+            if not base:
+                result["note"] = (
+                    "PLATFORM_URL/ADMIN_DOMAIN is not set, so this URL is relative. "
+                    "Set one before this media is used in an email or published page.")
+            if emit:
+                emit("media", "tool_result",
+                     "Pexels photo imported into Media as #%d" % item["id"])
+            return json.dumps(result, indent=1)
+        except (PexelsError, media_library.MediaError) as exc:
+            return "Could not import the Pexels photo into Media: %s" % exc
+        except Exception as exc:
+            return "Could not import the Pexels photo into Media (%s: %s)" % (
+                type(exc).__name__, exc)
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    return import_photo_to_media
+
+
+class _Upload:
+    """What media_library.create_media needs: a filename and a readable stream."""
+
+    def __init__(self, stream, filename):
+        self.stream = stream
+        self.filename = filename
+
+
+def _job_context(job_id):
+    """(org_id, requester_id) for the job this import belongs to."""
+    if not job_id:
+        return None, None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT org_id, requester_id FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+    if not row:
+        return None, None
+    return row["org_id"], row["requester_id"]
+
+
+register(
+    "import_photo_to_media",
+    "Download a Pexels photo from search_photos into this client's Media library "
+    "and return its local URL, alt text, credit and HTML. Internal; no approval.",
+    _build_import_photo,
 )

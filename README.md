@@ -161,7 +161,7 @@ is why `tests/test_migrations.py` runs the whole chain against an empty database
 | `SSH_TIMEOUT` / `SSH_CMD_TIMEOUT` / `SSH_MAX_OUTPUT` | SSH connect timeout, command timeout, output cap |
 | `SMTP_*` | Outbound email for the `send_email` tool |
 | `ARTIFACTS_DIR` | Where generated images/files are written |
-| `PEXELS_API_KEY` | Pexels stock photography for `search_photos` / `fetch_photo` (free key at pexels.com/api) |
+| `PEXELS_API_KEY` | Pexels stock photography for `search_photos`, `fetch_photo` and `import_photo_to_media` (free key at pexels.com/api) |
 | `PEXELS_PER_PAGE` / `PEXELS_TIMEOUT` / `PEXELS_MAX_BYTES` | Search page size, request timeout, download size cap |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Claude (optional) |
@@ -332,8 +332,11 @@ workspace member can preview, copy the URL and copy the ready-to-use HTML.
   email link.
 - **Copy URL** or **Copy HTML** puts it into a draft. The **Copywriter**, **Operator**
   and **Assistant** also have a `list_media` tool that returns the URL and snippet,
-  including the alt text, so generated emails and pages use the client's own files
-  instead of stock photography.
+  including the alt text, so generated emails and pages use the client's own files.
+- Stock photography goes through `search_photos` -> `import_photo_to_media`: the chosen
+  Pexels photo is downloaded into the same Media library (with its alt text and credit
+  in the description) and the local URL/HTML is what drafts use. This needs no approval;
+  an empty Media tab is no longer a reason to skip images.
 - Files live under `artifacts/media/<client>/`; `MEDIA_DIR` moves the root and
   `MEDIA_MAX_BYTES` changes the limit in **Settings → App & branding**.
 - The public URL is `/media/<id>/<uuid>.<ext>`: no login is needed because an email
@@ -379,8 +382,13 @@ typing, and its **Talk** button is only shown when the server says a session can
   for support.
 - The microphone is asked for **before** a token is minted, so a slow permission prompt
   does not spend the session.
-- Configuration lives in **Settings → Voice**. **Test** asks Gemini which Live models the
-  key can see and names a mismatch, instead of letting the socket fail silently.
+- Configuration lives in **Settings → Voice**. **Test** lists the Live models for both
+  `v1alpha` and `v1beta`, checks a token mint on the configured version, and names a
+  mismatch. The session refuses before opening a socket when the model is not available
+  on the configured Live API version.
+- The voice model is `GEMINI_LIVE_MODEL` (**Settings → Voice**), not the Gemini text
+  model in **AI providers**. If Test says the model is on v1beta, switch **Live API
+  version** there; if it returns no Live models, the key/project lacks Live access.
 
 ### Settings
 

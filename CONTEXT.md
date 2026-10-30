@@ -286,14 +286,28 @@ route verifies the filename against the row.
 job's org, returns id, kind, dimensions/pages, alt text, description, URL and the
 right snippet (image `<img>`; video page `<video>` and email `<a>`; PDF `<a>`). It is
 granted to Copywriter, Operator and the Manager, and `sync_default_tools()` adds it to
-existing rosters. `CONTENT_RULE` and the Manager prompt say: use `list_media` for the
-client's own files, `search_photos` only for stock. Absolute URLs use `PLATFORM_URL`,
-then `https://ADMIN_DOMAIN`.
+existing rosters. `CONTENT_RULE`, `MEDIA_RULE` and the Manager prompt say: use
+`list_media` for the client's own files; if Media is empty or has no suitable shot,
+`search_photos`, then `import_photo_to_media` to download the chosen Pexels photo into
+this client's Media. Use the returned local URL/HTML and alt text, keep the credit in
+the description, and never paste a remote Pexels URL or a disk path into content.
+Absolute URLs use `PLATFORM_URL`, then `https://ADMIN_DOMAIN`.
+
+`import_photo_to_media(url, alt, description, credit, filename)` is registered in
+`tools/pexels.py`, validates the Pexels image host, downloads through the same
+`media_library.create_media` path as an upload, and returns
+`{media_id, url, path, alt, description, credit, html}`. It is internal storage, so it
+has **no approval gate and no dry-run**; `fetch_photo` remains the artifact-only
+download. The importer is granted to Copywriter, Image Artist, Operator and the
+Manager. A key-less `search_photos` returns the exact `PEXELS_API_KEY` message; the
+Manager must not treat an empty Media tab as a dead end.
 
 **Guards.** `tests/smoke_media.py` covers mandatory fields, image/PDF/video storage,
-public serving, thumbnails, scope, edit/delete and the tool; `tests/test_db_dialect.py`
-includes the table. Gaps: no video captions, no bulk upload, no file replacement under
-the same URL, no automatic import of job artifacts into Media.
+public serving, thumbnails, scope, edit/delete and the tool;
+`tests/smoke_stock_media.py` covers the Pexels import, local URL/HTML, credit, Media
+row/file and Manager/Image Artist wiring; `tests/test_db_dialect.py` includes the
+table. Gaps: no video captions, no bulk upload, no file replacement under the same
+URL, and generated job artifacts are still not imported automatically.
 
 ## Assistant sessions - private, server-backed (2026-10-31)
 
@@ -365,10 +379,21 @@ The five things that must stay true (each has a guard in `tests/smoke_voice.py`)
 The overlay (`admin/voice.js` + `.voice-*` in `admin.css`) is opened by the sheet's Talk
 button, and by the Assistant page and tour through the same `AscendVoice.open`. It is a
 mode: orb scaled from mic/output RMS, live transcripts coalesced by turn, Minimise keeps
-the session alive, Stop/Esc end it. `Settings -> Voice -> Test` calls `voice.live_models()`
-and names the models the key can actually see. `tests/voice_ui.mjs` drives the real client
-against a fake DOM, AudioContext and WebSocket, so the gate and the failure paths are
-tested without a browser or a key.
+the session alive, Stop/Esc end it. `Settings -> Voice -> Test` calls
+`voice.live_models_by_version(force=True)`, lists the Live models for **both** `v1alpha`
+and `v1beta`, checks a token mint on the configured version, and names a version
+mismatch explicitly. `POST /api/voice/session` calls `voice.model_availability()` before
+minting; if the configured model is absent from the configured version (or the model
+list fails and the other version lists it), it returns a 400 with the version to switch
+to instead of opening a socket that sits silent until the 12-second setup timer. A
+network failure of both model-list calls does not block the session
+(`checked=False`). `tests/voice_ui.mjs` drives the real client against a fake DOM,
+AudioContext and WebSocket, so the gate and the failure paths are tested without a
+browser or a key.
+
+The text model in **AI providers** (`GEMINI_MODEL`, e.g. `gemini-3.8-flash`) is not the
+voice model; voice uses `GEMINI_LIVE_MODEL` (`gemini-3.8-live` by default). The Test
+button is the source of truth for which Live model and API version this key can use.
 
 Known gaps, in the order they would bite:
 

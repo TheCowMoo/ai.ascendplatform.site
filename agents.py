@@ -57,7 +57,7 @@ DEFAULT_ROSTER = [
             "benefit-led voice. Use the Business Profile for brand voice and facts. "
             "Return ready-to-publish text, not descriptions of it."
         ),
-        "tools": ["save_deliverable", "search_photos", "list_media"],
+        "tools": ["save_deliverable", "search_photos", "import_photo_to_media", "list_media"],
         "turn_order": 3,
     },
     {
@@ -80,14 +80,14 @@ DEFAULT_ROSTER = [
         "model": "",
         "system_prompt": (
             "You are the Image Artist. For real-world subjects - people, places, "
-            "products, offices - use search_photos to find suitable stock photography "
-            "and fetch_photo to save it, and always report the credit line it returns. "
+            "products, offices - use search_photos to find suitable stock photography, "
+            "then import_photo_to_media to download the chosen photo into this client's "
+            "Media and use the local media URL/HTML, alt text and credit line it returns. "
             "For brand marks, illustrations or anything that does not exist yet, use "
-            "generate_image instead. Name the file path for every asset. In HTML, "
-            "reference the absolute https URL that search_photos returned - never a "
-            "local disk path, which renders as a broken image."
+            "generate_image instead. In HTML, reference the imported media URL - never a "
+            "remote Pexels URL or a local disk path, which renders as a broken image."
         ),
-        "tools": ["search_photos", "fetch_photo", "generate_image"],
+        "tools": ["search_photos", "import_photo_to_media", "fetch_photo", "generate_image"],
         "turn_order": 5,
     },
     {
@@ -115,8 +115,8 @@ DEFAULT_ROSTER = [
             "action is unavailable, say so plainly instead of pretending."
         ),
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
-                  "search_photos", "fetch_photo", "generate_image", "send_email",
-                  "save_deliverable", "list_media", "save_note", "current_time"],
+                  "search_photos", "import_photo_to_media", "fetch_photo", "generate_image",
+                  "send_email", "save_deliverable", "list_media", "save_note", "current_time"],
         "turn_order": 7,
     },
 ]
@@ -368,12 +368,24 @@ CONTENT_RULE = (
     "a standalone website page is \"website\". Pass the complete document as content, "
     "then summarise what you made in a sentence or two instead of pasting the whole "
     "thing. For the client's own images, video or PDFs, call list_media and use the "
-    "exact URL and alt text it returns; search_photos is only for stock photography. "
+    "exact URL and alt text it returns; for stock photography, call search_photos, then "
+    "import_photo_to_media to put the chosen photo in this client's Media. Use the local "
+    "media URL/HTML and alt text it returns, and keep the credit. "
     "In an email use the email link for a video or PDF; on a page use the page HTML. "
-    "Every <img> must use an absolute https URL (the download_url search_photos "
-    "returns); a local disk path renders as a broken image for the reader. Never leave "
-    "a placeholder such as [INSERT IMAGE URL] or [Your Name] in content the user will "
-    "receive - call search_photos yourself and use a real URL, or leave the image out."
+    "Every <img> must use an absolute https URL (the media URL import_photo_to_media "
+    "returns); a local disk path or a remote Pexels URL in content is not the imported "
+    "asset. Never leave a placeholder such as [INSERT IMAGE URL] or [Your Name] in "
+    "content the user will receive - search, import and use a real media URL, or leave "
+    "the image out."
+)
+
+
+MEDIA_RULE = (
+    "\n\nFor stock photography, call search_photos, choose a result, then call "
+    "import_photo_to_media with its download_url, alt, description and credit. Use the "
+    "media URL/HTML and alt text it returns, and keep the credit. Do not use the remote "
+    "Pexels URL or fetch_photo for content - the imported Media asset is the one the "
+    "client's pages and emails can load."
 )
 
 
@@ -382,6 +394,8 @@ def system_message_for(row):
     message = row.get("system_prompt") or row.get("role") or "You are a helpful assistant."
     if "save_deliverable" in (row.get("tools") or []):
         message += CONTENT_RULE
+    if "import_photo_to_media" in (row.get("tools") or []):
+        message += MEDIA_RULE
     return message
 
 

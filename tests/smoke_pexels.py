@@ -3,7 +3,7 @@
 Run: .\\venv\\Scripts\\python.exe tests\\smoke_pexels.py
 
 No API key is needed and nothing is downloaded: the URL allowlist, result
-shaping, the dry-run gate, the request headers and the failure paths are all
+shaping, the dry-run simulation, the request headers and the failure paths are all
 exercised offline. The one network call uses a deliberately invalid key and only
 asserts that the error is reported gracefully, so it also passes with no
 connectivity.
@@ -175,7 +175,7 @@ def test_every_request_identifies_the_app():
     print("both requests identified the app; nothing written to disk")
 
 
-def test_fetch_is_gated_and_confined():
+def test_fetch_is_confined():
     good = "https://images.pexels.com/photos/9/hero.jpg"
 
     refused = asyncio.run(pexels._build_fetch_photo(None, 7)("http://169.254.169.254/latest/meta-data/", "x.jpg"))
@@ -219,7 +219,7 @@ if __name__ == "__main__":
         test_search_tool_reports_api_errors()
         test_settings_drive_the_tools()
         test_every_request_identifies_the_app()
-        test_fetch_is_gated_and_confined()
+        test_fetch_is_confined()
         test_safe_filename()
     finally:
         settings.forget()

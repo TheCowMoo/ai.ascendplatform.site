@@ -2131,6 +2131,19 @@ def voice_session():
         expired = "minutes" in state["reason"]
         return jsonify({"error": state["reason"], "fallback": "text",
                         "model": state["model"]}), 429 if expired else 400
+    availability = voice.model_availability()
+    if availability.get("checked") and not availability.get("ok"):
+        # Do not open a socket that will sit silent until the 12-second setup timer.
+        return jsonify({
+            "error": availability["error"],
+            "fallback": "text",
+            "model": availability["model"],
+            "api_version": availability["version"],
+            "available_models": availability.get("available_models") or [],
+            "elsewhere": availability.get("elsewhere") or [],
+            "hint": ("Open Settings -> Voice -> Test. The Live voice model is separate "
+                     "from the Gemini text model in AI providers."),
+        }), 400
     data = request.get_json(silent=True) or {}
     page = str(data.get("page") or "").strip()[:40]
     try:
