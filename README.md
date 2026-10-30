@@ -29,6 +29,7 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 - 🧩 **Embeddable widget** — one `<script>` tag per bot
 - 🎨 **Live preview** while you build a bot
 - 🎙️ **Voice mode** — talk to the assistant; Gemini Live answers and delegates, with live transcripts
+- 🖼️ **Media library** — upload images, video and PDFs for emails and pages; alt text and a description are required
 - 🗄️ **SQLite** storage — no separate database server
 - ⚙️ Runs as a **Docker Compose** stack (Caddy + app + PostgreSQL + Redis)
 
@@ -250,10 +251,12 @@ The dashboard is organised as left-sidebar tabs:
    message, suggested questions, knowledge base, personality. Click **Embed** for
    the `<script>` tag.
 4. **Agents** → designate who does what (see below).
-5. **Jobs** → run an `agent_team` or `echo` task and watch the transcript stream live.
-6. **Conversations** → visitor chats and captured leads. **Stats** → message
+5. **Media** → upload images, video and PDFs for emails and pages. **Alt text and a
+   description are required before the upload can be saved.**
+6. **Jobs** → run an `agent_team` or `echo` task and watch the transcript stream live.
+7. **Conversations** → visitor chats and captured leads. **Stats** → message
    counts, activity and most-asked questions.
-7. **Users** (admin) → add/remove team members.
+8. **Users** (admin) → add/remove team members.
 
 ### Agents
 
@@ -310,6 +313,33 @@ Nothing with a side effect happens by accident:
 - Every command must pass a **deny-by-default policy** first: known read-only or
   known mutating only, each chained segment checked, command substitution
   refused, and file writes confined to the site root.
+
+### Media
+
+**Media** is the client's own library of images, video and PDFs — the files that go
+into emails, pages and posts. A platform owner or a client admin uploads; every
+workspace member can preview, copy the URL and copy the ready-to-use HTML.
+
+- **Alt text and a description are mandatory.** For an image the alt text becomes the
+  `<img alt="...">`; for video it is the accessible label (and the email link text);
+  for a PDF it is the link text. The upload button stays disabled until both are
+  filled, and the server rejects a request without them, so the rule cannot be
+  bypassed with curl.
+- One file at a time: PNG, JPEG, WebP, GIF, MP4, WebM or PDF, up to
+  `MEDIA_MAX_BYTES` (default 50 MB). Images get a thumbnail; PDFs show a page count
+  and download rather than render inline; video gets a page snippet and a separate
+  email link.
+- **Copy URL** or **Copy HTML** puts it into a draft. The **Copywriter**, **Operator**
+  and **Assistant** also have a `list_media` tool that returns the URL and snippet,
+  including the alt text, so generated emails and pages use the client's own files
+  instead of stock photography.
+- Files live under `artifacts/media/<client>/`; `MEDIA_DIR` moves the root and
+  `MEDIA_MAX_BYTES` changes the limit in **Settings → App & branding**.
+- The public URL is `/media/<id>/<uuid>.<ext>`: no login is needed because an email
+  or published page loads it directly, and the UUID filename is the unguessable part.
+- Video captions/subtitles are not part of this pass; alt text is the accessible
+  label, not a caption track. Importing generated job artifacts into Media is also a
+  later addition.
 
 ### Voice
 

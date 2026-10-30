@@ -50,6 +50,7 @@ import provisioner
 import servers as servers_service
 import sites as sites_service
 import contacts as contacts_service
+import media_library as media_service
 from tools import policy as tool_policy
 from tools import ssh as ssh_tool
 
@@ -1382,6 +1383,100 @@ def assign_unowned_deliverables():
     return jsonify({"assigned": assigned})
 
 
+def _media_for_request(media_id):
+    """A media row the caller may act on, or None. 404 for another client's."""
+    item = media_service.get_media(media_id)
+    if not item or not can_access_org(item.get("org_id")):
+        return None
+    return item
+
+
+@app.route("/api/media", methods=["GET"])
+@login_required
+def list_media():
+    kind = (request.args.get("kind") or "").strip().lower() or None
+    if kind and kind not in media_service.KINDS:
+        return jsonify({"error": "kind must be one of: %s"
+                                 % ", ".join(media_service.KINDS)}), 400
+    try:
+        rows = media_service.list_media(
+            list_scope(), request.args.get("q") or "", kind)
+    except media_service.MediaError as exc:
+        return jsonify({"error": str(exc)}), 400
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "media": [media_service.out(row, base) for row in rows],
+        "max_bytes": media_service.max_bytes(),
+        "kinds": list(media_service.KINDS),
+    })
+
+
+@app.route("/api/media", methods=["POST"])
+@client_admin_required
+def create_media():
+    if current_org() is None:
+        # A media row with no client is invisible to every workspace, the same rule
+        # deliverables follow. Refuse before reading the upload.
+        return jsonify({
+            "error": "Pick a client in the workspace switcher first - media has to "
+                     "belong to someone."
+        }), 400
+    limit = media_service.max_bytes()
+    if request.content_length and request.content_length > limit + 1_000_000:
+        return jsonify({"error": "That upload is larger than the %d MB limit."
+                                 % (limit // 1_000_000)}), 413
+    try:
+        row = media_service.create_media(
+            request.files.get("file"),
+            current_org(),
+            request.form.get("alt_text"),
+            request.form.get("description"),
+            created_by=session.get("user_id"),
+        )
+    except media_service.MediaTooLarge as exc:
+        return jsonify({"error": str(exc)}), 413
+    except media_service.MediaError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"media": media_service.out(
+        row, request.host_url.rstrip("/"))}), 201
+
+
+@app.route("/api/media/<int:media_id>", methods=["GET"])
+@login_required
+def get_media(media_id):
+    row = _media_for_request(media_id)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"media": media_service.out(
+        row, request.host_url.rstrip("/"))})
+
+
+@app.route("/api/media/<int:media_id>", methods=["PUT"])
+@client_admin_required
+def update_media(media_id):
+    row = _media_for_request(media_id)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    try:
+        updated = media_service.update_media(
+            media_id, request.get_json(silent=True) or {}, org_id=row.get("org_id"))
+    except media_service.MediaError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"media": media_service.out(
+        updated, request.host_url.rstrip("/"))})
+
+
+@app.route("/api/media/<int:media_id>", methods=["DELETE"])
+@client_admin_required
+def delete_media(media_id):
+    row = _media_for_request(media_id)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    if not media_service.delete_media(media_id, row.get("org_id")):
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"ok": True})
+
+
 @app.route("/api/deliverables", methods=["POST"])
 @client_admin_required
 def create_deliverable():
@@ -2362,6 +2457,44 @@ ARTIFACTS_ROOT = os.path.abspath(os.environ.get("ARTIFACTS_DIR") or "artifacts")
 @app.route("/artifacts/<path:filename>", methods=["GET"])
 def artifact_file(filename):
     return send_from_directory(ARTIFACTS_ROOT, filename, max_age=86400)
+
+
+# Uploaded media is public on purpose: an email or a published page loads <img src>
+# with no session. The UUID filename is the unguessable part; the id alone is not
+# enough. PDFs download instead of rendering inline, which avoids handing arbitrary
+# document content to a browser viewer.
+def _media_file_response(media_id, filename, thumb=False):
+    row = media_service.get_media(media_id)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    expected = row.get("thumb_filename") if thumb else row.get("filename")
+    if not expected or expected != filename:
+        return jsonify({"error": "Not found"}), 404
+    path = media_service.thumb_path(row) if thumb else media_service.file_path(row)
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "Not found"}), 404
+    kwargs = {"max_age": 31536000, "conditional": True}
+    if not thumb and row.get("kind") == "document":
+        kwargs["as_attachment"] = True
+        kwargs["download_name"] = row.get("original_name") or filename
+    response = send_from_directory(
+        os.path.dirname(path), os.path.basename(path), **kwargs)
+    response.headers["Content-Type"] = (
+        "image/jpeg" if thumb else (row.get("mime") or "application/octet-stream"))
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Robots-Tag"] = "noindex"
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
+@app.route("/media/<int:media_id>/thumb/<path:filename>", methods=["GET"])
+def media_thumb(media_id, filename):
+    return _media_file_response(media_id, filename, thumb=True)
+
+
+@app.route("/media/<int:media_id>/<path:filename>", methods=["GET"])
+def media_file(media_id, filename):
+    return _media_file_response(media_id, filename, thumb=False)
 
 
 @app.route("/api/deliverables/<int:deliverable_id>/refine", methods=["POST"])

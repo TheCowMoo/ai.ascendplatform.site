@@ -32,6 +32,7 @@
         { id: 'domains', label: 'Domains', icon: 'server', hash: '#/app/domains' },
         { id: 'contacts', label: 'Contacts', icon: 'user', hash: '#/app/contacts' },
         { id: 'forms', label: 'Forms', icon: 'form', hash: '#/app/forms' },
+        { id: 'media', label: 'Media', icon: 'image', hash: '#/app/media' },
         { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
         { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
         { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
@@ -3155,6 +3156,467 @@
     });
   }
 
+  // ---------- Media ----------
+  // Uploaded images, video and PDFs. The server refuses an upload without alt text
+  // and a description; these controls make that rule obvious before the request.
+  function formatBytes(value) {
+    var n = Number(value || 0);
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  function mediaKindLabel(kind) {
+    if (kind === 'video') return 'Video';
+    if (kind === 'document') return 'PDF';
+    return 'Image';
+  }
+
+  function mediaMeta(item) {
+    var parts = [mediaKindLabel(item.kind)];
+    if (item.kind === 'image' && item.width && item.height) {
+      parts.push(item.width + '×' + item.height);
+    }
+    if (item.kind === 'document' && item.pages) {
+      parts.push(item.pages + ' page' + (item.pages === 1 ? '' : 's'));
+    }
+    parts.push(formatBytes(item.bytes));
+    return parts.join(' · ');
+  }
+
+  function copyMedia(text, label) {
+    if (!(navigator.clipboard && navigator.clipboard.writeText)) {
+      toast('Clipboard is not available here', false);
+      return;
+    }
+    navigator.clipboard.writeText(text || '').then(function () {
+      toast(label + ' copied', true);
+    }).catch(function () { toast('Could not copy', false); });
+  }
+
+  function mediaPreview(item) {
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal modal-wide');
+    modal.appendChild(el('h3', null, item.original_name || 'Media'));
+    var frame = el('div', 'media-preview-full');
+    if (item.kind === 'image') {
+      var img = el('img');
+      img.src = item.url;
+      img.alt = item.alt_text;
+      frame.appendChild(img);
+    } else if (item.kind === 'video') {
+      var video = el('video');
+      video.src = item.url;
+      video.controls = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+      video.setAttribute('aria-label', item.alt_text);
+      frame.appendChild(video);
+    } else {
+      var doc = el('div', 'media-document');
+      doc.appendChild(el('div', 'media-doc-badge', 'PDF'));
+      doc.appendChild(el('p', null, item.original_name || 'PDF'));
+      doc.appendChild(el('p', 'muted', item.pages ? item.pages + ' page(s)' : 'PDF document'));
+      var open = el('a', 'btn btn-primary', 'Open / download PDF');
+      open.href = item.url;
+      open.target = '_blank';
+      open.rel = 'noopener';
+      doc.appendChild(open);
+      frame.appendChild(doc);
+    }
+    modal.appendChild(frame);
+    modal.appendChild(el('p', 'media-alt', 'Alt: ' + (item.alt_text || '')));
+    modal.appendChild(el('p', 'muted', item.description || ''));
+    var actions = el('div', 'row-actions');
+    var copyUrl = el('button', 'btn btn-ghost', 'Copy URL');
+    copyUrl.onclick = function () { copyMedia(item.url, 'URL'); };
+    actions.appendChild(copyUrl);
+    if (item.kind === 'image') {
+      var copyHtml = el('button', 'btn btn-ghost', 'Copy HTML');
+      copyHtml.onclick = function () { copyMedia(item.site_html, 'HTML'); };
+      actions.appendChild(copyHtml);
+    } else if (item.kind === 'video') {
+      var page = el('button', 'btn btn-ghost', 'Copy page HTML');
+      page.onclick = function () { copyMedia(item.site_html, 'Page HTML'); };
+      var email = el('button', 'btn btn-ghost', 'Copy email link');
+      email.onclick = function () { copyMedia(item.email_html, 'Email link'); };
+      actions.appendChild(page);
+      actions.appendChild(email);
+    } else {
+      var link = el('button', 'btn btn-ghost', 'Copy link');
+      link.onclick = function () { copyMedia(item.email_html, 'Link'); };
+      actions.appendChild(link);
+    }
+    var close = el('button', 'btn btn-primary', 'Close');
+    close.onclick = function () { backdrop.remove(); };
+    actions.appendChild(close);
+    modal.appendChild(actions);
+    backdrop.appendChild(modal);
+    backdrop.onclick = function (event) { if (event.target === backdrop) backdrop.remove(); };
+    document.body.appendChild(backdrop);
+  }
+
+  function editMedia(item, refresh) {
+    formModal('Edit media', [
+      { name: 'alt_text', label: 'Alt text / accessible label', value: item.alt_text,
+        help: 'Required. Read by screen readers and used in emails.' },
+      { name: 'description', label: 'Description', type: 'textarea',
+        value: item.description,
+        help: 'Required. What it shows and where it can be used.' }
+    ], function (data, fail, ok) {
+      if (!String(data.alt_text || '').trim()) { fail('Alt text is required.'); return; }
+      if (!String(data.description || '').trim()) { fail('Description is required.'); return; }
+      api('PUT', '/api/media/' + item.id, {
+        alt_text: data.alt_text,
+        description: data.description
+      }).then(function () {
+        ok();
+        toast('Media updated', true);
+        refresh();
+      }).catch(function (e) { fail(e.message); });
+    });
+  }
+
+  function deleteMedia(item, refresh) {
+    if (!confirm('Delete "' + (item.original_name || 'this media') + '"?\n\n' +
+                 'Any email or page using it will show a broken image or link.')) return;
+    api('DELETE', '/api/media/' + item.id).then(function () {
+      toast('Media deleted', true);
+      refresh();
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function mediaUploadCard(getLimit, onUploaded) {
+    var card = el('div', 'panel-card media-form');
+    card.appendChild(el('h3', 'card-title', 'Upload media'));
+    card.appendChild(el('p', 'muted',
+      'Images, video or PDFs for emails, sites and posts. Alt text and a description ' +
+      'are required before the upload can be saved.'));
+    var file = null;
+    var objectUrl = '';
+    var previewImg = null;
+    var previewVideo = null;
+
+    var pick = el('input');
+    pick.type = 'file';
+    pick.id = 'media-file';
+    pick.accept = 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,application/pdf';
+    var drop = el('label', 'media-drop');
+    drop.setAttribute('for', 'media-file');
+    drop.appendChild(el('strong', null, 'Choose a file'));
+    drop.appendChild(el('span', 'muted', 'PNG, JPEG, WebP, GIF, MP4, WebM or PDF'));
+    drop.appendChild(pick);
+    card.appendChild(drop);
+
+    var preview = el('div', 'media-preview');
+    preview.hidden = true;
+    card.appendChild(preview);
+
+    var alt = el('input');
+    alt.type = 'text';
+    alt.placeholder = 'Describe what is visible';
+    alt.maxLength = 300;
+    var altField = el('label', 'field media-required');
+    altField.appendChild(el('span', null, 'Alt text / accessible label'));
+    altField.appendChild(alt);
+    altField.appendChild(el('small', 'muted',
+      'Required. For images this becomes the alt attribute; for video/PDF it is the ' +
+      'accessible label or link text.'));
+    card.appendChild(altField);
+
+    var desc = el('textarea');
+    desc.placeholder = 'What it shows and where it can be used';
+    desc.maxLength = 2000;
+    var descField = el('label', 'field media-required');
+    descField.appendChild(el('span', null, 'Description'));
+    descField.appendChild(desc);
+    descField.appendChild(el('small', 'muted',
+      'Required. The team and the AI use this to choose the right file.'));
+    card.appendChild(descField);
+
+    var hint = el('p', 'fine-print', 'Up to ' + formatBytes(getLimit()) + '.');
+    card.appendChild(hint);
+    var error = el('div', 'form-error');
+    card.appendChild(error);
+    var bar = el('progress', 'media-progress');
+    bar.max = 100;
+    bar.value = 0;
+    bar.hidden = true;
+    card.appendChild(bar);
+    var go = el('button', 'btn btn-primary', 'Upload media');
+    go.disabled = true;
+    card.appendChild(go);
+
+    function sync() {
+      go.disabled = !(file && alt.value.trim() && desc.value.trim());
+      if (previewImg) previewImg.alt = alt.value.trim();
+      if (previewVideo) previewVideo.setAttribute('aria-label', alt.value.trim());
+    }
+    function clearPreview() {
+      if (objectUrl) {
+        try { URL.revokeObjectURL(objectUrl); } catch (e) { /* already gone */ }
+        objectUrl = '';
+      }
+      preview.innerHTML = '';
+      preview.hidden = true;
+      previewImg = null;
+      previewVideo = null;
+    }
+    function showPreview(chosen) {
+      clearPreview();
+      objectUrl = URL.createObjectURL(chosen);
+      preview.hidden = false;
+      if (chosen.type.indexOf('image/') === 0) {
+        previewImg = el('img');
+        previewImg.src = objectUrl;
+        previewImg.alt = alt.value.trim();
+        preview.appendChild(previewImg);
+      } else if (chosen.type.indexOf('video/') === 0) {
+        previewVideo = el('video');
+        previewVideo.src = objectUrl;
+        previewVideo.controls = true;
+        previewVideo.playsInline = true;
+        previewVideo.setAttribute('aria-label', alt.value.trim());
+        preview.appendChild(previewVideo);
+      } else {
+        preview.appendChild(el('div', 'media-doc-badge', 'PDF'));
+        preview.appendChild(el('p', null, chosen.name));
+      }
+    }
+
+    pick.onchange = function () {
+      error.textContent = '';
+      var chosen = pick.files && pick.files[0];
+      if (!chosen) { file = null; clearPreview(); sync(); return; }
+      var name = (chosen.name || '').toLowerCase();
+      var typeOk = chosen.type.indexOf('image/') === 0 ||
+        chosen.type.indexOf('video/') === 0 ||
+        chosen.type === 'application/pdf' ||
+        /\.(png|jpe?g|webp|gif|mp4|webm|pdf)$/.test(name);
+      if (!typeOk) {
+        error.textContent = 'Choose an image, video or PDF.';
+        pick.value = '';
+        file = null;
+        clearPreview();
+        sync();
+        return;
+      }
+      var limit = getLimit();
+      if (chosen.size > limit) {
+        error.textContent = 'That file is ' + formatBytes(chosen.size) +
+          '; the limit is ' + formatBytes(limit) + '.';
+        pick.value = '';
+        file = null;
+        clearPreview();
+        sync();
+        return;
+      }
+      file = chosen;
+      showPreview(chosen);
+      sync();
+    };
+    alt.addEventListener('input', sync);
+    desc.addEventListener('input', sync);
+
+    go.onclick = function () {
+      if (!file) return;
+      var form = new FormData();
+      form.append('file', file);
+      form.append('alt_text', alt.value.trim());
+      form.append('description', desc.value.trim());
+      go.disabled = true;
+      error.textContent = '';
+      bar.hidden = false;
+      bar.value = 0;
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/media');
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = function (event) {
+        if (event.lengthComputable) {
+          bar.value = Math.round((event.loaded / event.total) * 100);
+        }
+      };
+      xhr.onload = function () {
+        var data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { data = {}; }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          toast('Uploaded - it is in the Media library', true);
+          pick.value = '';
+          file = null;
+          alt.value = '';
+          desc.value = '';
+          clearPreview();
+          bar.hidden = true;
+          sync();
+          if (onUploaded) onUploaded();
+        } else {
+          error.textContent = data.error || ('Upload failed (' + xhr.status + ')');
+          go.disabled = false;
+          bar.hidden = true;
+        }
+      };
+      xhr.onerror = function () {
+        error.textContent = 'Network error - try again.';
+        go.disabled = false;
+        bar.hidden = true;
+      };
+      xhr.send(form);
+    };
+    return { card: card, hint: hint };
+  }
+
+  function mediaCard(item, refresh) {
+    var card = el('article', 'media-card');
+    var thumb = el('button', 'media-thumb');
+    thumb.type = 'button';
+    thumb.title = 'Preview ' + (item.original_name || 'media');
+    if (item.kind === 'image') {
+      var img = el('img');
+      img.src = item.thumb_url || item.url;
+      img.alt = item.alt_text;
+      img.loading = 'lazy';
+      thumb.appendChild(img);
+    } else if (item.kind === 'video') {
+      thumb.className += ' media-thumb-video';
+      thumb.appendChild(el('span', 'media-play', '▶'));
+      thumb.appendChild(el('span', 'media-tile-label', 'Video'));
+    } else {
+      thumb.className += ' media-thumb-doc';
+      thumb.appendChild(el('span', 'media-doc-badge', 'PDF'));
+      thumb.appendChild(el('span', 'media-tile-label',
+        item.pages ? item.pages + ' page(s)' : 'PDF'));
+    }
+    thumb.onclick = function () { mediaPreview(item); };
+    card.appendChild(thumb);
+
+    var body = el('div', 'media-body');
+    body.appendChild(el('h3', 'media-name', item.original_name || 'Untitled'));
+    body.appendChild(el('p', 'media-meta', mediaMeta(item)));
+    if (item.org_name) body.appendChild(el('p', 'fine-print', item.org_name));
+    body.appendChild(el('p', 'media-alt', 'Alt: ' + (item.alt_text || '')));
+    body.appendChild(el('p', 'media-desc', item.description || ''));
+
+    var actions = el('div', 'media-actions');
+    var copyUrl = el('button', 'btn btn-ghost btn-sm', 'Copy URL');
+    copyUrl.onclick = function () { copyMedia(item.url, 'URL'); };
+    actions.appendChild(copyUrl);
+    if (item.kind === 'image') {
+      var html = el('button', 'btn btn-ghost btn-sm', 'Copy HTML');
+      html.onclick = function () { copyMedia(item.site_html, 'HTML'); };
+      actions.appendChild(html);
+    } else if (item.kind === 'video') {
+      var page = el('button', 'btn btn-ghost btn-sm', 'Copy page HTML');
+      page.onclick = function () { copyMedia(item.site_html, 'Page HTML'); };
+      var email = el('button', 'btn btn-ghost btn-sm', 'Copy email link');
+      email.onclick = function () { copyMedia(item.email_html, 'Email link'); };
+      actions.appendChild(page);
+      actions.appendChild(email);
+    } else {
+      var link = el('button', 'btn btn-ghost btn-sm', 'Copy link');
+      link.onclick = function () { copyMedia(item.email_html, 'Link'); };
+      actions.appendChild(link);
+    }
+    if (canAdmin(state.user)) {
+      var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+      edit.onclick = function () { editMedia(item, refresh); };
+      actions.appendChild(edit);
+      var del = el('button', 'btn btn-danger btn-sm', 'Delete');
+      del.onclick = function () { deleteMedia(item, refresh); };
+      actions.appendChild(del);
+    }
+    body.appendChild(actions);
+    card.appendChild(body);
+    return card;
+  }
+
+  function viewMedia() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Media</h2><p class="muted">Images, video and PDFs ' +
+      'for emails, sites and posts. Every file needs alt text and a description ' +
+      'before it can be uploaded.</p></div>';
+    container.appendChild(head);
+
+    var maxBytes = 50000000;
+    var uploadHint = null;
+    var uploadHost = el('div');
+    container.appendChild(uploadHost);
+
+    var toolbar = el('div', 'media-toolbar');
+    var search = el('input', 'media-search');
+    search.type = 'search';
+    search.placeholder = 'Search media…';
+    var filter = el('select', 'media-filter');
+    [['', 'All media'], ['image', 'Images'], ['video', 'Video'], ['document', 'PDFs']]
+      .forEach(function (pair) {
+        var opt = el('option', null, pair[1]);
+        opt.value = pair[0];
+        filter.appendChild(opt);
+      });
+    var count = el('span', 'muted', '');
+    toolbar.appendChild(search);
+    toolbar.appendChild(filter);
+    toolbar.appendChild(count);
+    container.appendChild(toolbar);
+
+    var grid = el('div', 'media-grid');
+    container.appendChild(grid);
+
+    var timer = 0;
+    search.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(refresh, 250);
+    });
+    filter.onchange = refresh;
+
+    function refresh() {
+      var url = '/api/media?q=' + encodeURIComponent(search.value.trim()) +
+        (filter.value ? '&kind=' + filter.value : '');
+      api('GET', url).then(function (d) {
+        maxBytes = Number(d.max_bytes || maxBytes);
+        if (uploadHint) uploadHint.textContent = 'Up to ' + formatBytes(maxBytes) + '.';
+        grid.innerHTML = '';
+        var rows = d.media || [];
+        count.textContent = rows.length + ' item(s)';
+        if (!rows.length) {
+          var empty = el('div', 'panel-card empty-state');
+          empty.innerHTML = '<p><strong>No media yet.</strong></p>' +
+            '<p class="muted">Upload an image, video or PDF to use it in an email or page.</p>';
+          grid.appendChild(empty);
+          return;
+        }
+        rows.forEach(function (item) { grid.appendChild(mediaCard(item, refresh)); });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    if (canAdmin(state.user)) {
+      api('GET', '/api/session/org').then(function (session) {
+        if (!session || !session.acting_org) {
+          var hint = el('div', 'panel-card empty-state');
+          hint.innerHTML = '<p><strong>Pick a client to upload media.</strong></p>' +
+            '<p class="muted">Choose one in the workspace switcher under the logo. ' +
+            'Media belongs to a client, so it never lands where nobody can find it.</p>';
+          uploadHost.appendChild(hint);
+          return;
+        }
+        var built = mediaUploadCard(function () { return maxBytes; }, refresh);
+        uploadHint = built.hint;
+        uploadHint.textContent = 'Up to ' + formatBytes(maxBytes) + '.';
+        uploadHost.appendChild(built.card);
+      }).catch(function () {
+        var built = mediaUploadCard(function () { return maxBytes; }, refresh);
+        uploadHint = built.hint;
+        uploadHost.appendChild(built.card);
+      });
+    } else {
+      uploadHost.appendChild(el('p', 'muted',
+        'You can preview and copy media. Only a client admin can upload, edit or delete.'));
+    }
+
+    refresh();
+    return container;
+  }
+
   // ---------- Public: accepting an invitation ----------
   // Rendered before the auth gate: the visitor has no session yet, and the whole point
   // of the link is to create one.
@@ -6082,6 +6544,7 @@
     else if (tab === 'forms' && rest[1] === 'responses') view = viewFormResponses(rest[0]);
     else if (tab === 'forms' && rest[0]) view = viewFormBuilder(rest[0]);
     else if (tab === 'forms') view = viewForms();
+    else if (tab === 'media') view = viewMedia();
     else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();

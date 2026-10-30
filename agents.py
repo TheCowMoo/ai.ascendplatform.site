@@ -57,7 +57,7 @@ DEFAULT_ROSTER = [
             "benefit-led voice. Use the Business Profile for brand voice and facts. "
             "Return ready-to-publish text, not descriptions of it."
         ),
-        "tools": ["save_deliverable", "search_photos"],
+        "tools": ["save_deliverable", "search_photos", "list_media"],
         "turn_order": 3,
     },
     {
@@ -116,7 +116,7 @@ DEFAULT_ROSTER = [
         ),
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
                   "search_photos", "fetch_photo", "generate_image", "send_email",
-                  "save_deliverable", "save_note", "current_time"],
+                  "save_deliverable", "list_media", "save_note", "current_time"],
         "turn_order": 7,
     },
 ]
@@ -367,7 +367,10 @@ CONTENT_RULE = (
     "post is \"blog\" even when it is published on a website; an email is \"email\"; "
     "a standalone website page is \"website\". Pass the complete document as content, "
     "then summarise what you made in a sentence or two instead of pasting the whole "
-    "thing. Every <img> must use an absolute https URL (the download_url search_photos "
+    "thing. For the client's own images, video or PDFs, call list_media and use the "
+    "exact URL and alt text it returns; search_photos is only for stock photography. "
+    "In an email use the email link for a video or PDF; on a page use the page HTML. "
+    "Every <img> must use an absolute https URL (the download_url search_photos "
     "returns); a local disk path renders as a broken image for the reader. Never leave "
     "a placeholder such as [INSERT IMAGE URL] or [Your Name] in content the user will "
     "receive - call search_photos yourself and use a real URL, or leave the image out."

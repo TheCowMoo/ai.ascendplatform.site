@@ -537,6 +537,34 @@ deliverables = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
+# Uploaded media for a client: the images, videos and PDFs the team can use in
+# emails and pages. The file bytes live under artifacts/media/<org_id>/; this row is
+# the index, and the public URL is built from the id plus the unguessable filename.
+# alt_text and description are mandatory at the service layer; the database holds
+# non-null defaults so an old migration cannot create an unreadable row.
+media = Table(
+    "media",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("kind", Text, nullable=False, server_default=_literal("image")),
+    Column("filename", Text, nullable=False, unique=True),
+    Column("thumb_filename", Text, nullable=False, server_default=_literal("")),
+    Column("original_name", Text, nullable=False, server_default=_literal("")),
+    Column("mime", Text, nullable=False, server_default=_literal("")),
+    Column("bytes", Integer, nullable=False, server_default=text("0")),
+    Column("width", Integer),
+    Column("height", Integer),
+    Column("pages", Integer),
+    Column("alt_text", Text, nullable=False, server_default=_literal("")),
+    Column("description", Text, nullable=False, server_default=_literal("")),
+    Column("created_by", Integer),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+Index("idx_media_org", media.c.org_id)
+
 # The platform's own mail is not the clients' SMTP: invitations and operator notices
 # go through GoHighLevel, and a client must never be able to see or spend that token.
 # A sender is a *record of who we send as* - GHL remains the only place a from-address

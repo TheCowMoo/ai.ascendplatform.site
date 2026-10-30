@@ -28,3 +28,7 @@ autogen-ext[anthropic,openai]==0.7.5
 anthropic>=0.48,<1.0
 paramiko>=5.0
 google-genai>=2.0
+# Media tab: real image validation/thumbnails and PDF page validation. Both are
+# hard dependencies of media_library.py, which the app imports at startup.
+Pillow>=10
+pypdf>=4

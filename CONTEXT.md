@@ -253,6 +253,48 @@ public submission counts against the ten-a-minute rate limit before validation (
 a distinct X-Forwarded-For in tests), and automation_runs has no org_id column -
 scope through automation_id. Assertion now lives at the end of tests/smoke_forms.py.
 
+## Media - uploaded images, video and PDFs (2026-10-30)
+
+A client's own files for emails, pages and posts. The Media tab is in the Workspace
+nav at `#/app/media`; owner and client admins upload/edit/delete, members view and
+copy. One file per upload.
+
+**Data.** Table `media` (migration `0019_media`, after `0018_forms`): `org_id`,
+`kind` (`image` / `video` / `document`), `filename`, `thumb_filename`, `original_name`,
+`mime`, `bytes`, `width`, `height`, `pages`, `alt_text`, `description`, `created_by`,
+timestamps. Bytes live under `artifacts/media/<org_id>/`; `MEDIA_DIR` moves the root
+and `MEDIA_MAX_BYTES` (default 50 MB) caps an upload.
+
+**The rule.** Alt text and description are mandatory in `media_library.create_media`
+and `update_media`; the UI disables the upload button, but the server is the guarantee:
+a blank/whitespace field is a 400 before the file is read or written. Alt text is the
+image `alt` attribute, the video's accessible label/link text, and the PDF link text.
+
+**Validation.** Images are opened and verified by Pillow (PNG/JPEG/WebP/GIF; SVG is
+rejected), with a decompression-bomb limit and a 480px JPEG thumbnail. PDFs are opened
+by pypdf (page count; encrypted files refused) and served as an attachment. Video is
+MP4 (`ftyp`) or WebM (EBML) only; MOV is refused. No ffmpeg, so no duration/poster.
+Refused uploads leave no file and no row.
+
+**Routes.** `GET/POST /api/media`, `GET/PUT/DELETE /api/media/<id>`; uploads require a
+selected client and `client_admin_required`, reads use `list_scope()`. Public
+`GET /media/<id>/<uuid>.<ext>` and `/media/<id>/thumb/<uuid>.jpg` serve the bytes with
+`nosniff`, immutable caching and no login; the UUID is the capability. The public
+route verifies the filename against the row.
+
+**For the agents.** `tools/library.py` registers `list_media(query)`: it reads the
+job's org, returns id, kind, dimensions/pages, alt text, description, URL and the
+right snippet (image `<img>`; video page `<video>` and email `<a>`; PDF `<a>`). It is
+granted to Copywriter, Operator and the Manager, and `sync_default_tools()` adds it to
+existing rosters. `CONTENT_RULE` and the Manager prompt say: use `list_media` for the
+client's own files, `search_photos` only for stock. Absolute URLs use `PLATFORM_URL`,
+then `https://ADMIN_DOMAIN`.
+
+**Guards.** `tests/smoke_media.py` covers mandatory fields, image/PDF/video storage,
+public serving, thumbnails, scope, edit/delete and the tool; `tests/test_db_dialect.py`
+includes the table. Gaps: no video captions, no bulk upload, no file replacement under
+the same URL, no automatic import of job artifacts into Media.
+
 ## Voice — the spoken assistant (2026-10-30)
 
 Browser-direct Live socket, one-use token minted by `voice.py`, key never leaves the

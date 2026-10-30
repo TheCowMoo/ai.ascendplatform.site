@@ -328,7 +328,7 @@ input[type=color] {
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
 /* ---------- Misc ---------- */
-/* The empty state carries the next action; a bare 🚧 never told anyone what to do. */
+/* The empty state carries the next action; a bare ðŸš§ never told anyone what to do. */
 .empty-state { text-align: center; padding: 64px 24px; color: var(--ink-500); border: 1px dashed var(--line); border-radius: var(--r-md); background: var(--surface); }
 .empty-state .big { color: var(--ink-400); margin-bottom: 12px; display: flex; justify-content: center; }
 .empty-state .big .icon { width: 34px; height: 34px; stroke-width: 1.4; }
@@ -595,7 +595,7 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 }
 .mgr-fab:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(67, 56, 202, .38); }
 .mgr-fab:focus-visible { box-shadow: 0 0 0 4px var(--accent-ring), 0 8px 24px rgba(67,56,202,.3); }
-.mgr-fab::before { content: "✦"; margin-right: 8px; opacity: .85; }
+.mgr-fab::before { content: "âœ¦"; margin-right: 8px; opacity: .85; }
 
 .mgr-panel {
   right: var(--s-5); bottom: 84px; width: 380px; max-height: 66vh; gap: 0;
@@ -1137,5 +1137,66 @@ body.graph-full { overflow: hidden; }
   .activity-bar b { left: 0; width: 100%; opacity: .35; }
 }
 
-
-
+/* ---------- Media ---------- */
+.media-toolbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0;
+}
+.media-search { max-width: 320px; }
+.media-filter { width: auto; min-width: 150px; }
+.media-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.media-grid .empty-state { grid-column: 1 / -1; }
+.media-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow-1);
+  display: flex; flex-direction: column;
+}
+.media-thumb {
+  position: relative; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; width: 100%; aspect-ratio: 4 / 3; border: 0;
+  padding: 0; background: var(--raised); color: var(--accent-700);
+  font: inherit; cursor: pointer; overflow: hidden;
+}
+.media-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.media-thumb:hover { filter: brightness(.97); }
+.media-thumb-video { background: linear-gradient(135deg, var(--accent-50), var(--canvas)); }
+.media-thumb-doc { background: linear-gradient(135deg, var(--danger-50), var(--canvas)); }
+.media-play { font-size: 36px; line-height: 1; }
+.media-tile-label {
+  position: absolute; left: 10px; bottom: 10px; font-size: var(--fs-micro);
+  font-weight: 600; color: var(--ink-500);
+}
+.media-doc-badge {
+  display: inline-block; padding: 6px 10px; border-radius: var(--r-sm);
+  background: var(--danger-50); color: var(--danger-700); font-weight: 700;
+  font-size: var(--fs-sm);
+}
+.media-body { padding: 12px; display: flex; flex-direction: column; gap: 5px; }
+.media-name { margin: 0; font-size: var(--fs-sm); font-weight: 600; overflow-wrap: anywhere; }
+.media-meta { margin: 0; font-size: var(--fs-micro); color: var(--ink-400); }
+.media-alt { margin: 0; font-size: var(--fs-sm); }
+.media-desc { margin: 0; font-size: var(--fs-sm); color: var(--ink-500); }
+.media-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 8px; }
+.media-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.media-drop {
+  display: flex; flex-direction: column; gap: 4px; align-items: center;
+  justify-content: center; padding: 18px; border: 1px dashed var(--line);
+  border-radius: var(--r-md); cursor: pointer; text-align: center;
+  background: var(--canvas);
+}
+.media-drop:hover { border-color: var(--accent-600); }
+.media-drop input { display: none; }
+.media-preview { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.media-preview img, .media-preview video {
+  max-width: 100%; max-height: 240px; border-radius: var(--r-sm);
+}
+.media-preview-full img, .media-preview-full video {
+  max-width: 100%; max-height: 60vh; display: block; margin: 0 auto;
+}
+.media-document {
+  display: flex; flex-direction: column; gap: 8px; align-items: center; padding: 20px;
+}
+.media-progress { width: 100%; height: 10px; }
+.media-required > span { font-weight: 600; }

@@ -229,6 +229,10 @@ SPEC = [
             _f("BRAND_NAME", "Product name", default="AscendPlatform"),
             _f("MAX_KB_CHARS", "Knowledge-base cap (characters)", kind="int",
                default="30000"),
+            _f("MEDIA_MAX_BYTES", "Media upload limit (bytes)", kind="int",
+               default="50000000",
+               help="Largest image, video or PDF the Media tab accepts. "
+                    "Default 50 MB."),
             _f("GRAPH_API_VERSION", "Meta Graph API version", default="v21.0"),
         ],
     },
@@ -242,6 +246,9 @@ SPEC = [
         "fields": [
             _f("ARTIFACTS_DIR", "Artifacts directory", applies=RESTART,
                readonly=True),
+            _f("MEDIA_DIR", "Media directory", applies=RESTART, readonly=True,
+               help="Where uploaded images, video and PDFs live. Defaults to "
+                    "<artifacts>/media."),
             _f("REDIS_URL", "Redis URL", applies=RESTART, readonly=True),
             _f("JOB_BACKEND", "Job backend", applies=RESTART, readonly=True),
             _f("LLM_GATEWAY_URL", "LiteLLM gateway URL", applies=RESTART,

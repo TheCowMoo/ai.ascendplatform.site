@@ -107,4 +107,5 @@ from . import media as _media_tools  # noqa: E402,F401
 from . import pexels as _pexels_tools  # noqa: E402,F401
 from . import mail as _mail_tools  # noqa: E402,F401
 from . import deliverable as _deliverable_tools  # noqa: E402,F401
+from . import library as _library_tools  # noqa: E402,F401
 from . import manager as _manager_tools  # noqa: E402,F401
