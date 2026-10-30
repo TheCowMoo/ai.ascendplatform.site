@@ -2885,7 +2885,8 @@
         card.appendChild(el('h3', 'card-title', 'Unowned drafts (' + rows.length + ')'));
         card.appendChild(el('p', 'muted',
           'These were saved while no client was selected, so they appear in no ' +
-          'client\'s tab. Assign them to the client they belong to.'));
+          'client\'s tab. Assign them to the client they belong to, then switch to ' +
+          'that client in the workspace switcher to see them in its tabs.'));
         var table = el('table', 'table');
         table.innerHTML = '<thead><tr><th></th><th>Title</th><th>Kind</th>' +
           '<th>Created</th></tr></thead>';
