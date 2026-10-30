@@ -127,10 +127,29 @@ def test_the_routes():
     check("the same turn is not run twice", (again.get_json() or {}).get("duplicate"), True)
 
 
+def test_the_browser_half_is_wired():
+    """Static: the server half is useless if the page never loads the microphone client."""
+    def read(*parts):
+        return open(os.path.join(ROOT, *parts), encoding="utf-8").read()
+
+    client_js = read("admin", "voice.js")
+    admin_js = read("admin", "admin.js")
+    page = read("admin", "index.html")
+    check("the voice client exposes one entry point", "window.AscendVoice" in client_js, True)
+    check("it sends the setup message first", "send(data.setup)" in client_js, True)
+    check("mic audio is 16 kHz pcm", "audio/pcm;rate=16000" in client_js, True)
+    check("barge-in silences the queue", "content.interrupted" in client_js, True)
+    check("a tool call is relayed to our route", "'/api/voice/tool'" in client_js, True)
+    check("the assistant only offers the mic when allowed",
+          "'/api/voice/status'" in admin_js, True)
+    check("the page loads the client", "/admin/voice.js" in page, True)
+
+
 if __name__ == "__main__":
     test_status_tells_the_truth()
     test_setup_declares_one_tool()
     test_the_routes()
+    test_the_browser_half_is_wired()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)

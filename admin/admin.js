@@ -3722,6 +3722,46 @@
     var send = el('button', 'btn btn-primary', 'Send');
     container.appendChild(send);
 
+    // Voice is offered only when the server says it can be: no key, or minutes spent, means
+    // no microphone rather than a button that fails when pressed.
+    var mic = el('button', 'btn btn-ghost', 'Talk');
+    mic.style.display = 'none';
+    var voiceNote = el('p', 'fine-print');
+    container.appendChild(mic);
+    container.appendChild(voiceNote);
+    api('GET', '/api/voice/status').then(function (s) {
+      if (!s.available) {
+        voiceNote.textContent = s.reason;
+        return;
+      }
+      mic.style.display = '';
+      voiceNote.textContent = 'Voice: ' + s.voice + ' · ' +
+        s.remaining_minutes + ' min left today';
+      mic.onclick = function () {
+        if (window.AscendVoice && window.AscendVoice.running()) {
+          window.AscendVoice.stop();
+          mic.textContent = 'Talk';
+          mic.classList.remove('btn-primary');
+          return;
+        }
+        mic.textContent = 'Stop';
+        mic.classList.add('btn-primary');
+        window.AscendVoice.start({
+          page: 'assistant',
+          onState: function (label) { voiceNote.textContent = 'Voice: ' + label; },
+          onHeard: function (text) { bubble('me', text); },
+          onSaid: function (text) { bubble('them', text); },
+          onDelegate: function (instruction) { bubble('them', 'On it: ' + instruction); },
+          onJob: function (jobId) { voiceNote.textContent = 'The team is working - job #' + jobId; },
+          onError: function (message) {
+            toast(message, false);
+            mic.textContent = 'Talk';
+            mic.classList.remove('btn-primary');
+          }
+        });
+      };
+    }).catch(function () { /* no voice is not an error worth a toast */ });
+
     var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
     var key = 'chat:' + orgKey + ':' + ((state.user && state.user.id) || 0);
     var threadState = { messages: [] };
