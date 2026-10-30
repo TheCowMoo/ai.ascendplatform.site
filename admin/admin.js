@@ -3710,10 +3710,7 @@
       'asks when the brief is thin, drafts when it is not, and keeps the thread.</p></div>';
     container.appendChild(head);
 
-    var thread = el('div', 'assistant-thread');
-    thread.style.cssText = 'display:flex;flex-direction:column;gap:10px;min-height:340px;' +
-      'max-height:52vh;overflow-y:auto;padding:12px;border:1px solid var(--line);' +
-      'border-radius:12px;background:#fcfcfd;margin-bottom:10px';
+    var thread = el('div', 'asst-thread');
     container.appendChild(thread);
 
     var box = el('textarea', 'prompt-box');
@@ -3772,20 +3769,68 @@
     function save() {
       try { localStorage.setItem(key, JSON.stringify(threadState)); } catch (e) { /* private mode */ }
     }
+    // One shape for every message: a body, and - on the assistant's side - the two actions
+    // people actually want, kept out of the way until the pointer is over the message.
     function bubble(who, text) {
-      var line = el('div', 'assistant-msg ' + who, text);
-      line.style.cssText = who === 'me'
-        ? 'align-self:flex-end;max-width:80%;background:var(--accent-soft);padding:8px 12px;' +
-          'border-radius:12px 12px 2px 12px;white-space:pre-wrap'
-        : 'align-self:flex-start;max-width:85%;background:#fff;border:1px solid var(--line);' +
-          'padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap';
-      thread.appendChild(line);
+      var wrap = el('div', 'asst-msg ' + who);
+      wrap.appendChild(el('div', 'asst-body', text));
+      if (who === 'them') {
+        var actions = el('div', 'asst-actions');
+        var copy = el('button', null, 'Copy');
+        copy.onclick = function () {
+          navigator.clipboard.writeText(String(text)).then(function () {
+            copy.textContent = 'Copied';
+            setTimeout(function () { copy.textContent = 'Copy'; }, 1200);
+          }).catch(function () { toast('Copy failed', false); });
+        };
+        actions.appendChild(copy);
+        wrap.appendChild(actions);
+      }
+      thread.appendChild(wrap);
       thread.scrollTop = thread.scrollHeight;
-      return line;
+      return wrap;
     }
+    // A first screen that teaches the product: four prompts, each one a different tool.
+    function welcome() {
+      var card = el('div', 'asst-welcome');
+      card.appendChild(el('h3', null, 'What should we build?'));
+      card.appendChild(el('p', 'fine-print', 'The team has its own tools - it can write a ' +
+        'template, build a form, draft an automation, add a site. It asks when the brief is ' +
+        'thin, and nothing outward is sent without your approval.'));
+      var chips = el('div', 'asst-suggest');
+      ['Email sequence for my newsletter',
+       'A quiz that scores answers and tags people',
+       'Write and schedule a blog post',
+       'Point a new domain at this server'].forEach(function (text) {
+        var chip = el('button', 'asst-chip', text);
+        chip.onclick = function () {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          box.value = text;
+          send.click();
+        };
+        chips.appendChild(chip);
+      });
+      card.appendChild(chips);
+      thread.appendChild(card);
+    }
+
     threadState.messages.forEach(function (message) {
       bubble(message.role === 'user' ? 'me' : 'them', message.content);
     });
+    if (!threadState.messages.length) welcome();
+
+    box.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        send.click();
+      }
+    });
+    box.addEventListener('input', function () {
+      box.style.height = 'auto';
+      box.style.height = Math.min(160, box.scrollHeight || 48) + 'px';
+    });
+    container.appendChild(el('p', 'asst-hint', 'Enter sends, Shift+Enter adds a line. ' +
+      'Nothing is published, sent or charged without your approval.'));
 
     function questionCard(questions) {
       var card = el('div', 'panel-card');
@@ -3818,7 +3863,7 @@
     // The thinking state is driven by the job's own events, so the animation describes real
     // work instead of spinning for a fixed two seconds and pretending.
     function thinking() {
-      var box = el('div', 'assistant-msg them think');
+      var box = el('div', 'asst-msg them think');
       var dots = el('span', 'think-dots');
       dots.appendChild(el('span'));
       dots.appendChild(el('span'));
@@ -3850,6 +3895,8 @@
         return;
       }
       box.value = '';
+      var hello = thread.querySelector('.asst-welcome');
+      if (hello && hello.parentNode) hello.parentNode.removeChild(hello);
       bubble('me', text);
       threadState.messages.push({ role: 'user', content: text });
       save();

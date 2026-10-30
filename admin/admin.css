@@ -750,7 +750,56 @@ body.graph-full { overflow: hidden; }
   .think-dots span { animation: none; opacity: .8; }
 }
 
-/* ---------- The always-there assistant ---------- */
+/* ---------- The assistant, as a conversation rather than a log ---------- */
+.asst-thread {
+  display: flex; flex-direction: column; gap: 14px;
+  min-height: 380px; max-height: 58vh; overflow-y: auto;
+  padding: 18px; border: 1px solid var(--line); border-radius: var(--r-3);
+  background: #fbfbfd; margin-bottom: 12px; scroll-behavior: smooth;
+}
+.asst-msg { max-width: 82%; display: flex; flex-direction: column; gap: 6px; }
+.asst-msg.me { align-self: flex-end; align-items: flex-end; }
+.asst-msg.them { align-self: flex-start; }
+.asst-body {
+  padding: 11px 14px; border-radius: 14px; white-space: pre-wrap; font-size: 14.5px;
+  line-height: 1.55;
+}
+.asst-msg.me .asst-body { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.asst-msg.them .asst-body {
+  background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 4px;
+}
+.asst-msg.think {
+  background: #fff; border: 1px dashed var(--line); border-radius: 14px; padding: 10px 14px;
+}
+.asst-actions { display: flex; gap: 8px; opacity: 0; transition: opacity .15s var(--ease); }
+.asst-msg:hover .asst-actions, .asst-msg:focus-within .asst-actions { opacity: 1; }
+.asst-actions button {
+  background: none; border: 0; padding: 2px 4px; cursor: pointer;
+  font-size: 11.5px; color: var(--ink-400); letter-spacing: .04em; text-transform: uppercase;
+}
+.asst-actions button:hover { color: var(--accent); }
+
+.asst-welcome { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px 2px; }
+.asst-welcome h3 { margin: 0; font-size: 17px; }
+.asst-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+.asst-chip {
+  border: 1px solid var(--line); background: #fff; border-radius: 999px;
+  padding: 8px 14px; font-size: 13px; cursor: pointer; color: var(--ink-700);
+  transition: border-color .15s var(--ease), transform .15s var(--ease);
+}
+.asst-chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+.asst-composer { display: flex; gap: 8px; align-items: flex-end; }
+.asst-composer textarea {
+  flex: 1 1 auto; resize: none; min-height: 48px; max-height: 160px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px; font: inherit; line-height: 1.4;
+  background: #fff;
+}
+.asst-composer textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.asst-hint { font-size: 11.5px; color: var(--ink-400); margin: 6px 2px 0; }
+@media (prefers-reduced-motion: reduce) {
+  .asst-thread { scroll-behavior: auto; }
+  .asst-chip:hover { transform: none; }
+}
 .assist-orb {
   position: fixed; right: 22px; bottom: 22px; z-index: 85;
   width: 54px; height: 54px; border-radius: 50%; border: 0; cursor: pointer;
