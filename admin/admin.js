@@ -2611,6 +2611,17 @@
     return curtain;
   }
 
+  // A failed job already carries the reason in its transcript. Saying "No answer" while
+  // the actual error sits one click away is how a missing provider looked like silence.
+  function jobFailure(events) {
+    var failed = (events || []).filter(function (ev) { return ev.type === 'error'; }).pop();
+    if (!failed) return '';
+    var lines = String(failed.content || '').split('\n').filter(function (line) {
+      return line.trim();
+    });
+    return lines.length ? lines[lines.length - 1].trim() : '';
+  }
+
   function watchJob(jobId, statusEl, onFinish) {
     var lastSeq = 0;
     var lastText = '';
@@ -3926,7 +3937,9 @@
             var said = (r.events || []).filter(function (ev) {
               return ev.source === 'Manager' && ev.type === 'message';
             }).pop();
-            var answer = said ? said.content : 'No answer - open job #' + d.job_id + ' to see why.';
+            var answer = said ? said.content
+              : 'The assistant could not answer: ' +
+                (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
             bubble('them', answer);
             threadState.messages.push({ role: 'assistant', content: answer });
             save();
@@ -5848,7 +5861,8 @@
                 return ev.source === 'Manager' && ev.type === 'message';
               }).pop();
               var answer = said ? said.content
-                : 'No answer - open job #' + d.job_id + ' to see why.';
+                : 'The assistant could not answer: ' +
+                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
               line(answer, 'mgr-msg');
               history.push({ role: 'assistant', content: answer });
               // Questions arrive as their own event, so they get a card with inputs rather
@@ -6072,7 +6086,8 @@
                 return ev.source === 'Manager' && ev.type === 'message';
               }).pop();
               var answer = said ? said.content
-                : 'No answer - open job #' + d.job_id + ' to see why.';
+                : 'The assistant could not answer: ' +
+                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
               if (wait.parentNode) wait.parentNode.removeChild(wait);
               say('them', answer);
               history.push({ role: 'assistant', content: answer });

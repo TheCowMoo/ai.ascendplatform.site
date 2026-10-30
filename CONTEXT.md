@@ -292,3 +292,55 @@ Known gaps, in the order they would bite:
 * The real handshake has not been exercised in this workspace (no key configured).
   Everything up to the socket and every error path is covered; the first real session
   should be run from Settings -> Voice -> Test, then the sheet's Talk button.
+
+## Voice — current state and runbook (2026-10-30)
+
+Use this section to resume in a new task without replaying a long tool history.
+
+**Where the code is**
+
+* Local `main` is `d7761ad` ("The voice stops pretending it is listening"), one commit
+  ahead of `origin/main` (`374bdc6`). The overlay is in `admin/voice.js` and
+  `admin/admin.css` (`.voice-overlay`, `.voice-orb`, `.voice-transcript`), opened by
+  `AscendVoice.open` from the Assistant page, the floating sheet and the tour.
+* Live `https://ai.ascendplatform.site` is on `374bdc6` / version 1.19. Its
+  `/admin/voice.js` has no `voice-overlay` and its `admin.css` has no `.voice-orb`, so
+  the deployed site is serving the old client. Its `/api/health` reports
+  `providers_configured: ["deepseek","anthropic","gemini"]` - the VPS already has a
+  Gemini key; it is the local SQLite database that does not.
+
+**See it locally**
+
+1. `python -m uvicorn asgi:app --host 127.0.0.1 --port 8000 --reload`
+2. Open `http://127.0.0.1:8000/admin/`; the seeded login is
+   `admin@example.com` / `admin123` unless it was changed.
+3. Settings -> AI providers -> Google Gemini API key -> Save. Then
+   Settings -> Voice -> Test lists the Live models the key can see.
+4. If `gemini-3.8-live` is not listed, set Settings -> Voice -> Gemini live voice model
+   to one that is. If minting fails, switch Live API version between `v1alpha` and
+   `v1beta`.
+5. Assistant -> Talk. The overlay appears before the token is minted; the orb is scaled
+   from mic/output RMS, and both transcripts are requested in `voice.setup()`.
+
+**Deploy it**
+
+1. `git push origin main`
+2. On the VPS: `cd /opt/ascendplatform && ./deploy.sh`
+3. Verify `/api/version` says `d7761ad`, `/admin/voice.js` contains `voice-overlay`,
+   and `/admin/admin.css` contains `.voice-orb`. The VPS key then only needs the
+   `GEMINI_LIVE_MODEL` value that worked locally, if the default is not available.
+
+**If the Assistant says it is not configured**
+
+`manager.py` uses DeepSeek when it is configured and otherwise the first configured
+provider (Gemini or Claude), so one key is enough for a local install. With no provider
+at all, `/api/manager/chat` and `/api/voice/tool` answer 503 with the reason instead of
+creating a job that fails; the console prints the job's own error line rather than
+"No answer". `tests/test_markup_calls.py` pins the fallback.
+
+**If the agent session fails with a tool-message error**
+
+Do not retry the same transcript. Start a new task and say "Read CONTEXT.md, Voice
+section, and continue." The error is an OpenAI-compatible API rejection of an orphaned
+`role: "tool"` message; it is not produced by this app (`app.py:1055-1061` filters chat
+history to user/assistant only).

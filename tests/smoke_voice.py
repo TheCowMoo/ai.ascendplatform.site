@@ -14,6 +14,7 @@ os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 
 import app as appmod  # noqa: E402
 import db  # noqa: E402
+import llm  # noqa: E402
 import voice  # noqa: E402
 
 FAILED = []
@@ -137,6 +138,11 @@ def test_the_routes():
     empty = client.post("/api/voice/tool", json={"name": "delegate_to_team", "args": {}})
     check("an empty instruction is refused", empty.status_code, 400)
 
+    # The delegation route now refuses before creating a job when no chat provider is
+    # configured; this test is about the route, not the deployment's keys, so provide one.
+    original_providers = llm.configured_providers
+    llm.configured_providers = lambda: ["deepseek"]
+
     orgs = client.get("/api/orgs").get_json().get("orgs") or []
     if orgs:
         client.post("/api/session/org", json={"org_id": orgs[0]["id"]})
@@ -162,6 +168,7 @@ def test_the_routes():
                         json={"name": "delegate_to_team", "turn_id": "turn-1",
                               "args": {"instruction": "build a trip quiz"}})
     check("the same turn is not run twice", (again.get_json() or {}).get("duplicate"), True)
+    llm.configured_providers = original_providers
 
 
 def test_the_browser_half_is_wired():

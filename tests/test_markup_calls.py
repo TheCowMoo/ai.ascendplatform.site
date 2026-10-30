@@ -110,11 +110,29 @@ def test_chat_task_runs_what_the_model_wrote():
           "Built template. SMTP is not configured, so sends will fail.")
 
 
+def test_provider_fallback():
+    """A local install with only a Gemini key still gets an answer."""
+    original = llm.configured_providers
+    try:
+        llm.configured_providers = lambda: ["deepseek", "gemini"]
+        check("deepseek wins when configured", manager._provider_for({}), "deepseek")
+        llm.configured_providers = lambda: ["gemini"]
+        check("gemini answers when deepseek is absent", manager._provider_for({}), "gemini")
+        llm.configured_providers = lambda: []
+        check("no provider still names the default",
+              manager._provider_for({}), llm.DEFAULT_PROVIDER)
+        check("an explicit provider is respected",
+              manager._provider_for({"provider": "anthropic"}), "anthropic")
+    finally:
+        llm.configured_providers = original
+
+
 if __name__ == "__main__":
     test_parses_leaked_calls()
     test_ascii_pipes_and_json_args()
     test_plain_text_untouched()
     test_chat_task_runs_what_the_model_wrote()
+    test_provider_fallback()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)

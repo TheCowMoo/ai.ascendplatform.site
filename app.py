@@ -2062,6 +2062,13 @@ def voice_tool():
     instruction_text = str((data.get("args") or {}).get("instruction") or "").strip()
     if not instruction_text:
         return jsonify({"error": "delegate_to_team needs an instruction"}), 400
+    # The voice can talk with Gemini alone, but the team it delegates to needs a chat
+    # provider. Refuse before creating a job that would only fail in the transcript.
+    import llm
+
+    if not llm.configured_providers():
+        return jsonify({"error": "The team's assistant is not configured. Add an AI "
+                                 "provider key in Settings -> AI providers."}), 503
     calls = int(session.get("voice_calls") or 0)
     if calls >= voice.SESSION_CALLS:
         return jsonify({"error": "That is plenty for one spoken session - say continue, or "
@@ -3029,6 +3036,15 @@ def manager_chat():
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "Say something first"}), 400
+    # Answer with the reason immediately rather than creating a job that fails with
+    # "No answer" a second later. The manager picks the first configured provider when
+    # DeepSeek is absent, so one Gemini (or Claude) key is enough for a local install.
+    import llm
+
+    if not llm.configured_providers():
+        return jsonify({"error": "The assistant is not configured. Add an AI provider "
+                                 "key in Settings -> AI providers; DeepSeek is the "
+                                 "default, and Gemini or Claude also work."}), 503
     lines = []
     for turn in (data.get("history") or [])[-10:]:
         if isinstance(turn, dict) and turn.get("content"):

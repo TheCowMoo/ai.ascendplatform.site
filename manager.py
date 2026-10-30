@@ -119,6 +119,26 @@ def _strip_markup(text):
 
 
 
+def _provider_for(job):
+    """Which provider answers this turn.
+
+    DeepSeek stays the default whenever it is configured, so a deployment that works
+    today keeps working. A local install with only a Gemini key used to fail every chat
+    with "Provider 'deepseek' is not configured" - the assistant now uses the first
+    provider that is actually configured instead of going silent.
+    """
+    explicit = str(job.get("provider") or "").strip()
+    if explicit:
+        return explicit
+
+    import llm
+
+    configured = llm.configured_providers()
+    if "deepseek" in configured or not configured:
+        return llm.DEFAULT_PROVIDER
+    return configured[0]
+
+
 @jobs.task("chat")
 async def chat_task(job, emit):
     """One manager turn. Registered as task ``chat``."""
@@ -127,7 +147,12 @@ async def chat_task(job, emit):
     import llm
     import tools as tool_registry
 
-    provider = (job.get("provider") or "deepseek").strip()
+    provider = _provider_for(job)
+    if provider != llm.DEFAULT_PROVIDER:
+        # Say it in the transcript: a fallback that cannot be seen is indistinguishable
+        # from the configured model having answered.
+        emit("system", "system",
+             "DeepSeek is not configured; using %s for this turn." % provider)
     tools = tool_registry.resolve(list(GRANTED), emit, job_id=job.get("id"))
     agent = AssistantAgent(
         name="Manager",
