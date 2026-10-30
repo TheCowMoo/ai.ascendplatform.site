@@ -214,7 +214,7 @@ def test_blank_secret_keeps_the_stored_value(client):
 
 def test_test_button(client):
     """POST /test/<group> always answers, and never with a traceback."""
-    for group_id in ("pexels", "llm", "smtp"):
+    for group_id in ("pexels", "llm", "smtp", "voice"):
         resp = client.post("/api/settings/test/%s" % group_id)
         assert resp.status_code == 200, (group_id, resp.get_data(as_text=True))
         body = resp.get_json()

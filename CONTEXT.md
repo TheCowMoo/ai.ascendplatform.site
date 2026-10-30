@@ -14,10 +14,11 @@ This file is the map: what exists, where it lives, and what is still open.
 
 | File | Size | Why it matters |
 |---|---|---|
-| `admin/admin.js` | ~3,700 lines / 163 KB | every console screen in one file; a whole read is ~41k tokens |
-| `app.py` | ~2,400 lines / 94 KB | all routes; ~24k tokens |
-| `SYSTEM_PLAN.md` | ~1,600 lines / 94 KB | search a section number, do not read it whole |
-| `tests/*.py` | ~4,200 lines combined | search for the suite you need |
+| `admin/admin.js` | ~6,200 lines / 271 KB | every console screen in one file; a whole read is ~70k tokens |
+| `app.py` | ~3,400 lines / 132 KB | all routes; ~34k tokens |
+| `SYSTEM_PLAN.md` | ~1,700 lines / 96 KB | search a section number, do not read it whole |
+| `admin/voice.js` | ~950 lines / 35 KB | the Live transport and the voice overlay |
+| `tests/*.py` | ~6,600 lines combined | search for the suite you need |
 
 - Read **ranges** (`start_line`/`end_line`); never a whole file above ~300 lines.
 - Locate with a bare pattern first; add context lines only once the line number is known.
@@ -247,3 +248,47 @@ empty result was the test being wrong, not the product. Two traps for next time:
 public submission counts against the ten-a-minute rate limit before validation (pass
 a distinct X-Forwarded-For in tests), and automation_runs has no org_id column -
 scope through automation_id. Assertion now lives at the end of tests/smoke_forms.py.
+
+## Voice — the spoken assistant (2026-10-30)
+
+Browser-direct Live socket, one-use token minted by `voice.py`, key never leaves the
+server. `POST /api/voice/session` returns the token, the setup JSON, the constrained
+endpoint, the model and the API version; `POST /api/voice/tool` is the only tool
+(`delegate_to_team`) and it starts a normal `chat` job after `jobs.submit`.
+
+The five things that must stay true (each has a guard in `tests/smoke_voice.py`):
+
+1. **Model:** default `gemini-3.8-live`. `gemini-2.5-flash-live` and
+   `gemini-live-2.5-flash-preview` are retired; `voice.model()` maps them to the default
+   and `voice.model_note()` says so. `GEMINI_LIVE_MODEL` overrides.
+2. **Setup:** `inputAudioTranscription: {}` and `outputAudioTranscription: {}` are not
+   optional - without them a working session has no text at all. So is
+   `realtimeInputConfig.automaticActivityDetection.disabled: false`.
+3. **Order:** `getUserMedia` first, then `/api/voice/session`. The token's
+   `newSessionExpireTime` is 60 seconds; a permission prompt read slowly used to spend it.
+4. **Gate:** "listening" is set only by `handleSetupComplete`; `ws.onopen` says
+   "connecting". A 12-second setup timer turns a silent open socket into a visible error.
+5. **Failure is visible:** `message.error`, `goAway`, and `onclose` code/reason all render
+   the server's words, with Copy diagnostics. A close before setup reads "rejected".
+
+The overlay (`admin/voice.js` + `.voice-*` in `admin.css`) is opened by the sheet's Talk
+button, and by the Assistant page and tour through the same `AscendVoice.open`. It is a
+mode: orb scaled from mic/output RMS, live transcripts coalesced by turn, Minimise keeps
+the session alive, Stop/Esc end it. `Settings -> Voice -> Test` calls `voice.live_models()`
+and names the models the key can actually see. `tests/voice_ui.mjs` drives the real client
+against a fake DOM, AudioContext and WebSocket, so the gate and the failure paths are
+tested without a browser or a key.
+
+Known gaps, in the order they would bite:
+
+* `_USED` minutes and `_VOICE_TURNS` dedupe are per process; uvicorn's two workers can
+  each allow a daily cap and can miss a duplicate turn across workers.
+* No session resumption: a network blip ends the turn and the one-use token needs a new
+  mint. The overlay offers Try again; it does not resume.
+* `MUTE_WHILE_SPEAKING` is false because cutting mic frames also cuts barge-in. Switch it
+  only if echo is measured on a real device.
+* Ephemeral tokens are v1alpha in `google-genai 2.30.1`; the public docs show v1beta.
+  `GEMINI_LIVE_API_VERSION` exists so a key can be switched without a code edit.
+* The real handshake has not been exercised in this workspace (no key configured).
+  Everything up to the socket and every error path is covered; the first real session
+  should be run from Settings -> Voice -> Test, then the sheet's Talk button.

@@ -198,15 +198,25 @@ def check_icons():
 
 
 def check_js():
-    if not os.path.exists(os.path.join(ROOT, "admin", "admin.js")):
+    paths = [os.path.join(ROOT, "admin", "admin.js"),
+             os.path.join(ROOT, "admin", "voice.js")]
+    paths = [path for path in paths if os.path.exists(path)]
+    if not paths:
         return
-    result = subprocess.run(
-        ["node", "--check", os.path.join(ROOT, "admin", "admin.js")],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError("admin.js does not parse:\n" + (result.stderr or "")[:600])
-    print("admin.js parses")
+    for path in paths:
+        result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("%s does not parse:\n%s"
+                                 % (os.path.basename(path), (result.stderr or "")[:600]))
+    print("%s parse" % " and ".join(os.path.basename(path) for path in paths))
+
+    harness = os.path.join(ROOT, "tests", "voice_ui.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the voice overlay harness failed:\n%s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("voice overlay harness OK")
 
 
 def check_suites():
@@ -236,7 +246,7 @@ def main():
     try:
         check_js()
     except FileNotFoundError:
-        print("admin.js skipped (node not installed)")
+        print("JS checks skipped (node not installed)")
     check_suites()
     print("\nPREFLIGHT OK - safe to push")
 

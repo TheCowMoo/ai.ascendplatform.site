@@ -3,7 +3,7 @@
 > Multi-agent AI growth platform (AutoGen) that also hosts its own websites.
 > Living document: outline, planned updates, and known deficiencies.
 
-Last updated: 2026-10-14
+Last updated: 2026-10-30
 Status: Stage 1 delivered — rebrand, left-sidebar shell, Business Profile.
 Stack: staged migration to FastAPI + Postgres + arq/Redis + Caddy (see §15).
 
@@ -1622,4 +1622,60 @@ right cause the first time.
 
 
 
+
+
+## 34. "It's stuck at listening" — the socket was open, the session was not
+
+Three independent defects made the same symptom, which is why it survived a fix attempt.
+
+1. **The model id was not a model.** `DEFAULT_MODEL` was `gemini-2.5-flash-live`; the
+   current Live model is `gemini-3.8-live`, and the deprecations page maps both
+   `gemini-live-2.5-flash-preview` and the 2.5 native-audio ids to it. A wrong model is
+   the quietest failure in the feature: the socket opens, the setup is refused, and the
+   close carries no sentence a user can act on.
+2. **The UI called an open socket "listening".** `ws.onopen` said `listening` and set
+   `state.running = true` before `setupComplete` arrived, so a rejected session looked
+   identical to a healthy one.
+3. **No transcription was requested.** `setup()` sent neither `inputAudioTranscription`
+   nor `outputAudioTranscription`, so even a working session produced no text. There was
+   never a second signal to prove the session was alive.
+
+A fourth defect explains the cases where the model was right: `/api/voice/session` was
+called **before** `getUserMedia`. The token has `newSessionExpireTime = 60s`; a user who
+reads the permission prompt for a minute opens a socket with an already-dead token. The
+mic is now acquired first, which also stops a denied permission from spending a session.
+
+The shape of the fix:
+
+* `voice.setup()` owns the whole setup message, including the instruction, and carries
+  the transcription config and the explicit VAD config. `app.py` no longer mutates it.
+* `voice.socket_url()` and `voice.api_version()` are one source of truth. v1alpha is the
+  default because `google-genai 2.30.1` pins ephemeral tokens there, even though the
+  public docs show v1beta; the version is a setting so it can be switched, not guessed.
+* `voice.status()` reports the model, the default, the API version, the endpoint and a
+  `model_note` when a retired id was ignored. `Settings -> Voice -> Test` uses
+  `voice.live_models()` to show the live models the key can see.
+* The client has one state machine: `connecting -> listening -> thinking -> speaking`,
+  with `error` reachable from any of them. Only `handleSetupComplete` may set
+  `listening`; every other server message is handled by name (`message.error`, `goAway`,
+  `toolCall`, `toolCallCancellation`, `serverContent`).
+* A 12-second setup timer turns "socket open, nothing happens" into a sentence.
+* `onclose` reads `code` and `reason`; before setup it says "The session was rejected";
+  after setup it says "The session ended". The AudioContext and player are torn down on
+  every close, because the old handler leaked a context per failed attempt.
+* The orb is driven by the mic/output RMS via `--voice-level`, with distinct motion for
+  each state; there is no timer and no `Math.random`. Playback is scheduled on a playhead
+  so chunks join, and `stop()` stops the currently playing source (real barge-in).
+* The sheet keeps its text box. Its **Talk** button opens the overlay; the Assistant page
+  and the tour use the same `AscendVoice.open`, so there is one voice screen.
+
+What the guards pin (`tests/smoke_voice.py`): the two transcription keys, the VAD flag,
+the model default and retired mapping, the constrained socket and its version, the org
+and page in the instruction, the settings/code default agreement, `setupComplete` as the
+only gate to listening, error/goAway/close branches, mic-before-token ordering,
+`--voice-level` with no randomness, the three entry points, and the overlay CSS.
+
+Not verified here: the real Google handshake, because this workspace has no Gemini key.
+The first real attempt should be Settings -> Voice -> Test, then the sheet's Talk button;
+the overlay now prints Google's own reason if it refuses.
 

@@ -3735,25 +3735,22 @@
       voiceNote.textContent = 'Voice: ' + s.voice + ' · ' +
         s.remaining_minutes + ' min left today';
       mic.onclick = function () {
-        if (window.AscendVoice && window.AscendVoice.running()) {
-          window.AscendVoice.stop();
-          mic.textContent = 'Talk';
-          mic.classList.remove('btn-primary');
-          return;
-        }
-        mic.textContent = 'Stop';
-        mic.classList.add('btn-primary');
-        window.AscendVoice.start({
+        // One voice screen, opened here. The page keeps its thread; the overlay owns the
+        // microphone, the orb and the live transcript.
+        if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
+        if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
+        window.AscendVoice.open({
           page: 'assistant',
-          onState: function (label) { voiceNote.textContent = 'Voice: ' + label; },
-          onHeard: function (text) { bubble('me', text); },
-          onSaid: function (text) { bubble('them', text); },
-          onDelegate: function (instruction) { bubble('them', 'On it: ' + instruction); },
-          onJob: function (jobId) { voiceNote.textContent = 'The team is working - job #' + jobId; },
-          onError: function (message) {
-            toast(message, false);
-            mic.textContent = 'Talk';
-            mic.classList.remove('btn-primary');
+          source: 'assistant',
+          onState: function (phase, label) { voiceNote.textContent = 'Voice: ' + label; },
+          onTurn: function (turn) {
+            bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
+            threadState.messages.push({
+              role: turn.role === 'user' ? 'user' : 'assistant', content: turn.text });
+            save();
+          },
+          onJob: function (jobId) {
+            voiceNote.textContent = 'The team is working - job #' + jobId;
           }
         });
       };
@@ -6098,19 +6095,20 @@
         if (!s.available) return;
         mic.style.display = '';
         mic.onclick = function () {
-          if (window.AscendVoice && window.AscendVoice.running()) {
-            window.AscendVoice.stop();
-            mic.textContent = 'Talk';
-            return;
-          }
-          mic.textContent = 'Stop';
-          window.AscendVoice.start({
+          // The sheet stays for typing; Talk hands the screen to the one voice mode. Final
+          // turns land back in this log, so closing the overlay leaves a readable thread.
+          if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
+          if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
+          window.AscendVoice.open({
             page: page,
-            onState: function (label) { mic.title = label; },
-            onHeard: function (text) { say('me', text); },
-            onSaid: function (text) { say('them', text); },
-            onJob: function (jobId) { say('them', 'The team is working - job #' + jobId); },
-            onError: function (message) { toast(message, false); mic.textContent = 'Talk'; }
+            source: 'sheet',
+            onState: function (phase, label) { mic.title = label; },
+            onTurn: function (turn) {
+              say(turn.role === 'user' ? 'me' : 'them', turn.text);
+            },
+            onJob: function (jobId) {
+              say('them', 'The team is working - job #' + jobId);
+            }
           });
         };
       }).catch(function () { /* text still works */ });
@@ -6170,12 +6168,13 @@
       var talk = el('button', 'btn btn-ghost', 'Talk about this');
       talk.onclick = function () {
         if (!window.AscendVoice) return;
-        window.AscendVoice.start({
-          page: 'tour, on the ' + step.title + ' screen',
-          onSaid: function () {},
-          onError: function (message) { toast(message, false); talk.textContent = 'Talk about this'; }
+        window.AscendVoice.open({
+          page: 'tour, step: ' + step.title,
+          source: 'tour',
+          onState: function (phase, label) { talk.textContent = label; },
+          onTurn: function () {},
+          onClose: function () { talk.textContent = 'Talk about this'; }
         });
-        talk.textContent = 'Talking…';
       };
       var skip = el('button', 'btn btn-ghost', index === TOUR.length - 1 ? 'Done' : 'Skip');
       skip.onclick = close;

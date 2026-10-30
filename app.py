@@ -1999,7 +1999,10 @@ _VOICE_TURNS = {}
 def voice_status():
     import voice
 
-    return jsonify(voice.status(session.get("user_id")))
+    # The model probe spends one request on Google's model list, so only the operator's
+    # Settings screen may ask for it.
+    probe = is_owner() and request.args.get("probe") in ("1", "true", "yes")
+    return jsonify(voice.status(session.get("user_id"), probe=probe))
 
 
 @app.route("/api/voice/session", methods=["POST"])
@@ -2011,24 +2014,31 @@ def voice_session():
     state = voice.status(session.get("user_id"))
     if not state["available"]:
         expired = "minutes" in state["reason"]
-        return jsonify({"error": state["reason"], "fallback": "text"}), 429 if expired else 400
+        return jsonify({"error": state["reason"], "fallback": "text",
+                        "model": state["model"]}), 429 if expired else 400
     data = request.get_json(silent=True) or {}
     page = str(data.get("page") or "").strip()[:40]
     try:
         token = voice.mint()
     except voice.VoiceError as exc:
-        return jsonify({"error": str(exc), "fallback": "text"}), 502
+        # The key is never in this message, and never logged.
+        app.logger.warning("Voice session mint failed: %s", exc)
+        return jsonify({"error": str(exc), "fallback": "text", "model": voice.model(),
+                        "api_version": voice.api_version()}), 502
     # Counted up front, not on hang-up: a browser that never closes the socket cleanly must
-    # not become free minutes.
+    # not become free minutes. The microphone is opened before this route is called, so a
+    # refused permission no longer spends a session.
     voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
     session["voice_calls"] = 0
-    payload = voice.setup()
-    payload["setup"]["systemInstruction"]["parts"][0]["text"] = voice.instruction("", page)
+    org = orgs_service.get_org(current_org()) if current_org() else None
+    org_name = str((org or {}).get("name") or "")
     return jsonify({
         "token": token,
-        "setup": payload,
-        "endpoint": ("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage"
-                     ".v1alpha.GenerativeService.BidiGenerateContentConstrained"),
+        "setup": voice.setup(org_name=org_name, page=page),
+        "endpoint": voice.socket_url(),
+        "model": voice.model(),
+        "model_note": voice.model_note(),
+        "api_version": voice.api_version(),
         "seconds": voice.SESSION_SECONDS,
         "calls": voice.SESSION_CALLS,
         "remaining_minutes": round(voice.remaining_minutes(session.get("user_id")), 1),

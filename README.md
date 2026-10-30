@@ -28,6 +28,7 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 - 💬 **Meta channels** — answer DMs on Facebook Messenger, Instagram, and WhatsApp (webhook-driven)
 - 🧩 **Embeddable widget** — one `<script>` tag per bot
 - 🎨 **Live preview** while you build a bot
+- 🎙️ **Voice mode** — talk to the assistant; Gemini Live answers and delegates, with live transcripts
 - 🗄️ **SQLite** storage — no separate database server
 - ⚙️ Runs as a **Docker Compose** stack (Caddy + app + PostgreSQL + Redis)
 
@@ -310,6 +311,24 @@ Nothing with a side effect happens by accident:
   known mutating only, each chained segment checked, command substitution
   refused, and file writes confined to the site root.
 
+### Voice
+
+**Talk** in the Assistant sheet (or on the Assistant page) opens voice mode: a full-screen
+orb, your words and the assistant's words appearing as you speak. The sheet stays for
+typing, and its **Talk** button is only shown when the server says a session can start.
+
+- The orb **follows your voice** — it is scaled from the microphone's RMS, not a timer.
+  It is indigo while listening, amber while the team is thinking, and teal while the
+  assistant speaks.
+- **Stop** ends the session; **Esc** does the same. **Minimise** keeps it running in a
+  small pill while you work. If a session is refused, the overlay shows the server's own
+  reason, the model it tried, and a **Try again** button; **Copy diagnostics** is there
+  for support.
+- The microphone is asked for **before** a token is minted, so a slow permission prompt
+  does not spend the session.
+- Configuration lives in **Settings → Voice**. **Test** asks Gemini which Live models the
+  key can see and names a mismatch, instead of letting the socket fail silently.
+
 ### Settings
 
 The **Settings** tab is where configuration actually lives once the app is running —
@@ -322,7 +341,7 @@ editing `.env` needs a restart, and inside a container it is read only at start-
 - Secrets are **write-only** — once saved they are never sent back to the browser
   (only a masked tail). Leaving a key box blank on save keeps the stored value.
 - **Test** runs a real check for a group: a live Pexels search, which AI providers
-  are configured, or an SMTP connect.
+  are configured, an SMTP connect, or which Live models the Gemini key can see.
 - Admin-only, and every change is listed at the bottom of the page (key, action, who
   and when — never a secret value).
 - Values that choose the topology (database, Redis, job backend, bind host/port) are
@@ -466,6 +485,3 @@ sudo systemctl restart deepseek-chatbot
 ## License
 
 MIT
-#   c m g r o w t h a i  
- #   c m g r o w t h a i  
- 

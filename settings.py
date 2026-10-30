@@ -96,15 +96,29 @@ SPEC = [
             _f("GEMINI_API_KEY", "Google Gemini API key", secret=True,
                help="Also used by the Image Artist for generate_image."),
             _f("GEMINI_MODEL", "Gemini model", default="gemini-2.5-flash"),
-    _f("GEMINI_LIVE_MODEL", "Gemini live voice model",
-       default="gemini-2.5-flash-live",
-       help="Model behind the spoken assistant. Needs Live API access on the key."),
-    _f("GEMINI_VOICE", "Spoken voice", default="Kore",
-       help="Kore, Puck, Charon, Aoede or Fenrir"),
-    _f("VOICE_DAILY_MINUTES", "Voice minutes per user per day", default="10",
-       help="A spoken session costs far more than a typed one, so it is capped."),
             _f("GEMINI_IMAGE_MODEL", "Gemini image model",
                default="gemini-2.5-flash-image"),
+        ],
+    },
+    {
+        "id": "voice",
+        "label": "Voice",
+        "icon": "chat",
+        "blurb": "The spoken assistant: the Live model, its voice, and the daily cap.",
+        "test": "voice",
+        "fields": [
+            _f("GEMINI_LIVE_MODEL", "Gemini live voice model",
+               default="gemini-3.8-live",
+               help="Leave blank for the default. Test lists the live models this key can see."),
+            _f("GEMINI_LIVE_API_VERSION", "Live API version", kind="choice",
+               choices=("v1alpha", "v1beta"), default="v1alpha",
+               help="Ephemeral tokens are v1alpha in the installed SDK. Switch only if "
+                    "your key answers on v1beta."),
+            _f("GEMINI_VOICE", "Spoken voice", default="Kore",
+               help="Kore, Puck, Charon, Aoede or Fenrir"),
+            _f("VOICE_DAILY_MINUTES", "Voice minutes per user per day", kind="int",
+               default="10",
+               help="A spoken session costs far more than a typed one, so it is capped."),
         ],
     },
     {
@@ -646,6 +660,7 @@ def test(group_id, org_id=None):
         "llm": _test_llm,
         "smtp": _test_smtp,
         "ghl": _test_ghl,
+        "voice": _test_voice,
     }.get(group_id)
     if runner is None:
         return {"ok": False, "output": "No test available for %r." % group_id}
@@ -683,6 +698,40 @@ def _test_llm(org_id=None):
     if not ready:
         return {"ok": False, "output": "No provider has a key yet."}
     return {"ok": True, "output": "Ready: %s." % ", ".join(ready)}
+
+
+def _test_voice(org_id=None):
+    """Prove the key can actually open a Live session with the configured model.
+
+    A blind "key present" check is what let a retired model id look healthy while every
+    session was refused, so this asks Gemini for its model list and names the mismatch.
+    """
+    if org_id is not None:
+        return {"ok": False, "output": "That group configures the platform, not a client."}
+    import voice  # lazy: voice imports settings
+
+    if not voice.api_key():
+        return {"ok": False,
+                "output": "No Google Gemini key set. Add one under AI providers first."}
+    state = voice.status()
+    lines = ["Model: %s (%s), voice %s." % (state["model"], state["api_version"],
+                                            state["voice"])]
+    if state.get("model_note"):
+        lines.append(state["model_note"])
+    probe = voice.live_models()
+    if not probe["ok"]:
+        lines.append(probe["error"])
+        return {"ok": False, "output": " ".join(lines)}
+    available = probe["models"]
+    if state["model"] in available:
+        lines.append("Ready: the key can open a Live session with this model.")
+        return {"ok": True, "output": " ".join(lines)}
+    if available:
+        lines.append("Not available to this key. Live models here: %s."
+                     % ", ".join(available[:8]))
+    else:
+        lines.append("Gemini returned no Live models for this key.")
+    return {"ok": False, "output": " ".join(lines)}
 
 
 def _test_smtp(org_id=None):
