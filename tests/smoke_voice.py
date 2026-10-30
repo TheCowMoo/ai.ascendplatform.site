@@ -143,6 +143,11 @@ def test_the_browser_half_is_wired():
     check("the assistant only offers the mic when allowed",
           "'/api/voice/status'" in admin_js, True)
     check("the page loads the client", "/admin/voice.js" in page, True)
+    check("the orb and the tour are booted with the shell",
+          "assistOrb();" in admin_js and "startTour(false);" in admin_js, True)
+    check("the tour remembers being seen", "'tour:' +" in admin_js, True)
+    check("the sheet sends page context with the question",
+          "the user is on the '" in admin_js, True)
 
 
 if __name__ == "__main__":

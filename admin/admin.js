@@ -5953,6 +5953,192 @@
     content.appendChild(view);
   }
 
+  // ---------- The always-there assistant ----------
+  // A floating entry point on every screen, because an assistant you have to navigate to is an
+  // assistant nobody uses. Same endpoint as the Assistant page: it is a second door, not a
+  // second brain.
+  function assistOrb() {
+    var orb = el('button', 'assist-orb', '✦');
+    orb.title = 'Ask the AI';
+    orb.setAttribute('aria-label', 'Ask the AI');
+    document.body.appendChild(orb);
+    var sheet = null;
+
+    function closeAll() {
+      if (sheet && sheet.parentNode) sheet.parentNode.removeChild(sheet);
+      sheet = null;
+    }
+
+    function open() {
+      if (sheet) { closeAll(); return; }
+      sheet = el('div', 'assist-sheet');
+      var head = el('div', 'assist-head');
+      head.appendChild(el('strong', null, 'Ask the AI'));
+      var toPage = el('button', 'btn btn-ghost btn-sm', 'Full screen');
+      toPage.onclick = function () { closeAll(); location.hash = '#/app/assistant'; };
+      var close = el('button', 'btn btn-ghost btn-sm', '×');
+      close.onclick = closeAll;
+      head.appendChild(toPage);
+      head.appendChild(close);
+      sheet.appendChild(head);
+
+      var log = el('div', 'assist-log');
+      sheet.appendChild(log);
+      var row = el('div', 'chip-input');
+      var input = el('input');
+      input.placeholder = 'What do you want done?';
+      input.setAttribute('aria-label', 'Ask the AI');
+      var go = el('button', 'btn btn-primary btn-sm', 'Send');
+      var mic = el('button', 'btn btn-ghost btn-sm', 'Talk');
+      mic.style.display = 'none';
+      row.appendChild(input);
+      row.appendChild(go);
+      row.appendChild(mic);
+      sheet.appendChild(row);
+      document.body.appendChild(sheet);
+      input.focus();
+
+      function say(who, text) {
+        log.appendChild(el('div', 'assist-line ' + who, text));
+        log.scrollTop = log.scrollHeight;
+        return log.lastChild;
+      }
+
+      say('them', 'Ask me to build, change or explain anything on this page.');
+      var history = [];
+      var page = (location.hash.split('/')[2] || 'home');
+
+      function ask(text) {
+        say('me', text);
+        var wait = say('them', 'Working…');
+        history.push({ role: 'user', content: text });
+        api('POST', '/api/manager/chat', {
+          message: '[context: the user is on the ' + page + ' screen]\n' + text,
+          history: history.slice(-8), automation_id: 0
+        }).then(function (d) {
+          watchJob(d.job_id, el('span', 'activity running'), function () {
+            api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
+              var said = (r.events || []).filter(function (ev) {
+                return ev.source === 'Manager' && ev.type === 'message';
+              }).pop();
+              var answer = said ? said.content
+                : 'No answer - open job #' + d.job_id + ' to see why.';
+              if (wait.parentNode) wait.parentNode.removeChild(wait);
+              say('them', answer);
+              history.push({ role: 'assistant', content: answer });
+            }).catch(function () { wait.textContent = 'Something went wrong.'; });
+          });
+        }).catch(function (e) { wait.textContent = e.message; });
+      }
+
+      go.onclick = function () {
+        var text = (input.value || '').trim();
+        if (!text) return;
+        input.value = '';
+        ask(text);
+      };
+      input.onkeydown = function (event) {
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); go.click(); }
+      };
+
+      api('GET', '/api/voice/status').then(function (s) {
+        if (!s.available) return;
+        mic.style.display = '';
+        mic.onclick = function () {
+          if (window.AscendVoice && window.AscendVoice.running()) {
+            window.AscendVoice.stop();
+            mic.textContent = 'Talk';
+            return;
+          }
+          mic.textContent = 'Stop';
+          window.AscendVoice.start({
+            page: page,
+            onState: function (label) { mic.title = label; },
+            onHeard: function (text) { say('me', text); },
+            onSaid: function (text) { say('them', text); },
+            onJob: function (jobId) { say('them', 'The team is working - job #' + jobId); },
+            onError: function (message) { toast(message, false); mic.textContent = 'Talk'; }
+          });
+        };
+      }).catch(function () { /* text still works */ });
+    }
+
+    orb.onclick = open;
+  }
+
+  // ---------- A first-timer's five stops ----------
+  // Shown once per browser, skip always visible, and every stop names the thing rather than
+  // describing the interface. Remembered in localStorage, which is per device: a
+  // users.tour_done column is the upgrade, and this is the honest version until then.
+  var TOUR = [
+    { hash: '#/app/assistant', title: 'Ask, and it builds',
+      text: 'Type or talk in plain English. It asks when the brief is thin, and does the work ' +
+            'when it is not - templates, automations, a quiz, a whole site.' },
+    { hash: '#/app/sites', title: 'Websites',
+      text: 'Each client gets a site here. Publish a page, and the domain points at this server.' },
+    { hash: '#/app/automations', title: 'Automations',
+      text: 'A sequence of steps: tag, wait a day, ask for approval, send. Drafts arrive from ' +
+            'the AI and nothing goes live until you press Apply.' },
+    { hash: '#/app/forms', title: 'Forms, surveys and quizzes',
+      text: 'Build one, publish it, and it lives at its own link. Answers land in the list, ' +
+            'and a submission can start an automation.' },
+    { hash: '#/app/domains', title: 'Domains',
+      text: 'Type a domain and copy two records to your DNS provider. Press Check again until ' +
+            'every row is green, then go live.' }
+  ];
+
+  function startTour(force) {
+    var key = 'tour:' + ((state.user && state.user.id) || 0);
+    try {
+      if (!force && localStorage.getItem(key)) return;
+    } catch (e) {
+      return;                     // private mode: no tour rather than a tour every load
+    }
+    var index = 0;
+    var veil = el('div', 'tour-veil');
+    var card = el('div', 'tour-card');
+    veil.appendChild(card);
+    document.body.appendChild(veil);
+
+    function close() {
+      try { localStorage.setItem(key, '1'); } catch (e) { /* private mode */ }
+      if (window.AscendVoice && window.AscendVoice.running()) window.AscendVoice.stop();
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+    }
+
+    function show() {
+      var step = TOUR[index];
+      if (step.hash) location.hash = step.hash;
+      card.innerHTML = '';
+      card.appendChild(el('p', 'fine-print', 'Step ' + (index + 1) + ' of ' + TOUR.length));
+      card.appendChild(el('h3', 'card-title', step.title));
+      card.appendChild(el('p', 'muted', step.text));
+      var row = el('div', 'chip-input');
+      var talk = el('button', 'btn btn-ghost', 'Talk about this');
+      talk.onclick = function () {
+        if (!window.AscendVoice) return;
+        window.AscendVoice.start({
+          page: 'tour, on the ' + step.title + ' screen',
+          onSaid: function () {},
+          onError: function (message) { toast(message, false); talk.textContent = 'Talk about this'; }
+        });
+        talk.textContent = 'Talking…';
+      };
+      var skip = el('button', 'btn btn-ghost', index === TOUR.length - 1 ? 'Done' : 'Skip');
+      skip.onclick = close;
+      var next = el('button', 'btn btn-primary',
+                    index === TOUR.length - 1 ? 'Finish' : 'Next');
+      next.onclick = function () {
+        if (index === TOUR.length - 1) { close(); return; }
+        index += 1;
+        show();
+      };
+      [talk, skip, next].forEach(function (button) { row.appendChild(button); });
+      card.appendChild(row);
+    }
+    show();
+  }
+
   window.addEventListener('hashchange', render);
 
   api('GET', '/api/health').then(function (d) {
@@ -5964,6 +6150,8 @@
   }).then(function (d) {
     state.user = d.user;
     managerWidget();
+    assistOrb();
+    startTour(false);
     render();
   }).catch(function () {
     state.user = null;
