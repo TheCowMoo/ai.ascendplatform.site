@@ -268,7 +268,16 @@
       esc(BRAND) + '" />';
     inner.appendChild(brand);
     inner.appendChild(el('div', 'spacer'));
+    bar.appendChild(inner);
     return bar;
+  }
+
+  function navVeil() {
+    if (document.getElementById('nav-veil')) return;
+    var veil = el('div', 'nav-veil');
+    veil.id = 'nav-veil';
+    veil.onclick = function () { document.body.classList.remove('nav-open'); };
+    document.body.appendChild(veil);
   }
 
   // ---------- Login ----------
@@ -2889,13 +2898,13 @@
           'client\'s tab. Assign them to the client they belong to, then switch to ' +
           'that client in the workspace switcher to see them in its tabs.'));
         var table = el('table', 'table');
-        table.innerHTML = '<thead><tr><th></th><th>Title</th><th>Kind</th>' +
+        table.innerHTML = '<thead><tr><th class="check"></th><th>Title</th><th>Kind</th>' +
           '<th>Created</th></tr></thead>';
         var tbody = el('tbody');
         var boxes = [];
         rows.forEach(function (item) {
           var tr = el('tr');
-          var tick = el('td');
+          var tick = el('td', 'check');
           var box = el('input');
           box.type = 'checkbox';
           box.value = String(item.id);
@@ -2958,13 +2967,13 @@
     var meta = CONTENT_TABS[tab] || CONTENT_TABS.library;
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.appendChild(el('h1', null, meta.title));
+    head.innerHTML = '<div><h2>' + esc(meta.title) + '</h2>' +
+      '<p class="muted">' + esc(meta.blurb) + '</p></div>';
     var add = el('button', 'btn btn-primary', '+ New draft');
     add.onclick = function () { showDeliverableForm(meta.kind || 'blog', null, refresh); };
     add.disabled = true;         // enabled once we know there is a client to own the draft
     head.appendChild(add);
     container.appendChild(head);
-    container.appendChild(el('p', 'muted', meta.blurb));
     var unowned = unownedDraftsCard(refresh);
     if (unowned) container.appendChild(unowned);
     var composerHost = el('div');
@@ -4288,15 +4297,18 @@
 
     var box = el('textarea', 'prompt-box');
     box.placeholder = 'Build me an automation that…';
-    main.appendChild(box);
     var send = el('button', 'btn btn-primary', 'Send');
-    main.appendChild(send);
+    var composer = el('div', 'asst-composer');
+    composer.appendChild(box);
+    composer.appendChild(send);
+    main.appendChild(composer);
 
     // Voice is offered only when the server says it can be: no key, or minutes spent, means
     // no microphone rather than a button that fails when pressed.
     var mic = el('button', 'btn btn-ghost', 'Talk');
     mic.style.display = 'none';
-    var voiceNote = el('p', 'fine-print');
+    var voiceNote = el('p', 'asst-hint');
+    voiceNote.setAttribute('role', 'status');
     main.appendChild(mic);
     main.appendChild(voiceNote);
     layout.appendChild(main);
@@ -6818,7 +6830,7 @@
         history.push({ role: 'user', content: text });
         api('POST', '/api/manager/chat', {
           message: '[context: the user is on the ' + where + ']\n' + text,
-          history: history.slice(-8), automation_id: 0
+          history: history.slice(-8), automation_id: state.openAutomation || 0
         }).then(function (d) {
           watchJob(d.job_id, el('span', 'activity running'), function () {
             api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
@@ -6871,6 +6883,16 @@
     }
 
     orb.onclick = open;
+
+    // The Assistant page is the full version of this sheet; a second floating door over its
+    // own composer is just clutter. Every other screen keeps the quick entry point.
+    function syncOrbVisibility() {
+      var onAssistant = (location.hash || '').indexOf('#/app/assistant') === 0;
+      orb.style.display = onAssistant ? 'none' : '';
+      if (onAssistant) closeAll();
+    }
+    window.addEventListener('hashchange', syncOrbVisibility);
+    syncOrbVisibility();
   }
 
   // ---------- A first-timer's five stops ----------
@@ -6957,7 +6979,9 @@
     return api('GET', '/api/auth/me');
   }).then(function (d) {
     state.user = d.user;
-    managerWidget();
+    navVeil();
+    // The Ask sheet is the single floating entry point. Its header links to the full
+    // Assistant page, so the old manager panel is no longer booted alongside it.
     assistOrb();
     startTour(false);
     render();

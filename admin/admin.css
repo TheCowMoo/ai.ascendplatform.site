@@ -220,7 +220,7 @@ input[type=color] {
 .settings-group-head p { color: var(--ink-500); font-size: var(--fs-sm); }
 .settings-icon { color: var(--accent-600); font-size: 18px; line-height: 1.4; display: flex; align-items: center; padding-top: 2px; }
 .settings-row {
-  display: grid; grid-template-columns: minmax(190px, 1fr) minmax(230px, 1.5fr);
+  display: grid; grid-template-columns: minmax(190px, 260px) minmax(230px, 1fr);
   gap: 6px 20px; align-items: center; padding: 11px 0; border-top: 1px solid var(--line-soft);
 }
 .settings-row:first-of-type { border-top: none; }
@@ -266,6 +266,7 @@ input[type=color] {
 .stat-value { font-size: var(--fs-display); font-weight: 650; letter-spacing: -0.03em; color: var(--ink-900); font-variant-numeric: tabular-nums; }
 .stat-label { color: var(--ink-400); font-size: var(--fs-micro); margin-top: 6px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
 .panel-card { padding: 20px; margin-bottom: 16px; }
+.panel-card > p { max-width: 78ch; }
 .panel-card h3 { font-size: var(--fs-h3); margin-bottom: 16px; }
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 140px; }
 .bar { flex: 1; background: var(--accent-600); border-radius: 4px 4px 0 0; min-height: 2px; position: relative; opacity: .85; transition: opacity var(--dur) var(--ease); }
@@ -289,6 +290,7 @@ input[type=color] {
 .table tbody tr { transition: background var(--dur) var(--ease); }
 .table tbody tr:hover { background: var(--raised); }
 .table tr:last-child td { border-bottom: none; }
+.table th.check, .table td.check { width: 44px; padding-right: 8px; }
 .table td .muted { font-size: var(--fs-sm); }
 
 /* ---------- Badges ---------- */
@@ -328,7 +330,7 @@ input[type=color] {
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
 /* ---------- Misc ---------- */
-/* The empty state carries the next action; a bare ðŸš§ never told anyone what to do. */
+/* The empty state carries the next action; a bare icon never told anyone what to do. */
 .empty-state { text-align: center; padding: 64px 24px; color: var(--ink-500); border: 1px dashed var(--line); border-radius: var(--r-md); background: var(--surface); }
 .empty-state .big { color: var(--ink-400); margin-bottom: 12px; display: flex; justify-content: center; }
 .empty-state .big .icon { width: 34px; height: 34px; stroke-width: 1.4; }
@@ -595,7 +597,7 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
 }
 .mgr-fab:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(67, 56, 202, .38); }
 .mgr-fab:focus-visible { box-shadow: 0 0 0 4px var(--accent-ring), 0 8px 24px rgba(67,56,202,.3); }
-.mgr-fab::before { content: "âœ¦"; margin-right: 8px; opacity: .85; }
+.mgr-fab::before { content: "\2726"; margin-right: 8px; opacity: .85; }
 
 .mgr-panel {
   right: var(--s-5); bottom: 84px; width: 380px; max-height: 66vh; gap: 0;
@@ -793,12 +795,13 @@ body.graph-full { overflow: hidden; }
 .asst-chip:hover { border-color: var(--accent); transform: translateY(-1px); }
 .asst-composer { display: flex; gap: 8px; align-items: flex-end; }
 .asst-composer textarea {
-  flex: 1 1 auto; resize: none; min-height: 48px; max-height: 160px; padding: 12px 14px;
+  flex: 1 1 auto; width: auto; resize: none; min-height: 48px; max-height: 160px; padding: 12px 14px;
   border: 1px solid var(--line); border-radius: 12px; font: inherit; line-height: 1.4;
   background: #fff;
 }
 .asst-composer textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
-.asst-hint { font-size: 11.5px; color: var(--ink-400); margin: 6px 2px 0; }
+.asst-main > .btn { align-self: flex-start; margin-top: 8px; }
+.asst-hint { font-size: 11.5px; line-height: 1.45; color: var(--ink-400); margin: 6px 2px 0; max-width: 72ch; }
 .asst-layout {
   display: grid; grid-template-columns: 240px minmax(0, 1fr);
   gap: var(--s-4); align-items: start;
@@ -848,17 +851,17 @@ body.graph-full { overflow: hidden; }
   .asst-chip:hover { transform: none; }
 }
 .assist-orb {
-  position: fixed; right: 22px; bottom: 22px; z-index: 85;
-  width: 54px; height: 54px; border-radius: 50%; border: 0; cursor: pointer;
-  background: var(--accent); color: #fff; font-size: 20px;
+  position: fixed; right: 10px; bottom: 12px; z-index: 85;
+  width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer;
+  background: var(--accent); color: #fff; font-size: 18px;
   box-shadow: 0 10px 26px rgba(79, 70, 229, .38);
   transition: transform .18s var(--ease), box-shadow .18s var(--ease);
 }
 .assist-orb:hover { transform: translateY(-2px) scale(1.03); }
 .assist-orb:focus-visible { outline: 3px solid var(--accent-soft); outline-offset: 2px; }
 .assist-sheet {
-  position: fixed; right: 22px; bottom: 88px; z-index: 86;
-  width: min(400px, calc(100vw - 44px)); max-height: min(560px, 70vh);
+  position: fixed; right: 10px; bottom: 66px; z-index: 86;
+  width: min(400px, calc(100vw - 20px)); max-height: min(560px, 70vh);
   display: flex; flex-direction: column; gap: 8px;
   background: #fff; border: 1px solid var(--line); border-radius: var(--r-3);
   padding: var(--s-4); box-shadow: var(--sh-3);
@@ -1224,6 +1227,17 @@ body.graph-full { overflow: hidden; }
 .media-desc { margin: 0; font-size: var(--fs-sm); color: var(--ink-500); }
 .media-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 8px; }
 .media-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.media-form > .field { margin-bottom: 0; }
+.media-form > .field > span {
+  display: block; font-size: var(--fs-sm); font-weight: 600;
+  color: var(--ink-700); margin-bottom: 7px;
+}
+.media-form > .field > small {
+  display: block; margin-top: 5px; font-size: var(--fs-micro);
+  color: var(--ink-400); line-height: 1.45;
+}
+.media-form > .fine-print { margin: 0; }
+.media-form > .btn { align-self: flex-start; min-width: 160px; }
 .media-drop {
   display: flex; flex-direction: column; gap: 4px; align-items: center;
   justify-content: center; padding: 18px; border: 1px dashed var(--line);
@@ -1244,3 +1258,44 @@ body.graph-full { overflow: hidden; }
 }
 .media-progress { width: 100%; height: 10px; }
 .media-required > span { font-weight: 600; }
+
+/* ---------- Select controls keep a visible affordance ----------
+   The control reset removes the native arrow, which left "All media", "All clients"
+   and every settings select looking like static fields. One shared chevron fixes that;
+   the dark rail gets a light one so it stays visible on its own surface. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px 14px;
+  padding-right: 36px;
+}
+.side-workspace-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23e2e8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+  padding-right: 26px;
+}
+.settings-input select { padding-right: 32px; background-repeat: no-repeat; }
+.auto-cond-select {
+  background-repeat: no-repeat;
+  background-position: right 5px center;
+  background-size: 10px 10px;
+  padding-right: 18px;
+}
+
+.page-head > div { min-width: 0; }
+.nav-veil { display: none; }
+@media (max-width: 900px) {
+  /* Leave room below the last card so the floating Ask control can never sit on top of
+     the final action when the page is scrolled to the end. */
+  .container { padding-bottom: 96px; }
+  body.nav-open .nav-veil {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    background: rgba(15, 23, 42, .45);
+  }
+  body.nav-open .assist-orb, body.nav-open .assist-sheet { display: none; }
+}
