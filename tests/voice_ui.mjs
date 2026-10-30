@@ -112,7 +112,7 @@ const session = {
   token: 'ephemeral-token',
   endpoint: 'wss://example.test/live',
   model: 'gemini-3.8-live',
-  api_version: 'v1alpha',
+  api_version: 'v1beta',
   voice: 'Kore',
   remaining_minutes: 10,
   setup: { setup: {

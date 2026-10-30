@@ -10,6 +10,7 @@ still stops at a gate.
 Audio is never stored. What is kept is the transcript, which is the same text the thread shows.
 """
 
+import asyncio
 import datetime
 import json
 import time
@@ -30,12 +31,12 @@ RETIRED_MODELS = {
 DEFAULT_VOICE = "Kore"
 DEFAULT_MINUTES = 10
 
-# Ephemeral tokens are the one part of the Live API the installed google-genai SDK still
-# pins to v1alpha (live.py: "The SDK's ephemeral token support is in v1alpha only").
-# The public docs show v1beta, so the version is a setting rather than a hardcode: a key
-# that only answers on v1beta can be switched without a code change.
-API_VERSION = "v1alpha"
-API_VERSIONS = ("v1alpha", "v1beta")
+# Ephemeral tokens are documented for the v1beta Live API. The installed
+# google-genai SDK still carries an older "v1alpha only" experiment warning, but a
+# v1alpha auth token could be minted and then never complete a constrained session.
+# The raw-WebSocket path here follows the documented v1beta ephemeral-token flow.
+API_VERSION = "v1beta"
+API_VERSIONS = ("v1beta",)
 
 # Minutes used today, per user, counted in this process. A restart forgives the day's usage -
 # deliberately simple, and honest about it: the token mint is still the gate, and the real
@@ -135,10 +136,12 @@ MODELS_CACHE_SECONDS = 300
 _MODELS_CACHE = {}
 
 
-def _post(url, payload, timeout=15):
+def _post(url, payload, timeout=15, headers=None):
     body = json.dumps(payload).encode()
+    request_headers = {"Content-Type": "application/json"}
+    request_headers.update(headers or {})
     request = urllib.request.Request(url, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
+                                     headers=request_headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode() or "{}")
@@ -155,19 +158,43 @@ def _stamp(seconds):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def mint():
-    """An ephemeral token the browser opens a Live session with.
+def mint_payload(live_setup=None):
+    """The auth-token request for the exact Live setup the browser will send.
 
-    ``uses=1`` and a minute of expiry mean a leaked token is worth almost nothing: one session,
-    very briefly. The API key itself never leaves this server.
+    A bare token is not enough: the constrained Live endpoint needs the token tied to
+    the model and response modality. This mirrors the documented
+    ``liveConnectConstraints`` payload and keeps the token and setup from drifting.
+    """
+    setup_message = live_setup or setup()["setup"]
+    model_name = str(setup_message.get("model") or ("models/" + model()))
+    generation = setup_message.get("generationConfig") or {}
+    modalities = generation.get("responseModalities") or ["AUDIO"]
+    return {
+        "uses": 1,
+        "expireTime": _stamp(SESSION_SECONDS + 60),
+        "newSessionExpireTime": _stamp(60),
+        "liveConnectConstraints": {
+            "model": model_name,
+            "config": {
+                "sessionResumption": {},
+                "responseModalities": list(modalities),
+            },
+        },
+    }
+
+
+def mint(live_setup=None):
+    """An ephemeral, model-constrained token the browser opens a Live session with.
+
+    ``uses=1`` and a minute of expiry mean a leaked token is worth almost nothing: one
+    session, very briefly. The API key itself never leaves this server.
     """
     key = api_key()
     if not key:
         raise VoiceError("No Google Gemini key is configured.")
-    payload = {"uses": 1, "expireTime": _stamp(SESSION_SECONDS + 60),
-               "newSessionExpireTime": _stamp(60)}
-    url = (AUTH_TOKENS_URL % api_version()) + "?key=" + urllib.parse.quote(key)
-    data = _post(url, payload)
+    payload = mint_payload(live_setup)
+    url = AUTH_TOKENS_URL % api_version()
+    data = _post(url, payload, headers={"x-goog-api-key": key})
     token = str(data.get("name") or data.get("token") or "").strip()
     if not token:
         raise VoiceError("Gemini returned no token: %s" % json.dumps(data)[:200])
@@ -194,6 +221,22 @@ def delegate_declaration():
     }
 
 
+def live_config(org_name="", page=""):
+    """The Live connection config shared by the token constraints and the setup frame."""
+    return {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {
+            "prebuiltVoiceConfig": {"voiceName": voice_name()}}},
+        "systemInstruction": {"parts": [{"text": instruction(org_name, page)}]},
+        "tools": [{"functionDeclarations": [delegate_declaration()]}],
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {"disabled": False}},
+        "sessionResumption": {},
+    }
+
+
 def setup(org_name="", page=""):
     """The first message the browser sends once the socket opens.
 
@@ -205,18 +248,18 @@ def setup(org_name="", page=""):
     * ``realtimeInputConfig.automaticActivityDetection`` - stated explicitly rather than
       left to the server default, so turn-taking is a decision this file made.
     """
+    config = live_config(org_name, page)
     return {"setup": {
         "model": "models/" + model(),
         "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {
-                "prebuiltVoiceConfig": {"voiceName": voice_name()}}}},
-        "systemInstruction": {"parts": [{"text": instruction(org_name, page)}]},
-        "tools": [{"functionDeclarations": [delegate_declaration()]}],
-        "inputAudioTranscription": {},
-        "outputAudioTranscription": {},
-        "realtimeInputConfig": {
-            "automaticActivityDetection": {"disabled": False}},
+            "responseModalities": config["responseModalities"],
+            "speechConfig": config["speechConfig"],
+        },
+        "systemInstruction": config["systemInstruction"],
+        "tools": config["tools"],
+        "inputAudioTranscription": config["inputAudioTranscription"],
+        "outputAudioTranscription": config["outputAudioTranscription"],
+        "realtimeInputConfig": config["realtimeInputConfig"],
     }}
 
 
@@ -240,7 +283,71 @@ def instruction(org_name="", page=""):
         % (client, where))
 
 
-def _normalise_version(value):
+def probe_session(live_setup=None, timeout=15):
+    """Open the exact constrained Live socket server-side and wait for setupComplete.
+
+    This is the check the browser cannot give us before a user presses Talk: it proves
+    the minted token, model, API version and setup frame form a real session. It sends
+    no audio; the token is one-use and the connection closes immediately after the
+    server's first meaningful frame.
+    """
+    live_setup = live_setup or setup()["setup"]
+    try:
+        token = mint(live_setup)
+    except VoiceError as exc:
+        return {"ok": False, "output": str(exc)}
+    url = socket_url() + "?access_token=" + urllib.parse.quote(token)
+
+    async def run():
+        try:
+            import websockets
+        except ImportError:
+            return {"ok": False, "output":
+                    "The server's websockets package is missing, so the Live setup "
+                    "probe cannot run. Install requirements.txt and redeploy."}
+        try:
+            async with websockets.connect(
+                    url, open_timeout=min(10, timeout), close_timeout=3,
+                    max_size=2 ** 20) as ws:
+                await ws.send(json.dumps({"setup": live_setup}))
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        return {"ok": False, "output":
+                                "The Live socket opened but no setupComplete arrived "
+                                "within %d seconds." % timeout}
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", "replace")
+                    try:
+                        message = json.loads(raw)
+                    except ValueError:
+                        return {"ok": False, "output":
+                                "The Live server sent a non-JSON frame: %s"
+                                % str(raw)[:200]}
+                    if message.get("setupComplete"):
+                        session = message.get("setupComplete") or {}
+                        session_id = (session.get("sessionId")
+                                      if isinstance(session, dict) else "")
+                        return {"ok": True, "output":
+                                "setupComplete received%s."
+                                % ((" (session %s)" % session_id) if session_id else "")}
+                    if message.get("error"):
+                        return {"ok": False, "output":
+                                "The Live server refused the setup: %s"
+                                % json.dumps(message["error"])[:400]}
+                    if message.get("goAway"):
+                        return {"ok": False, "output":
+                                "The Live server sent goAway before setupComplete."}
+        except Exception as exc:
+            return {"ok": False, "output":
+                    "The Live socket check failed: %s: %s"
+                    % (type(exc).__name__, exc)}
+    try:
+        return asyncio.run(run())
+    except RuntimeError as exc:
+        return {"ok": False, "output":
+                "Could not run the Live socket check: %s" % exc}
     value = str(value or "").strip().lower()
     return value if value in API_VERSIONS else API_VERSION
 
@@ -303,7 +410,7 @@ def live_models(version=None, timeout=12, force=False):
 
 
 def live_models_by_version(timeout=12, force=False):
-    """Both API versions, so Settings can name a version mismatch instead of guessing."""
+    """The Live model list for the v1beta ephemeral-token API."""
     versions = {version: live_models(version, timeout, force) for version in API_VERSIONS}
     return {
         "ok": any(info.get("ok") for info in versions.values()),
@@ -316,12 +423,12 @@ def live_models_by_version(timeout=12, force=False):
 
 
 def model_availability(force=False, timeout=6):
-    """Whether the configured Live model is listed for the API version the session uses.
+    """Whether the configured Live model is listed for the v1beta ephemeral-token API.
 
-    A model listed on v1beta is not proof that the v1alpha socket can use it; that
-    mismatch is what made a socket open and then time out without setupComplete. This
-    returns ``checked=False`` when Google cannot be reached, so a transient network
-    failure never makes the microphone disappear unnecessarily.
+    A model listed for the key is not proof that a constrained socket will accept the
+    setup. The Settings Test uses probe_session() for that; this preflight only blocks
+    obvious model mismatches. It returns ``checked=False`` when Google cannot be
+    reached, so a transient network failure never makes the microphone disappear.
     """
     wanted = model()
     session_version = api_version()

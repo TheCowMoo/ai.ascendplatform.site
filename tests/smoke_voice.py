@@ -69,6 +69,9 @@ def test_the_setup_can_be_diagnosed():
     """A wrong model or a retired id is the quiet failure; these pin the visible parts."""
     check("the default live model is the current one", voice.DEFAULT_MODEL, "gemini-3.8-live")
     check("the default is not retired", voice.DEFAULT_MODEL in voice.RETIRED_MODELS, False)
+    check("the Live API is v1beta", voice.api_version(), "v1beta")
+    check("v1alpha cannot be selected for an ephemeral token",
+          "v1alpha" in voice.API_VERSIONS, False)
     check("the socket is the constrained one",
           "BidiGenerateContentConstrained" in voice.socket_url(), True)
     check("the socket names its api version",
@@ -84,6 +87,8 @@ def test_the_setup_can_be_diagnosed():
 
     check("the settings default matches the code",
           settings.FIELDS["GEMINI_LIVE_MODEL"]["default"], voice.DEFAULT_MODEL)
+    check("the settings Live API default is v1beta",
+          settings.FIELDS["GEMINI_LIVE_API_VERSION"]["default"], "v1beta")
 
     original = voice._setting
     try:
@@ -96,24 +101,25 @@ def test_the_setup_can_be_diagnosed():
 
 
 
-def test_live_model_version_checks():
-    """The API version a model is listed under must match the version the socket uses."""
+def test_live_model_and_token_constraints():
+    """The model is checked on v1beta and the ephemeral token is constrained to it."""
     original_live = voice.live_models
     original_model = voice.model
     original_version = voice.api_version
+    original_post = voice._post
+    original_key = voice.api_key
     try:
+        voice.api_version = lambda: "v1beta"
+
         def fake_live(version=None, timeout=12, force=False):
-            version = version or voice.api_version()
-            return {"ok": True, "version": version, "error": "",
-                    "models": {"v1alpha": ["gemini-3.8-live"],
-                               "v1beta": ["gemini-3.8-live", "gemini-other-live"]
-                               }.get(version, [])}
+            return {"ok": True, "version": version or voice.api_version(),
+                    "error": "", "models": ["gemini-3.8-live", "gemini-other-live"]}
 
         voice.live_models = fake_live
-        voice.api_version = lambda: "v1alpha"
         voice.model = lambda: "gemini-3.8-live"
         state = voice.model_availability()
         check("the configured live model is available", state["ok"], True)
+        check("and the version is v1beta", state["version"], "v1beta")
         check("and the check really ran", state["checked"], True)
 
         voice.model = lambda: "gemini-3.8-flash"
@@ -122,85 +128,76 @@ def test_live_model_version_checks():
         check("the refusal lists the available Live models",
               "gemini-3.8-live" in state["error"], True)
 
-        def version_split(version=None, timeout=12, force=False):
-            version = version or voice.api_version()
-            return {"ok": True, "version": version, "error": "",
-                    "models": (["gemini-3.8-live"] if version == "v1beta"
-                               else ["another-live"])}
+        captured = {}
 
-        voice.live_models = version_split
+        def fake_post(url, payload, timeout=15, headers=None):
+            captured["url"] = url
+            captured["payload"] = payload
+            captured["headers"] = headers or {}
+            return {"name": "ephemeral-token"}
+
+        voice._post = fake_post
+        voice.api_key = lambda: "test-key"
         voice.model = lambda: "gemini-3.8-live"
-        state = voice.model_availability()
-        check("a model listed only on v1beta is refused on v1alpha", state["ok"], False)
-        check("the refusal names the version to switch to",
-              state["elsewhere"], ["v1beta"])
-        check("and says it is listed there", "listed on v1beta" in state["error"], True)
-        both = voice.live_models_by_version()
-        check("both versions are inspected", sorted(both["versions"]), ["v1alpha", "v1beta"])
-
-        def alpha_fails(version=None, timeout=12, force=False):
-            version = version or voice.api_version()
-            if version == "v1alpha":
-                return {"ok": False, "models": [], "version": version,
-                        "error": "Gemini refused the v1alpha model list (404)"}
-            return {"ok": True, "models": ["gemini-3.8-live"], "version": version,
-                    "error": ""}
-
-        voice.live_models = alpha_fails
-        state = voice.model_availability()
-        check("a failed session-version list still checks the other version",
-              state["checked"], True)
-        check("and refuses when the model is listed on the other one",
-              state["ok"], False)
-        check("the failed list is explained in the refusal",
-              "model list failed" in state["error"], True)
+        live_setup = voice.setup()["setup"]
+        token = voice.mint(live_setup)
+        check("the constrained token is minted", token, "ephemeral-token")
+        check("the token is requested on v1beta",
+              captured["url"].endswith("/v1beta/auth_tokens"), True)
+        check("the API key travels as a header",
+              captured["headers"].get("x-goog-api-key"), "test-key")
+        constraints = captured["payload"].get("liveConnectConstraints") or {}
+        check("the token is model-constrained", constraints.get("model"),
+              live_setup["model"])
+        check("the token is audio-constrained",
+              (constraints.get("config") or {}).get("responseModalities"), ["AUDIO"])
     finally:
         voice.live_models = original_live
         voice.model = original_model
         voice.api_version = original_version
+        voice._post = original_post
+        voice.api_key = original_key
 
 
 def test_settings_voice_check():
-    """Settings -> Voice -> Test names the version and checks the token mint."""
+    """Settings -> Voice -> Test probes the constrained socket, not just the token."""
     import settings
 
     original_key = voice.api_key
     original_status = voice.status
     original_probe = voice.live_models_by_version
-    original_mint = voice.mint
+    original_session_probe = voice.probe_session
     try:
         voice.api_key = lambda: "test-key"
         voice.status = lambda *args, **kwargs: {
-            "model": "gemini-3.8-live", "api_version": "v1alpha",
+            "model": "gemini-3.8-live", "api_version": "v1beta",
             "voice": "Kore", "model_note": "",
         }
         voice.live_models_by_version = lambda *args, **kwargs: {
             "versions": {
-                "v1alpha": {"ok": True, "models": ["gemini-3.8-live"]},
                 "v1beta": {"ok": True, "models": ["gemini-3.8-live"]},
             }
         }
-        voice.mint = lambda: "ephemeral-token"
+        voice.probe_session = lambda *args, **kwargs: {
+            "ok": True, "output": "setupComplete received."}
         result = settings._test_voice()
-        check("the voice Test passes when the model and token work", result["ok"], True)
-        check("it names the session version", "v1alpha Live models" in result["output"], True)
-        check("it checks the token mint", "Session token mint: OK" in result["output"], True)
+        check("the voice Test passes when setupComplete is received", result["ok"], True)
+        check("it names the v1beta model list",
+              "v1beta Live models" in result["output"], True)
+        check("it reports the real setup probe",
+              "Live setup probe: setupComplete received." in result["output"], True)
 
-        voice.live_models_by_version = lambda *args, **kwargs: {
-            "versions": {
-                "v1alpha": {"ok": True, "models": ["another-live"]},
-                "v1beta": {"ok": True, "models": ["gemini-3.8-live"]},
-            }
-        }
+        voice.probe_session = lambda *args, **kwargs: {
+            "ok": False, "output": "The Live server refused the setup: model not found"}
         result = settings._test_voice()
-        check("a version mismatch fails the Test", result["ok"], False)
-        check("and names the version to switch to",
-              "listed on v1beta" in result["output"], True)
+        check("a refused setup fails the Test", result["ok"], False)
+        check("and prints the server's refusal",
+              "model not found" in result["output"], True)
     finally:
         voice.api_key = original_key
         voice.status = original_status
         voice.live_models_by_version = original_probe
-        voice.mint = original_mint
+        voice.probe_session = original_session_probe
 
 
 def test_the_routes():
@@ -218,7 +215,7 @@ def test_the_routes():
               (refused.get_json() or {}).get("fallback"), "text")
 
         voice.api_key = lambda: "test-key"
-        voice.mint = lambda: "ephemeral-token"
+        voice.mint = lambda **kwargs: "ephemeral-token"
         voice.model_availability = lambda: {
             "ok": True, "checked": True, "model": voice.model(),
             "version": voice.api_version(), "available_models": [voice.model()]}
@@ -227,6 +224,8 @@ def test_the_routes():
         check("a session mints a token", data.get("token"), "ephemeral-token")
         check("the socket endpoint is the constrained one",
               "BidiGenerateContentConstrained" in (data.get("endpoint") or ""), True)
+        check("the session endpoint is v1beta",
+              ".v1beta." in (data.get("endpoint") or ""), True)
         check("the session names the model it will use", data.get("model"), voice.model())
         check("the session names its api version", data.get("api_version"), voice.api_version())
         check("the setup carries the tool",
@@ -236,16 +235,15 @@ def test_the_routes():
         voice.model_availability = lambda: {
             "ok": False, "checked": True, "model": voice.model(),
             "version": voice.api_version(), "available_models": [],
-            "elsewhere": ["v1beta"],
-            "error": ("The live model %s is not available on %s, but it is listed on "
-                      "v1beta. Open Settings -> Voice -> Test." %
-                      (voice.model(), voice.api_version()))}
+            "elsewhere": [],
+            "error": ("The live model %s is not available on %s. Open Settings -> "
+                      "Voice -> Test." % (voice.model(), voice.api_version()))}
         blocked = client.post("/api/voice/session", json={})
         check("a model absent from the session API version is refused before minting",
               blocked.status_code, 400)
         body = blocked.get_json() or {}
-        check("the preflight explains the version mismatch",
-              "listed on v1beta" in body.get("error", ""), True)
+        check("the preflight explains the unavailable model",
+              "not available" in body.get("error", ""), True)
         check("it offers the text fallback", body.get("fallback"), "text")
         check("and does not hand out a token", body.get("token"), None)
 
@@ -253,7 +251,7 @@ def test_the_routes():
             "ok": True, "checked": True, "model": voice.model(),
             "version": voice.api_version(), "available_models": [voice.model()]}
 
-        def boom():
+        def boom(**kwargs):
             raise voice.VoiceError("Gemini refused to mint a session token (403): denied")
 
         voice.mint = boom
@@ -373,7 +371,7 @@ if __name__ == "__main__":
     test_status_tells_the_truth()
     test_setup_declares_one_tool()
     test_the_setup_can_be_diagnosed()
-    test_live_model_version_checks()
+    test_live_model_and_token_constraints()
     test_settings_voice_check()
     test_the_routes()
     test_the_browser_half_is_wired()

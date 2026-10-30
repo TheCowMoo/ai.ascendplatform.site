@@ -363,9 +363,11 @@ endpoint, the model and the API version; `POST /api/voice/tool` is the only tool
 
 The five things that must stay true (each has a guard in `tests/smoke_voice.py`):
 
-1. **Model:** default `gemini-3.8-live`. `gemini-2.5-flash-live` and
-   `gemini-live-2.5-flash-preview` are retired; `voice.model()` maps them to the default
-   and `voice.model_note()` says so. `GEMINI_LIVE_MODEL` overrides.
+1. **Model and API:** default `gemini-3.8-live` on **v1beta**. Ephemeral Live
+   tokens are v1beta-only; the v1alpha endpoint could mint a token but never complete
+   a constrained session. `gemini-2.5-flash-live` and `gemini-live-2.5-flash-preview`
+   are retired; `voice.model()` maps them to the default and `voice.model_note()` says
+   so. `GEMINI_LIVE_MODEL` overrides. `GEMINI_LIVE_API_VERSION` is fixed to v1beta.
 2. **Setup:** `inputAudioTranscription: {}` and `outputAudioTranscription: {}` are not
    optional - without them a working session has no text at all. So is
    `realtimeInputConfig.automaticActivityDetection.disabled: false`.
@@ -379,21 +381,23 @@ The five things that must stay true (each has a guard in `tests/smoke_voice.py`)
 The overlay (`admin/voice.js` + `.voice-*` in `admin.css`) is opened by the sheet's Talk
 button, and by the Assistant page and tour through the same `AscendVoice.open`. It is a
 mode: orb scaled from mic/output RMS, live transcripts coalesced by turn, Minimise keeps
-the session alive, Stop/Esc end it. `Settings -> Voice -> Test` calls
-`voice.live_models_by_version(force=True)`, lists the Live models for **both** `v1alpha`
-and `v1beta`, checks a token mint on the configured version, and names a version
-mismatch explicitly. `POST /api/voice/session` calls `voice.model_availability()` before
-minting; if the configured model is absent from the configured version (or the model
-list fails and the other version lists it), it returns a 400 with the version to switch
-to instead of opening a socket that sits silent until the 12-second setup timer. A
-network failure of both model-list calls does not block the session
-(`checked=False`). `tests/voice_ui.mjs` drives the real client against a fake DOM,
-AudioContext and WebSocket, so the gate and the failure paths are tested without a
+the session alive, Stop/Esc end it. `Settings -> Voice -> Test` checks the v1beta Live
+models and then runs `voice.probe_session()`: it mints a token with
+`liveConnectConstraints` (model + `responseModalities: ["AUDIO"]`), opens the exact
+constrained socket server-side, sends the same `voice.setup()` frame the browser uses,
+and waits for `setupComplete`. The Test reports Google's actual setup error or
+`setupComplete received`; it no longer calls a bare token mint "ready".
+`POST /api/voice/session` calls `voice.model_availability()` before minting and sends
+the same setup object into `voice.mint(live_setup=...)`, so the token constraints and
+the browser setup cannot drift. A network failure of the model list does not block the
+session (`checked=False`). `tests/voice_ui.mjs` drives the real client against a fake
+DOM, AudioContext and WebSocket, so the gate and the failure paths are tested without a
 browser or a key.
 
 The text model in **AI providers** (`GEMINI_MODEL`, e.g. `gemini-3.8-flash`) is not the
 voice model; voice uses `GEMINI_LIVE_MODEL` (`gemini-3.8-live` by default). The Test
-button is the source of truth for which Live model and API version this key can use.
+button is the source of truth for whether the key can complete a constrained Live
+session with that model.
 
 Known gaps, in the order they would bite:
 
@@ -403,11 +407,12 @@ Known gaps, in the order they would bite:
   mint. The overlay offers Try again; it does not resume.
 * `MUTE_WHILE_SPEAKING` is false because cutting mic frames also cuts barge-in. Switch it
   only if echo is measured on a real device.
-* Ephemeral tokens are v1alpha in `google-genai 2.30.1`; the public docs show v1beta.
-  `GEMINI_LIVE_API_VERSION` exists so a key can be switched without a code edit.
-* The real handshake has not been exercised in this workspace (no key configured).
-  Everything up to the socket and every error path is covered; the first real session
-  should be run from Settings -> Voice -> Test, then the sheet's Talk button.
+* Ephemeral tokens are v1beta-only in the current Gemini docs; the installed
+  `google-genai` SDK still carries an older v1alpha warning. This build uses the raw
+  v1beta WebSocket path with a constrained token and no SDK Live session.
+* The real handshake is now exercised by `Settings -> Voice -> Test`, which opens the
+  constrained socket server-side and waits for `setupComplete`. If it fails, the Test
+  prints Google's error; the browser's Talk path uses the same setup and token.
 
 ## Voice — current state and runbook (2026-10-30)
 
@@ -431,10 +436,10 @@ Use this section to resume in a new task without replaying a long tool history.
 2. Open `http://127.0.0.1:8000/admin/`; the seeded login is
    `admin@example.com` / `admin123` unless it was changed.
 3. Settings -> AI providers -> Google Gemini API key -> Save. Then
-   Settings -> Voice -> Test lists the Live models the key can see.
+   Settings -> Voice -> Test checks the v1beta models and opens the real constrained
+   socket; it reports `setupComplete` or Google's exact setup error.
 4. If `gemini-3.8-live` is not listed, set Settings -> Voice -> Gemini live voice model
-   to one that is. If minting fails, switch Live API version between `v1alpha` and
-   `v1beta`.
+   to one that is. Do not switch to v1alpha: ephemeral Live tokens are v1beta-only.
 5. Assistant -> Talk. The overlay appears before the token is minted; the orb is scaled
    from mic/output RMS, and both transcripts are requested in `voice.setup()`.
 

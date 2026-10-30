@@ -114,10 +114,10 @@ SPEC = [
                     "providers. Leave blank for the default; Test lists what this key can "
                     "open and the API version where it is available."),
             _f("GEMINI_LIVE_API_VERSION", "Live API version", kind="choice",
-               choices=("v1alpha", "v1beta"), default="v1alpha",
-               help="Use the version where Test lists your Live model. Ephemeral tokens "
-                    "are v1alpha by default; switch only when Test says the model is on "
-                    "v1beta."),
+               choices=("v1beta",), default="v1beta",
+               help="Ephemeral Live tokens are v1beta-only. The v1alpha flow could "
+                    "mint a token but never complete a constrained session, so this "
+                    "build always uses v1beta."),
             _f("GEMINI_VOICE", "Spoken voice", default="Kore",
                help="Kore, Puck, Charon, Aoede or Fenrir"),
             _f("VOICE_DAILY_MINUTES", "Voice minutes per user per day", kind="int",
@@ -712,10 +712,12 @@ def _test_llm(org_id=None):
 
 
 def _test_voice(org_id=None):
-    """Prove the key can actually open a Live session with the configured model.
+    """Prove the key can complete the constrained v1beta Live setup.
 
     A blind "key present" check is what let a retired model id look healthy while every
-    session was refused, so this asks Gemini for its model list and names the mismatch.
+    session was refused. This asks for the v1beta model list, mints a token with
+    liveConnectConstraints, then opens the exact constrained socket and waits for
+    setupComplete. A failed probe prints Google's own error.
     """
     if org_id is not None:
         return {"ok": False, "output": "That group configures the platform, not a client."}
@@ -743,16 +745,10 @@ def _test_voice(org_id=None):
     session_version = state["api_version"]
     session_models = (versions.get(session_version) or {}).get("models") or []
     if state["model"] in session_models:
-        try:
-            voice.mint()
-            lines.append("Session token mint: OK.")
-        except voice.VoiceError as exc:
-            lines.append("Session token mint failed on %s: %s" %
-                         (session_version, exc))
-            return {"ok": False, "output": " ".join(lines)}
-        lines.append("Model and token check passed on %s. Press Talk to confirm the "
-                     "socket setup." % session_version)
-        return {"ok": True, "output": " ".join(lines)}
+        setup = voice.setup()["setup"]
+        probe = voice.probe_session(setup)
+        lines.append("Live setup probe: %s" % probe["output"])
+        return {"ok": bool(probe.get("ok")), "output": " ".join(lines)}
     elsewhere = [version for version in voice.API_VERSIONS
                  if state["model"] in ((versions.get(version) or {}).get("models") or [])]
     if elsewhere:

@@ -2146,8 +2146,11 @@ def voice_session():
         }), 400
     data = request.get_json(silent=True) or {}
     page = str(data.get("page") or "").strip()[:40]
+    org = orgs_service.get_org(current_org()) if current_org() else None
+    org_name = str((org or {}).get("name") or "")
+    setup_message = voice.setup(org_name=org_name, page=page)
     try:
-        token = voice.mint()
+        token = voice.mint(live_setup=setup_message["setup"])
     except voice.VoiceError as exc:
         # The key is never in this message, and never logged.
         app.logger.warning("Voice session mint failed: %s", exc)
@@ -2158,11 +2161,9 @@ def voice_session():
     # refused permission no longer spends a session.
     voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
     session["voice_calls"] = 0
-    org = orgs_service.get_org(current_org()) if current_org() else None
-    org_name = str((org or {}).get("name") or "")
     return jsonify({
         "token": token,
-        "setup": voice.setup(org_name=org_name, page=page),
+        "setup": setup_message,
         "endpoint": voice.socket_url(),
         "model": voice.model(),
         "model_note": voice.model_note(),

@@ -382,13 +382,13 @@ typing, and its **Talk** button is only shown when the server says a session can
   for support.
 - The microphone is asked for **before** a token is minted, so a slow permission prompt
   does not spend the session.
-- Configuration lives in **Settings → Voice**. **Test** lists the Live models for both
-  `v1alpha` and `v1beta`, checks a token mint on the configured version, and names a
-  mismatch. The session refuses before opening a socket when the model is not available
-  on the configured Live API version.
+- Configuration lives in **Settings → Voice**. **Test** lists the v1beta Live models,
+  opens the real constrained socket server-side with a model-constrained token, and
+  reports `setupComplete` or Google's exact setup error. The session refuses before
+  opening a socket when the model is not available.
 - The voice model is `GEMINI_LIVE_MODEL` (**Settings → Voice**), not the Gemini text
-  model in **AI providers**. If Test says the model is on v1beta, switch **Live API
-  version** there; if it returns no Live models, the key/project lacks Live access.
+  model in **AI providers**. Ephemeral Live tokens are v1beta-only; if Test returns no
+  Live models, the key/project lacks Live access.
 
 ### Settings
 
@@ -402,7 +402,7 @@ editing `.env` needs a restart, and inside a container it is read only at start-
 - Secrets are **write-only** — once saved they are never sent back to the browser
   (only a masked tail). Leaving a key box blank on save keeps the stored value.
 - **Test** runs a real check for a group: a live Pexels search, which AI providers
-  are configured, an SMTP connect, or which Live models the Gemini key can see.
+  are configured, an SMTP connect, or a constrained Live setup probe for Gemini voice.
 - Admin-only, and every change is listed at the bottom of the page (key, action, who
   and when — never a secret value).
 - Values that choose the topology (database, Redis, job backend, bind host/port) are
