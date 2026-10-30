@@ -4690,7 +4690,7 @@
               if (questions.length) questionCard(questions);
             }
             setBusy(false);
-          }).catch(function () { setBusy(false); });
+          }).catch(function () { wait.done(); setBusy(false); });
         });
       }).catch(function (e) {
         wait.done();
