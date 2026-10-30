@@ -295,6 +295,51 @@ public serving, thumbnails, scope, edit/delete and the tool; `tests/test_db_dial
 includes the table. Gaps: no video captions, no bulk upload, no file replacement under
 the same URL, no automatic import of job artifacts into Media.
 
+## Assistant sessions - private, server-backed (2026-10-31)
+
+The Assistant page now has a real chat list: **+ New** starts fresh, the left rail
+lists earlier chats, and opening one continues it. Sessions survive a reload and a
+different device.
+
+**Data.** `assistant_sessions` (`org_id` nullable, `user_id`, `title`, timestamps) and
+`assistant_messages` (`session_id`, `role`, `content`, `job_id`, `created_at`);
+migration `0020_assistant_sessions` after `0019_media`. Ownership is the pair
+`(user_id, current_org())`; `org_id IS NULL` is the operator's no-client view. Another
+team member in the same client cannot see a session. `list_sessions` only returns
+sessions with a message; the title is the first user turn, trimmed to 90 characters.
+
+**Service.** `assistant_sessions.py`: create/get/list, `list_messages` (last N,
+oldest first), `add_message`, `record_reply_for_job`, `import_messages`. A user message
+carries the `job_id`; the manager task records the answer against that job, idempotently.
+The old browser thread is imported explicitly, never silently, because it had no client
+context.
+
+**API.** `GET/POST /api/assistant/sessions`, `GET /api/assistant/sessions/<id>`,
+`POST /api/assistant/sessions/<id>/messages` (voice), and
+`POST /api/assistant/sessions/import`. `POST /api/manager/chat` accepts `session_id`
+or `create_session: true`; when a session is involved it builds history from the
+server's last ten messages and inserts the user turn with the new `job_id`. The
+floating sheet and Manager page, which send neither, keep their old client-history
+behavior.
+
+**The answer bug.** `manager.chat_task` used to return the answer without emitting a
+`Manager`/`message` event, so every UI that reads that event showed "No answer" even
+when the job succeeded. It now emits the answer for all three return paths and calls
+`record_reply_for_job`; the Assistant, Manager page and sheet also fall back to
+`job.result` for older jobs.
+
+**UI.** Assistant page: `.asst-layout` (rail + main), `+ New`, session list with
+title/time/message count, active highlight, one-time old-thread import, and main
+thread. Text sends `session_id` or `create_session`; voice `onTurn` creates/reuses a
+session and posts the turn. The floating Ask sheet stays a quick local thread.
+
+**Guards.** `tests/smoke_assistant_sessions.py` covers service roundtrip, reply
+idempotence, user/client scoping, voice messages, import, and the manager route's
+server-built history; `tests/test_markup_calls.py` asserts the Manager answer event;
+`tests/test_db_dialect.py` includes both tables. Gaps: no rename/delete/search; the
+old-browser import is per browser; a failed manager job leaves the user turn but no
+assistant row; the floating sheet is not session-backed.
+
 ## Voice — the spoken assistant (2026-10-30)
 
 Browser-direct Live socket, one-use token minted by `voice.py`, key never leaves the

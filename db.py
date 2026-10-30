@@ -156,6 +156,38 @@ messages = Table(
 Index("idx_messages_bot", messages.c.bot_id)
 Index("idx_messages_conv", messages.c.conversation_id)
 
+# The logged-in Assistant's own conversation history. Separate from the public
+# chatbot's `messages`: these are private to one user and the client they are acting
+# as, and they link back to the manager job that produced each reply.
+assistant_sessions = Table(
+    "assistant_sessions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),              # NULL = the operator with no client selected
+    Column("user_id", Integer, nullable=False),
+    Column("title", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+Index("idx_assistant_sessions_user",
+      assistant_sessions.c.user_id, assistant_sessions.c.org_id,
+      assistant_sessions.c.updated_at)
+
+assistant_messages = Table(
+    "assistant_messages",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("session_id", Integer, nullable=False),
+    Column("role", Text, nullable=False, server_default=_literal("user")),
+    Column("content", Text, nullable=False, server_default=_literal("")),
+    Column("job_id", Integer),              # links a turn to its manager job transcript
+    _created_at(),
+)
+
+Index("idx_assistant_messages_session", assistant_messages.c.session_id)
+Index("idx_assistant_messages_job", assistant_messages.c.job_id)
+
 # External messaging channels (Meta: Messenger / Instagram / WhatsApp).
 # One bot can be linked to several channels/platform accounts.
 channels = Table(

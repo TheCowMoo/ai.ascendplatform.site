@@ -51,6 +51,7 @@ import servers as servers_service
 import sites as sites_service
 import contacts as contacts_service
 import media_library as media_service
+import assistant_sessions as assistant_service
 from tools import policy as tool_policy
 from tools import ssh as ssh_tool
 
@@ -3176,6 +3177,66 @@ def set_acting_org():
     return jsonify({"acting_org": org_id, "name": org.get("name")})
 
 
+@app.route("/api/assistant/sessions", methods=["GET"])
+@login_required
+def list_assistant_sessions():
+    """The logged-in Assistant's own sessions for this acting client."""
+    return jsonify({"sessions": assistant_service.list_sessions(
+        session.get("user_id"), current_org())})
+
+
+@app.route("/api/assistant/sessions", methods=["POST"])
+@login_required
+def create_assistant_session():
+    data = request.get_json(silent=True) or {}
+    try:
+        created = assistant_service.create_session(
+            session.get("user_id"), current_org(), data.get("title") or "")
+    except assistant_service.AssistantSessionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"session": created}), 201
+
+
+@app.route("/api/assistant/sessions/import", methods=["POST"])
+@login_required
+def import_assistant_session():
+    """One-time import of the old browser thread into a server session."""
+    data = request.get_json(silent=True) or {}
+    try:
+        result = assistant_service.import_messages(
+            session.get("user_id"), current_org(),
+            data.get("messages") or [], data.get("title") or "")
+    except assistant_service.AssistantSessionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result), 201
+
+
+@app.route("/api/assistant/sessions/<int:session_id>", methods=["GET"])
+@login_required
+def get_assistant_session(session_id):
+    data = assistant_service.get_session_with_messages(
+        session_id, session.get("user_id"), current_org())
+    if not data:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(data)
+
+
+@app.route("/api/assistant/sessions/<int:session_id>/messages", methods=["POST"])
+@login_required
+def add_assistant_message(session_id):
+    """Append a voice turn (or another UI-produced turn) to a session."""
+    if not assistant_service.get_session(
+            session_id, session.get("user_id"), current_org()):
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        message = assistant_service.add_message(
+            session_id, data.get("role"), data.get("content"))
+    except assistant_service.AssistantSessionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"message": message}), 201
+
+
 @app.route("/api/manager/chat", methods=["POST"])
 @login_required
 def manager_chat():
@@ -3197,10 +3258,37 @@ def manager_chat():
         return jsonify({"error": "The assistant is not configured. Add an AI provider "
                                  "key in Settings -> AI providers; DeepSeek is the "
                                  "default, and Gemini or Claude also work."}), 503
-    lines = []
-    for turn in (data.get("history") or [])[-10:]:
-        if isinstance(turn, dict) and turn.get("content"):
-            lines.append("%s: %s" % (turn.get("role", "user"), str(turn["content"])[:800]))
+    # The Assistant page names its session; the floating sheet and Manager page still
+    # send their own history. A session's history comes from the server, never from the
+    # browser, so "continue" means the same thing after a reload or another device.
+    assistant_session = None
+    session_id = data.get("session_id")
+    if session_id not in (None, ""):
+        try:
+            session_id = int(session_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "session_id must be a number"}), 400
+        assistant_session = assistant_service.get_session(
+            session_id, session.get("user_id"), current_org())
+        if not assistant_session:
+            return jsonify({"error": "That chat was not found"}), 404
+        lines = [
+            "%s: %s" % (turn["role"], str(turn["content"])[:800])
+            for turn in assistant_service.list_messages(session_id, limit=10)
+        ]
+    elif data.get("create_session"):
+        try:
+            assistant_session = assistant_service.create_session(
+                session.get("user_id"), current_org())
+        except assistant_service.AssistantSessionError as exc:
+            return jsonify({"error": str(exc)}), 400
+        lines = []
+    else:
+        lines = []
+        for turn in (data.get("history") or [])[-10:]:
+            if isinstance(turn, dict) and turn.get("content"):
+                lines.append("%s: %s" % (turn.get("role", "user"),
+                                          str(turn["content"])[:800]))
     prompt = ("%s\n\n%s" % ("\n".join(lines), message)) if lines else message
     # The editor says what the user has open, so "add an approval before the publish step"
     # revises that graph instead of drafting a new one. Plain text: the model needs the id
@@ -3221,8 +3309,18 @@ def manager_chat():
         "Manager chat", prompt, session.get("user_id"), "selector", "chat",
         org_id=current_org(),
     )
+    if assistant_session:
+        try:
+            assistant_service.add_message(
+                assistant_session["id"], "user", message, job_id=job_id)
+        except assistant_service.AssistantSessionError as exc:
+            jobs.cancel_job(job_id)
+            return jsonify({"error": str(exc)}), 400
     jobs.submit(job_id)
-    return jsonify({"job_id": job_id}), 201
+    return jsonify({
+        "job_id": job_id,
+        "session_id": assistant_session["id"] if assistant_session else None,
+    }), 201
 
 
 @app.route("/api/analytics/summary", methods=["GET"])

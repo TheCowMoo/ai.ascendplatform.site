@@ -4269,22 +4269,50 @@
       'asks when the brief is thin, drafts when it is not, and keeps the thread.</p></div>';
     container.appendChild(head);
 
+    var layout = el('div', 'asst-layout');
+    var rail = el('aside', 'asst-rail');
+    var railHead = el('div', 'asst-rail-head');
+    railHead.appendChild(el('h3', 'asst-rail-title', 'Chats'));
+    var newChat = el('button', 'btn btn-primary btn-sm', '+ New');
+    railHead.appendChild(newChat);
+    rail.appendChild(railHead);
+    var sessionList = el('div', 'asst-session-list');
+    rail.appendChild(sessionList);
+    var importHost = el('div', 'asst-import-host');
+    rail.appendChild(importHost);
+    layout.appendChild(rail);
+
+    var main = el('div', 'asst-main');
     var thread = el('div', 'asst-thread');
-    container.appendChild(thread);
+    main.appendChild(thread);
 
     var box = el('textarea', 'prompt-box');
     box.placeholder = 'Build me an automation that…';
-    container.appendChild(box);
+    main.appendChild(box);
     var send = el('button', 'btn btn-primary', 'Send');
-    container.appendChild(send);
+    main.appendChild(send);
 
     // Voice is offered only when the server says it can be: no key, or minutes spent, means
     // no microphone rather than a button that fails when pressed.
     var mic = el('button', 'btn btn-ghost', 'Talk');
     mic.style.display = 'none';
     var voiceNote = el('p', 'fine-print');
-    container.appendChild(mic);
-    container.appendChild(voiceNote);
+    main.appendChild(mic);
+    main.appendChild(voiceNote);
+    layout.appendChild(main);
+    container.appendChild(layout);
+
+    var activeSession = null;
+    var sessions = [];
+    var busy = false;
+    var voiceSession = null;
+    var voiceCreate = null;
+    function setBusy(value) {
+      busy = value;
+      send.disabled = value;
+      newChat.disabled = value;
+    }
+
     api('GET', '/api/voice/status').then(function (s) {
       if (!s.available) {
         voiceNote.textContent = s.reason;
@@ -4304,9 +4332,7 @@
           onState: function (phase, label) { voiceNote.textContent = 'Voice: ' + label; },
           onTurn: function (turn) {
             bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
-            threadState.messages.push({
-              role: turn.role === 'user' ? 'user' : 'assistant', content: turn.text });
-            save();
+            persistVoiceTurn(turn.role === 'user' ? 'user' : 'assistant', turn.text);
           },
           onJob: function (jobId) {
             voiceNote.textContent = 'The team is working - job #' + jobId;
@@ -4315,16 +4341,165 @@
       };
     }).catch(function () { /* no voice is not an error worth a toast */ });
 
-    var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
-    var key = 'chat:' + orgKey + ':' + ((state.user && state.user.id) || 0);
-    var threadState = { messages: [] };
-    try {
-      threadState = JSON.parse(localStorage.getItem(key) || '{"messages":[]}');
-      if (!Array.isArray(threadState.messages)) threadState.messages = [];
-    } catch (e) { threadState = { messages: [] }; }
-    function save() {
-      try { localStorage.setItem(key, JSON.stringify(threadState)); } catch (e) { /* private mode */ }
+    function oldThreadKey() {
+      var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
+      return 'chat:' + orgKey + ':' + ((state.user && state.user.id) || 0);
     }
+    function readOldThread() {
+      try {
+        var data = JSON.parse(localStorage.getItem(oldThreadKey()) || 'null');
+        if (!data || !Array.isArray(data.messages)) return [];
+        return data.messages.filter(function (message) {
+          return message && (message.role === 'user' || message.role === 'assistant') &&
+            typeof message.content === 'string' && message.content.trim();
+        });
+      } catch (e) { return []; }
+    }
+    function shortTime(value) {
+      if (!value) return '';
+      var stamp = Date.parse(String(value).replace(' ', 'T') + 'Z');
+      if (isNaN(stamp)) return String(value).slice(0, 10);
+      var minutes = Math.max(0, Math.floor((Date.now() - stamp) / 60000));
+      if (minutes < 1) return 'just now';
+      if (minutes < 60) return minutes + 'm ago';
+      var hours = Math.floor(minutes / 60);
+      if (hours < 24) return hours + 'h ago';
+      var days = Math.floor(hours / 24);
+      if (days === 1) return 'Yesterday';
+      if (days < 7) return days + 'd ago';
+      return String(value).slice(0, 10);
+    }
+    function renderSessions() {
+      sessionList.innerHTML = '';
+      if (!sessions.length) {
+        sessionList.appendChild(el('p', 'asst-rail-empty',
+          'No chats yet. Ask something to start one.'));
+        return;
+      }
+      sessions.forEach(function (session) {
+        var button = el('button', 'asst-session' +
+          (activeSession && activeSession.id === session.id ? ' active' : ''));
+        button.type = 'button';
+        button.appendChild(el('span', 'asst-session-title',
+          session.title || 'New chat'));
+        var meta = shortTime(session.updated_at);
+        if (session.message_count) {
+          meta += ' · ' + session.message_count + ' message' +
+            (session.message_count === 1 ? '' : 's');
+        }
+        button.appendChild(el('span', 'asst-session-time', meta));
+        button.onclick = function () { openSession(session.id); };
+        sessionList.appendChild(button);
+      });
+    }
+    function loadSessions(selectId) {
+      return api('GET', '/api/assistant/sessions').then(function (d) {
+        sessions = d.sessions || [];
+        if (selectId) {
+          var found = sessions.filter(function (s) { return s.id === selectId; })[0];
+          if (found) activeSession = found;
+        } else if (activeSession) {
+          var still = sessions.filter(function (s) {
+            return s.id === activeSession.id;
+          })[0];
+          activeSession = still || null;
+        }
+        renderSessions();
+        return sessions;
+      }).catch(function () {
+        sessionList.innerHTML = '';
+        sessionList.appendChild(el('p', 'asst-rail-empty', 'Could not load chats.'));
+        return [];
+      });
+    }
+    function openSession(id) {
+      if (busy) return;
+      api('GET', '/api/assistant/sessions/' + id).then(function (d) {
+        activeSession = d.session || null;
+        voiceSession = null;
+        renderMessages(d.messages || []);
+        renderSessions();
+        box.focus();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+    function startNewChat() {
+      if (busy) return;
+      activeSession = null;
+      voiceSession = null;
+      thread.innerHTML = '';
+      welcome();
+      renderSessions();
+      box.focus();
+    }
+    newChat.onclick = startNewChat;
+
+    function maybeShowImport() {
+      var old = readOldThread();
+      if (!old.length) return;
+      var dismissKey = oldThreadKey() + ':import-dismissed';
+      try {
+        if (localStorage.getItem(dismissKey)) return;
+      } catch (e) { return; }
+      importHost.innerHTML = '';
+      var card = el('div', 'asst-import');
+      card.appendChild(el('p', null,
+        'A previous Assistant thread is saved in this browser. Import it into this client?'));
+      var row = el('div', 'row-actions');
+      var yes = el('button', 'btn btn-primary btn-sm', 'Import');
+      var no = el('button', 'btn btn-ghost btn-sm', 'Not now');
+      yes.onclick = function () {
+        yes.disabled = true;
+        api('POST', '/api/assistant/sessions/import', { messages: old })
+          .then(function (d) {
+            try { localStorage.removeItem(oldThreadKey()); } catch (e) { /* private mode */ }
+            importHost.innerHTML = '';
+            toast('Previous thread imported', true);
+            return loadSessions(d.session && d.session.id).then(function () {
+              if (d.session) openSession(d.session.id);
+            });
+          }).catch(function (e) {
+            yes.disabled = false;
+            card.appendChild(el('p', 'form-error', e.message));
+          });
+      };
+      no.onclick = function () {
+        try { localStorage.setItem(dismissKey, '1'); } catch (e) { /* private mode */ }
+        importHost.innerHTML = '';
+      };
+      row.appendChild(yes);
+      row.appendChild(no);
+      card.appendChild(row);
+      importHost.appendChild(card);
+    }
+
+    function sessionForVoice() {
+      if (activeSession) return Promise.resolve(activeSession.id);
+      if (voiceCreate) return voiceCreate;
+      voiceCreate = api('POST', '/api/assistant/sessions', {}).then(function (d) {
+        var created = (d && d.session) || {};
+        if (!created.id) throw new Error('The chat could not be created.');
+        voiceSession = created.id;
+        activeSession = created;
+        renderSessions();
+        return created.id;
+      }).finally(function () { voiceCreate = null; });
+      return voiceCreate;
+    }
+
+    function persistVoiceTurn(role, text) {
+      var content = String(text || '').trim();
+      if (!content) return;
+      sessionForVoice().then(function (id) {
+        return api('POST', '/api/assistant/sessions/' + id + '/messages', {
+          role: role,
+          content: content
+        }).then(function () {
+          return loadSessions(id);
+        });
+      }).catch(function () { /* the turn is still visible on screen */ });
+    }
+
+
     // One shape for every message: a body, and - on the assistant's side - the two actions
     // people actually want, kept out of the way until the pointer is over the message.
     function bubble(who, text) {
@@ -4370,10 +4545,20 @@
       thread.appendChild(card);
     }
 
-    threadState.messages.forEach(function (message) {
-      bubble(message.role === 'user' ? 'me' : 'them', message.content);
+    function renderMessages(messages) {
+      thread.innerHTML = '';
+      if (!messages.length) { welcome(); return; }
+      messages.forEach(function (message) {
+        bubble(message.role === 'user' ? 'me' : 'them', message.content);
+      });
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    loadSessions().then(function (rows) {
+      if (rows.length) openSession(rows[0].id);
+      else welcome();
+      maybeShowImport();
     });
-    if (!threadState.messages.length) welcome();
 
     box.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -4385,7 +4570,7 @@
       box.style.height = 'auto';
       box.style.height = Math.min(160, box.scrollHeight || 48) + 'px';
     });
-    container.appendChild(el('p', 'asst-hint', 'Enter sends, Shift+Enter adds a line. ' +
+    main.appendChild(el('p', 'asst-hint', 'Enter sends, Shift+Enter adds a line. ' +
       'Nothing is published, sent or charged without your approval.'));
 
     function questionCard(questions) {
@@ -4450,20 +4635,25 @@
         toast('Say what you want first', false);
         return;
       }
+      if (busy) return;
       box.value = '';
       var hello = thread.querySelector('.asst-welcome');
       if (hello && hello.parentNode) hello.parentNode.removeChild(hello);
       bubble('me', text);
-      threadState.messages.push({ role: 'user', content: text });
-      save();
-      send.disabled = true;
+      setBusy(true);
       var wait = thinking();
       var seen = {};
-      api('POST', '/api/manager/chat', {
-        message: text,
-        history: threadState.messages.slice(-8),
-        automation_id: 0
-      }).then(function (d) {
+      var payload = { message: text, automation_id: 0 };
+      if (activeSession) payload.session_id = activeSession.id;
+      else payload.create_session = true;
+      api('POST', '/api/manager/chat', payload).then(function (d) {
+        if (d.session_id) {
+          if (!activeSession || activeSession.id !== d.session_id) {
+            activeSession = { id: d.session_id, title: text };
+            renderSessions();
+          }
+          loadSessions(d.session_id);
+        }
         wait.phase('Reading your setup…');
         // Poll the transcript while it works: each tool the manager runs becomes a ticked
         // step, so the wait shows what is happening rather than three dots.
@@ -4485,12 +4675,12 @@
             var said = (r.events || []).filter(function (ev) {
               return ev.source === 'Manager' && ev.type === 'message';
             }).pop();
+            var result = (r.job && r.job.result) || '';
             var answer = said ? said.content
-              : 'The assistant could not answer: ' +
-                (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
+              : (result || ('The assistant could not answer: ' +
+                (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
             bubble('them', answer);
-            threadState.messages.push({ role: 'assistant', content: answer });
-            save();
+            if (d.session_id) loadSessions(d.session_id);
             var asked = (r.events || []).filter(function (ev) {
               return ev.source === 'Manager' && ev.type === 'question';
             }).pop();
@@ -4499,13 +4689,13 @@
               try { questions = JSON.parse(asked.content || '[]'); } catch (e) { questions = []; }
               if (questions.length) questionCard(questions);
             }
-            send.disabled = false;
-          }).catch(function () { send.disabled = false; });
+            setBusy(false);
+          }).catch(function () { setBusy(false); });
         });
       }).catch(function (e) {
         wait.done();
         bubble('them', e.message);
-        send.disabled = false;
+        setBusy(false);
       });
     };
     return container;
@@ -6408,9 +6598,10 @@
               var said = (r.events || []).filter(function (ev) {
                 return ev.source === 'Manager' && ev.type === 'message';
               }).pop();
+              var result = (r.job && r.job.result) || '';
               var answer = said ? said.content
-                : 'The assistant could not answer: ' +
-                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
+                : (result || ('The assistant could not answer: ' +
+                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
               line(answer, 'mgr-msg');
               history.push({ role: 'assistant', content: answer });
               // Questions arrive as their own event, so they get a card with inputs rather
@@ -6634,9 +6825,10 @@
               var said = (r.events || []).filter(function (ev) {
                 return ev.source === 'Manager' && ev.type === 'message';
               }).pop();
+              var result = (r.job && r.job.result) || '';
               var answer = said ? said.content
-                : 'The assistant could not answer: ' +
-                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'));
+                : (result || ('The assistant could not answer: ' +
+                  (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
               if (wait.parentNode) wait.parentNode.removeChild(wait);
               say('them', answer);
               history.push({ role: 'assistant', content: answer });

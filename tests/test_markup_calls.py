@@ -108,6 +108,9 @@ def test_chat_task_runs_what_the_model_wrote():
           any("wrote as text" in line for line in said), True)
     check("answer is prose, not markup", answer,
           "Built template. SMTP is not configured, so sends will fail.")
+    check("the answer is emitted as a Manager message",
+          any(event[0] == "Manager" and event[1] == "message" and
+              event[2] == answer for event in events), True)
 
 
 def test_provider_fallback():

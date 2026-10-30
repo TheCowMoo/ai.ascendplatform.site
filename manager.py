@@ -199,12 +199,24 @@ async def chat_task(job, emit):
 
     prose = _strip_markup(said).strip()
     if prose:
-        return prose
-    # Markup and nothing else: say what happened rather than echo the model's syntax back.
-    if ran:
-        return ("I ran %s. Open the job transcript to see the results, and tell me what you "
-                "want done next." % ", ".join(sorted(set(ran))))
-    return "I finished without saying anything - open the job transcript to see what ran."
+        answer = prose
+    elif ran:
+        answer = ("I ran %s. Open the job transcript to see the results, and tell me what "
+                  "you want done next." % ", ".join(sorted(set(ran))))
+    else:
+        answer = "I finished without saying anything - open the job transcript to see what ran."
+    # Every caller - the Assistant page, the Manager page, the floating sheet - reads
+    # Manager/message events. Returning the answer only as jobs.result made a
+    # successful turn look like "No answer".
+    emit("Manager", "message", answer)
+    try:
+        import assistant_sessions
+
+        assistant_sessions.record_reply_for_job(job.get("id"), answer)
+    except Exception as exc:
+        emit("system", "error",
+             "Could not save this turn to the Assistant session: %s" % exc)
+    return answer
 
 
 def _follow_up(notes):

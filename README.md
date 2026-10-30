@@ -30,6 +30,7 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 - 🎨 **Live preview** while you build a bot
 - 🎙️ **Voice mode** — talk to the assistant; Gemini Live answers and delegates, with live transcripts
 - 🖼️ **Media library** — upload images, video and PDFs for emails and pages; alt text and a description are required
+- 💬 **Assistant chats** — start a new chat, reopen an earlier one, and keep voice turns in the same history
 - 🗄️ **SQLite** storage — no separate database server
 - ⚙️ Runs as a **Docker Compose** stack (Caddy + app + PostgreSQL + Redis)
 
@@ -340,6 +341,28 @@ workspace member can preview, copy the URL and copy the ready-to-use HTML.
 - Video captions/subtitles are not part of this pass; alt text is the accessible
   label, not a caption track. Importing generated job artifacts into Media is also a
   later addition.
+
+### Assistant chats
+
+The **Assistant** page keeps a list of chats instead of one browser thread.
+
+- **+ New** starts a fresh conversation; **Chats** on the left lists earlier ones by
+  title and time. Clicking one loads its messages; your next message appends to that
+  same conversation.
+- Sessions are stored on the server, scoped to your user and the client you are
+  acting as. Switching clients in the workspace switcher shows that client's chats;
+  another team member cannot see yours. They survive a reload and a different device.
+- The server builds the Manager prompt from the stored session (the last ten turns),
+  not from whatever the browser sends, so “continue” means the same thing everywhere.
+- **Voice** turns are saved to the active session too, so a spoken conversation is in
+  the same history as a typed one.
+- If you had the old single browser thread, the rail offers a one-time **Import**.
+  It is not imported silently because the old thread had no client context.
+- The floating **Ask** sheet remains a quick local thread; the Assistant page is the
+  one with history. There is no rename/delete in this pass.
+- The Manager's final answer is now emitted as a `Manager` message and stored in the
+  session; the job result is used as a fallback, so a finished turn no longer shows
+  “No answer”.
 
 ### Voice
 
