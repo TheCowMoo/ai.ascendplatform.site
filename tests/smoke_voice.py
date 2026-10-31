@@ -7,6 +7,8 @@ manager job. Audio never enters these tests because it never enters this server.
 
 import os
 import sys
+import json
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -99,6 +101,45 @@ def test_the_setup_can_be_diagnosed():
     finally:
         voice._setting = original
 
+
+
+def test_real_live_model_list_path():
+    """Exercise the real models.list code, not a patched live_models()."""
+    original_key = voice.api_key
+    original_urlopen = urllib.request.urlopen
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"models": [
+                {"name": "models/gemini-3.8-live",
+                 "supportedGenerationMethods": ["bidiGenerateContent"]},
+                {"name": "models/text-only",
+                 "supportedGenerationMethods": ["generateContent"]},
+            ]}).encode()
+
+    def fake_urlopen(url, timeout=12):
+        assert "/v1beta/models" in url, url
+        return Response()
+
+    voice._MODELS_CACHE.clear()
+    try:
+        voice.api_key = lambda: "test-key"
+        urllib.request.urlopen = fake_urlopen
+        result = voice.live_models("V1BETA", force=True)
+        check("the real model-list path works", result["ok"], True)
+        check("it filters to Live models", result["models"], ["gemini-3.8-live"])
+        check("it normalises the API version",
+              voice._normalise_version("V1BETA"), "v1beta")
+    finally:
+        voice.api_key = original_key
+        urllib.request.urlopen = original_urlopen
+        voice._MODELS_CACHE.clear()
 
 
 def test_live_model_and_token_constraints():
@@ -371,6 +412,7 @@ if __name__ == "__main__":
     test_status_tells_the_truth()
     test_setup_declares_one_tool()
     test_the_setup_can_be_diagnosed()
+    test_real_live_model_list_path()
     test_live_model_and_token_constraints()
     test_settings_voice_check()
     test_the_routes()

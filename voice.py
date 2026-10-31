@@ -374,6 +374,11 @@ def _live_model_names(data):
     return sorted(set(found))
 
 
+def _normalise_version(value):
+    value = str(value or "").strip().lower()
+    return value if value in API_VERSIONS else API_VERSION
+
+
 def _live_models_for(version, timeout=12, force=False):
     """Cached models.list for one API version. Returns {ok, models, version, error}."""
     version = _normalise_version(version)
