@@ -319,7 +319,7 @@ def probe_session(live_setup=None, timeout=15):
                         return {"ok": False, "output":
                                 "The Live server sent a non-JSON frame: %s"
                                 % str(raw)[:200]}
-                    if message.get("setupComplete"):
+                    if "setupComplete" in message:
                         session = message.get("setupComplete") or {}
                         session_id = (session.get("sessionId")
                                       if isinstance(session, dict) else "")
@@ -422,7 +422,7 @@ def _probe_once(url, setup=None, headers=None, send_audio=False, timeout=5):
                         return {"ok": False, "output":
                                 "non-JSON frame: %s" % str(raw)[:160]}
                     frames.append(sorted(message.keys()))
-                    if message.get("setupComplete"):
+                    if "setupComplete" in message:
                         session = message.get("setupComplete") or {}
                         session_id = (session.get("sessionId")
                                       if isinstance(session, dict) else "")

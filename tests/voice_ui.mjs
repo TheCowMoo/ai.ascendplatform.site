@@ -169,6 +169,10 @@ function message(ws, payload) {
   ws.onmessage({ data: JSON.stringify(payload) });
 }
 
+function binaryMessage(ws, payload) {
+  ws.onmessage({ data: new TextEncoder().encode(JSON.stringify(payload)).buffer });
+}
+
 assert.equal(await Voice.open({ page: 'test' }), true, 'open resolves');
 let ws = FakeWebSocket.last;
 assert.equal(ws.sent.length, 0, 'nothing is sent before open');
@@ -178,8 +182,8 @@ assert.deepEqual(ws.sent[0].setup.inputAudioTranscription, {}, 'transcription is
 assert.deepEqual(ws.sent[0].setup.outputAudioTranscription, {}, 'output transcription is requested');
 assert.equal(Voice.phase(), 'connecting', 'an open socket is not listening');
 
-message(ws, { setupComplete: {} });
-assert.equal(Voice.phase(), 'listening', 'setupComplete is the gate');
+binaryMessage(ws, { setupComplete: {} });
+assert.equal(Voice.phase(), 'listening', 'a binary setupComplete is the gate');
 assert.equal(text('voice-state'), 'Listening', 'the state line says listening');
 
 message(ws, { serverContent: { inputTranscription: { text: 'hello' } } });

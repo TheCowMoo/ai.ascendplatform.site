@@ -566,6 +566,7 @@
       return;
     }
     state.ws = ws;
+    ws.binaryType = 'arraybuffer';
     ws.onopen = function () {
       if (state.ws !== ws || generation !== state.generation) return;
       send(data.setup);
@@ -576,8 +577,16 @@
     };
     ws.onmessage = function (event) {
       if (state.ws !== ws || generation !== state.generation) return;
+      var text = event.data;
+      if (typeof text !== 'string') {
+        try {
+          text = new TextDecoder('utf-8').decode(new Uint8Array(text));
+        } catch (e) {
+          return;
+        }
+      }
       var message;
-      try { message = JSON.parse(event.data); } catch (e) { return; }
+      try { message = JSON.parse(text); } catch (e) { return; }
       handleMessage(message);
     };
     ws.onerror = function () {
@@ -604,7 +613,7 @@
 
   // ---------- What the server says ----------
   function handleMessage(message) {
-    if (message.setupComplete) return handleSetupComplete();
+    if ('setupComplete' in message) return handleSetupComplete();
     if (message.error) return handleServerError(message.error);
     if (message.goAway) return handleGoAway(message.goAway);
     if (message.toolCall) return handleToolCall(message.toolCall);

@@ -400,6 +400,12 @@ voice model; voice uses `GEMINI_LIVE_MODEL` (`gemini-3.8-live` by default). The 
 button is the source of truth for whether the key can complete a constrained Live
 session with that model.
 
+**Transport details.** The Live server sends `setupComplete` as `{}` and the frames as
+binary. Python checks `"setupComplete" in message`, not the truthiness of the empty
+object. `admin/voice.js` sets `ws.binaryType = 'arraybuffer'` and decodes the
+`ArrayBuffer` with `TextDecoder` before `JSON.parse`; otherwise a browser receives a
+valid success frame, drops it as unparseable, and waits for the 12-second timeout.
+
 Known gaps, in the order they would bite:
 
 * `_USED` minutes and `_VOICE_TURNS` dedupe are per process; uvicorn's two workers can

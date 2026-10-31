@@ -203,6 +203,39 @@ def test_live_model_and_token_constraints():
         voice.api_key = original_key
 
 
+def test_probe_accepts_empty_setup_complete():
+    """setupComplete is often an empty object; Python truthiness must not hide it."""
+    class FakeWS:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send(self, payload):
+            return None
+
+        async def recv(self):
+            return json.dumps({"setupComplete": {}})
+
+    class FakeWebsockets:
+        @staticmethod
+        def connect(*args, **kwargs):
+            return FakeWS()
+
+    original = sys.modules.get("websockets")
+    sys.modules["websockets"] = FakeWebsockets
+    try:
+        result = voice._probe_once("ws://fake", voice.minimal_setup(), timeout=1)
+    finally:
+        if original is None:
+            sys.modules.pop("websockets", None)
+        else:
+            sys.modules["websockets"] = original
+    check("an empty setupComplete is success", result.get("ok"), True)
+    check("and is named in the output", "setupComplete" in result.get("output", ""), True)
+
+
 def test_settings_voice_check():
     """Settings -> Voice -> Test probes the constrained socket, not just the token."""
     import settings
@@ -419,6 +452,7 @@ if __name__ == "__main__":
     test_the_setup_can_be_diagnosed()
     test_real_live_model_list_path()
     test_live_model_and_token_constraints()
+    test_probe_accepts_empty_setup_complete()
     test_settings_voice_check()
     test_the_routes()
     test_the_browser_half_is_wired()
