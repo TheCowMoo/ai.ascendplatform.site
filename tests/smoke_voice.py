@@ -187,11 +187,14 @@ def test_live_model_and_token_constraints():
               captured["url"].endswith("/v1beta/auth_tokens"), True)
         check("the API key travels as a header",
               captured["headers"].get("x-goog-api-key"), "test-key")
-        constraints = captured["payload"].get("liveConnectConstraints") or {}
-        check("the token is model-constrained", constraints.get("model"),
+        constraints = captured["payload"].get("bidiGenerateContentSetup") or {}
+        check("the token embeds the setup model", constraints.get("model"),
               live_setup["model"])
-        check("the token is audio-constrained",
-              (constraints.get("config") or {}).get("responseModalities"), ["AUDIO"])
+        check("the token embeds audio response modalities",
+              (constraints.get("generationConfig") or {}).get("responseModalities"),
+              ["AUDIO"])
+        check("the old liveConnectConstraints field is gone",
+              "liveConnectConstraints" in captured["payload"], False)
     finally:
         voice.live_models = original_live
         voice.model = original_model

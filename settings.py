@@ -716,7 +716,7 @@ def _test_voice(org_id=None):
 
     A blind "key present" check is what let a retired model id look healthy while every
     session was refused. This asks for the v1beta model list, mints a token with
-    liveConnectConstraints, then opens the exact constrained socket and waits for
+    bidiGenerateContentSetup, then opens the exact constrained socket and waits for
     setupComplete. A failed probe prints Google's own error.
     """
     if org_id is not None:

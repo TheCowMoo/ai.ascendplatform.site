@@ -383,10 +383,11 @@ button, and by the Assistant page and tour through the same `AscendVoice.open`. 
 mode: orb scaled from mic/output RMS, live transcripts coalesced by turn, Minimise keeps
 the session alive, Stop/Esc end it. `Settings -> Voice -> Test` checks the v1beta Live
 models and then runs `voice.probe_session()`: it mints a token with
-`liveConnectConstraints` (model + `responseModalities: ["AUDIO"]`), opens the exact
-constrained socket server-side, sends the same `voice.setup()` frame the browser uses,
-and waits for `setupComplete`. The Test reports Google's actual setup error or
-`setupComplete received`; it no longer calls a bare token mint "ready".
+`bidiGenerateContentSetup` (the complete setup: model, audio modalities, tools and
+transcription), opens the exact constrained socket server-side, sends the same
+`voice.setup()` frame the browser uses, and waits for `setupComplete`. The Test reports
+Google's actual setup error or `setupComplete received`; it no longer calls a bare
+token mint "ready".
 `POST /api/voice/session` calls `voice.model_availability()` before minting and sends
 the same setup object into `voice.mint(live_setup=...)`, so the token constraints and
 the browser setup cannot drift. A network failure of the model list does not block the

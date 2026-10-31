@@ -161,25 +161,17 @@ def _stamp(seconds):
 def mint_payload(live_setup=None):
     """The auth-token request for the exact Live setup the browser will send.
 
-    A bare token is not enough: the constrained Live endpoint needs the token tied to
-    the model and response modality. This mirrors the documented
-    ``liveConnectConstraints`` payload and keeps the token and setup from drifting.
+    The REST AuthToken field is ``bidiGenerateContentSetup`` (not the SDK-level
+    ``liveConnectConstraints`` name). Embedding the complete setup ties the token to the
+    model, audio modality, tools and transcription config; the connection's setup frame
+    is the same object.
     """
     setup_message = live_setup or setup()["setup"]
-    model_name = str(setup_message.get("model") or ("models/" + model()))
-    generation = setup_message.get("generationConfig") or {}
-    modalities = generation.get("responseModalities") or ["AUDIO"]
     return {
         "uses": 1,
         "expireTime": _stamp(SESSION_SECONDS + 60),
         "newSessionExpireTime": _stamp(60),
-        "liveConnectConstraints": {
-            "model": model_name,
-            "config": {
-                "sessionResumption": {},
-                "responseModalities": list(modalities),
-            },
-        },
+        "bidiGenerateContentSetup": setup_message,
     }
 
 
