@@ -205,6 +205,19 @@ docker compose exec app python -c "import app, jobs; print(sorted(jobs.TASKS))"
 
 `TASKS` should list `agent_team`, `echo`, `site_provision`, `site_review`.
 
+**After the redis healthcheck change (2026-11-01):** `app` now waits for
+`condition: service_healthy` on redis, but `deploy.sh` recreates only `caddy app worker`.
+An existing redis container has no healthcheck configured, so the first `up` after this
+pull must recreate it once:
+
+```bash
+docker compose up -d --build --force-recreate redis app worker caddy
+```
+
+Do not add redis to `deploy.sh`'s recreate list: restarting it on every deploy drops the
+arq queue, and a job that was waiting stays `queued` in the database with nothing to pick
+it up. Recreate it by hand only when its own configuration changes.
+
 `PROVIDERS` in `llm.py` is the only source of capability truth (`tools`, `vision`,
 `family`). The Anthropic client is given an explicit `ModelInfo` from it, so an unknown
 model name can never remove tool support. Before sending, `without_empty_blocks()`
