@@ -66,7 +66,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `llm.py` | `PROVIDERS` (the single source of truth for capabilities), `get_model_client()`, `_clean_messages()` + `without_empty_blocks()` payload repair for Anthropic |
 | `agents.py` | Roster (`DEFAULT_ROSTER`), seeding, `build_team()`, `run_team()`, `system_message_for()`, `unique_name()`, `guard_tools_supported()` |
 | `tools/` | `register()`/`resolve()` registry: `site`, `pexels`, `media`, `mail`, `deliverable`, `policy`, `ssh` |
-| `jobs.py` | Job rows, events, artifacts, `TASKS` registry, runners |
+| `jobs.py` | Job rows, events, artifacts, `TASKS` registry, runners. `submit()` enqueues to arq from a request thread *and* from inside a running job: a child job submitted by `start_job` or an automation node gets a second loop in a short-lived thread, because `asyncio.run` raises there. A failed enqueue now names its reason in the transcript. |
 | `deliverables.py` | Blogs/funnels/emails/websites/proposals; `publish_deliverable()` |
 | `review.py` | Weekly brief (two windows), prompt, `site_review` job, digest |
 | `analytics.py` | `data_sources`, `metrics_daily`, `sync_runs`; source CRUD, idempotent metrics |

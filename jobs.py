@@ -277,33 +277,67 @@ async def run_job(job_id):
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
+ENQUEUE_TIMEOUT = 10       # a wedged redis must not hang the job that is submitting
+
+
 def _enqueue_redis(job_id):
-    """Hand a job to the arq/Redis queue. Returns True when it was enqueued."""
+    """``(queued, reason)``: hand a job to arq, and say why when it did not go.
+
+    ``asyncio.run`` cannot be called from inside a running event loop, and that is
+    exactly where a child job is submitted from: the Manager's ``start_job`` tool and an
+    automation's agent node both run inside the worker's loop. There the enqueue gets its
+    own short-lived thread (and loop), so the job that is submitting is not blocked on
+    redis and does not fail with "queue unavailable" when the queue is fine.
+    """
     if not REDIS_URL:
-        return False
-    try:
+        return False, "REDIS_URL is not set"
+
+    async def enqueue():
         from arq import create_pool
         from arq.connections import RedisSettings
 
-        async def enqueue():
-            pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-            try:
-                return await pool.enqueue_job("run_agent_job", job_id)
-            finally:
-                await pool.aclose()
+        pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+        try:
+            return await pool.enqueue_job("run_agent_job", job_id)
+        finally:
+            await pool.aclose()
 
-        return asyncio.run(enqueue()) is not None
-    except Exception as exc:
-        print("[jobs] redis enqueue failed (%s: %s)" % (type(exc).__name__, exc))
-        return False
+    def attempt():
+        try:
+            return asyncio.run(enqueue()) is not None, ""
+        except Exception as exc:
+            print("[jobs] redis enqueue failed (%s: %s)" % (type(exc).__name__, exc))
+            return False, "%s: %s" % (type(exc).__name__, str(exc)[:200])
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return attempt()          # an ordinary request thread: no loop to protect
+
+    # Inside a job. A second loop in another thread is the only sync way to reach redis
+    # without touching the loop this job is already running on.
+    box = {}
+
+    def run():
+        box["result"] = attempt()
+
+    thread = threading.Thread(target=run, name="job-enqueue", daemon=True)
+    thread.start()
+    thread.join(ENQUEUE_TIMEOUT)
+    if thread.is_alive():
+        print("[jobs] redis enqueue timed out after %ss" % ENQUEUE_TIMEOUT)
+        return False, "enqueue timed out after %ss" % ENQUEUE_TIMEOUT
+    return box.get("result", (False, "the enqueue thread produced no result"))
 
 
 def submit(job_id):
     """Queue a job for execution. Returns the backend that accepted it."""
     if JOB_BACKEND == "redis":
-        if _enqueue_redis(job_id):
+        queued, reason = _enqueue_redis(job_id)
+        if queued:
             return "redis"
-        add_event(job_id, "system", "error", "Redis queue unavailable; running in-process instead.")
+        add_event(job_id, "system", "error",
+                  "Redis queue unavailable (%s); running in-process instead." % reason)
     get_runner().submit(job_id)
     return "local"
 

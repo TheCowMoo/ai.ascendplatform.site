@@ -22,6 +22,7 @@ FAST_SUITES = (
     "test_migrations",
     "test_automation_graph",
     "test_manager_questions",
+    "test_job_enqueue",
     "test_markup_calls",
     "test_graph_canvas",
     "test_form_logic",

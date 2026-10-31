@@ -25,6 +25,14 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
+    # The app must not accept a job before the queue can take it: without this a job
+    # submitted in the first seconds after a stack start fell back to an in-process run
+    # and wrote "Redis queue unavailable" into its transcript.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   app:
     build: .
@@ -48,6 +56,8 @@ services:
       CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/app/Caddyfile http://caddy:2019/load}"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - app_data:/app/data
@@ -89,7 +99,7 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       # app is the service that runs `alembic upgrade head` before serving, so waiting for
       # its healthcheck means the worker cannot pick up a job against a half-migrated
       # schema. Without this the worker is healthy seconds before the tables exist.
