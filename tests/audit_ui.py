@@ -121,6 +121,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Funnels      ", "/api/deliverables?kind=funnel", ["deliverables"], "ok"),
         ("Emails       ", "/api/deliverables?kind=email", ["deliverables"], "ok"),
         ("Library      ", "/api/deliverables", ["deliverables"], "ok"),
+        ("Studio       ", "/api/deliverables?job_id=%d" % job_id, ["deliverables"], "ok"),
         ("Preview      ", "/api/deliverables/%d" % drafts["email"]["id"], ["deliverable"], "ok"),
         ("Jobs         ", "/api/jobs", ["jobs"], "ok"),
         ("Job          ", "/api/jobs/%d" % job_id, ["job"], "ok"),

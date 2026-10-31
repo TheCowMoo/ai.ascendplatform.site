@@ -504,6 +504,10 @@ def test_the_browser_half_is_wired():
     check("the orb reads a level", "--voice-level" in client_js, True)
     check("and invents nothing", "Math.random" not in client_js, True)
     check("the overlay is styled", ".voice-overlay" in css and ".voice-orb" in css, True)
+    check("the Studio can dock the panel", "mountHost" in client_js, True)
+    check("a docked panel is styled", ".voice-docked" in css, True)
+    check("the voice reads the canvas at call time", "getContext" in client_js, True)
+    check("a delegation carries the artifact", "body.artifact = artifact" in client_js, True)
     check("the speaking colour is a token", "--voice-speaking" in css, True)
     check("the sheet remains for text", ".assist-sheet" in css, True)
 

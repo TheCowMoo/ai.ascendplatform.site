@@ -42,6 +42,7 @@ import agents as agent_roster
 import settings
 import orgs as orgs_service
 import deliverables as deliverables_service
+import studio as studio_service
 import analytics as analytics_service
 import invites as invites_service
 import tools as tool_registry
@@ -1349,6 +1350,39 @@ def _deliverable_for_request(deliverable_id):
     return item
 
 
+def _studio_artifact(raw):
+    """``(item, error)`` for the artifact a Studio request names.
+
+    Deliberately stricter than ``_deliverable_for_request``. The operator may read any
+    client's draft, but a Manager job belongs to exactly one client, and putting
+    another client's page into its prompt copies that content into this tenant's
+    transcript. So the draft must belong to the client this request is acting as.
+    A signed-in user with no client picked gets a sentence, not a silent new draft.
+    """
+    try:
+        named = studio_service.normalise(raw)
+    except studio_service.StudioError as exc:
+        return None, (jsonify({"error": str(exc)}), 400)
+    if not named:
+        return None, None
+    kind, artifact_id = named
+    if kind != "deliverable":
+        return None, (jsonify({"error": "That kind of artifact is not editable yet."}), 400)
+    item = _deliverable_for_request(artifact_id)
+    if not item:
+        return None, (jsonify({"error": "That draft was not found."}), 404)
+    org = current_org()
+    if org is None:
+        return None, (jsonify({
+            "error": "Pick a client in the workspace switcher before editing a draft - "
+                     "the work has to belong to someone."
+        }), 400)
+    if item.get("org_id") != org:
+        # Same answer as a missing row: never confirm another client's draft exists.
+        return None, (jsonify({"error": "That draft was not found."}), 404)
+    return item, None
+
+
 @app.route("/api/deliverables", methods=["GET"])
 @login_required
 def list_deliverables():
@@ -1356,9 +1390,21 @@ def list_deliverables():
     if kind and kind not in deliverables_service.KINDS:
         return jsonify({"error": "kind must be one of: %s"
                                  % ", ".join(deliverables_service.KINDS)}), 400
+    # The Studio asks which drafts the run it is watching just wrote. Scoped by the
+    # same list_scope() as every other read, so a job id cannot be used to reach
+    # another client's rows.
+    job_filter = request.args.get("job_id")
+    if job_filter not in (None, ""):
+        try:
+            job_filter = int(job_filter)
+        except (TypeError, ValueError):
+            return jsonify({"error": "job_id must be a number"}), 400
+    else:
+        job_filter = None
     scope = list_scope()
     return jsonify({
-        "deliverables": deliverables_service.list_deliverables(kind, scope),
+        "deliverables": deliverables_service.list_deliverables(
+            kind, scope, job_id=job_filter),
         "counts": deliverables_service.counts(scope),
         "kinds": list(deliverables_service.KINDS),
         "statuses": list(deliverables_service.STATUSES),
@@ -2225,6 +2271,14 @@ def voice_tool():
         if not instruction_text:
             return jsonify({"error": "delegate_to_team needs an instruction"}), 400
 
+    # The Studio's voice session names the draft on screen. Validate before the provider
+    # check: a draft the caller may not touch is a 404 whether or not a key is configured.
+    artifact_item, artifact_error = (None, None)
+    if name == "delegate_to_team":
+        artifact_item, artifact_error = _studio_artifact(data.get("artifact"))
+        if artifact_error:
+            return artifact_error
+
     if not llm.configured_providers():
         return jsonify({"error": "The team's assistant is not configured. Add an AI "
                                  "provider key in Settings -> AI providers."}), 503
@@ -2286,7 +2340,15 @@ def voice_tool():
         return jsonify({"ok": True, "job_id": job_id, "continued": True,
                         "message": "The team has your answer and is continuing."}), 202
 
-    job_id = jobs.create_job("Voice request", instruction_text, session.get("user_id"),
+    # A spoken edit of the draft on screen carries the same context a typed one does.
+    # The content is capped smaller than the typed path: answer_team_question copies
+    # this prompt with a 4000-character cap, and a block that fits keeps its content.
+    voice_prompt = instruction_text
+    if artifact_item:
+        voice_prompt = "%s\n\n%s" % (
+            studio_service.deliverable_block(artifact_item, content_limit=2600),
+            instruction_text)
+    job_id = jobs.create_job("Voice request", voice_prompt, session.get("user_id"),
                              "selector", "chat", org_id=current_org())
     jobs.submit(job_id)
     session["voice_job_id"] = job_id
@@ -3342,6 +3404,11 @@ def manager_chat():
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "Say something first"}), 400
+    # The Studio names the artifact on its canvas. Validate before the provider check, so
+    # an unusable draft is a 404 with a reason rather than a 503 about API keys.
+    artifact_item, artifact_error = _studio_artifact(data.get("artifact"))
+    if artifact_error:
+        return artifact_error
     # Answer with the reason immediately rather than creating a job that fails with
     # "No answer" a second later. The manager picks the first configured provider when
     # DeepSeek is absent, so one Gemini (or Claude) key is enough for a local install.
@@ -3398,6 +3465,11 @@ def manager_chat():
                       "create a new automation unless they ask for one.]\n\n%s"
                       % (open_auto["id"], open_auto.get("name") or "",
                          len(open_auto.get("steps") or []), open_auto["id"], prompt))
+    # The Studio's artifact context goes in front of everything: the voice follow-up
+    # copies the previous prompt with a 4000-character cap, and the draft's id must
+    # never be the part that gets cut.
+    if artifact_item:
+        prompt = "%s\n\n%s" % (studio_service.deliverable_block(artifact_item), prompt)
     job_id = jobs.create_job(
         "Manager chat", prompt, session.get("user_id"), "selector", "chat",
         org_id=current_org(),

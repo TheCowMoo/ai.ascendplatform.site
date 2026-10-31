@@ -354,6 +354,78 @@ server-built history; `tests/test_markup_calls.py` asserts the Manager answer ev
 old-browser import is per browser; a failed manager job leaves the user turn but no
 assistant row; the floating sheet is not session-backed.
 
+## Studio — the artifact canvas (2026-11-01)
+
+A workspace tab (`#/app/studio`) with the conversation on the left and the **artifact**
+on the right. It is not a second Assistant: the same manager, the same sessions and the
+same job transcript, with the draft the user is looking at named on every turn. Entry
+points: `Open in Studio` in a job's header, in the preview modal, on Pages rows and on
+every Library/Blogs/Funnels/Emails row. Deep links are
+`#/app/studio/deliverable/<id>` and `#/app/studio/job/<id>`.
+
+**The artifact protocol.** The browser sends only `{"kind": "deliverable", "id": 42}` -
+never a title or a content blob. `app._studio_artifact()` normalises it with
+`studio.normalise`, loads the row and requires `item["org_id"] == current_org()`. That
+is deliberately **stricter than `_deliverable_for_request`**: `can_access_org` lets the
+operator read any client's draft, but a Manager job belongs to one client, so another
+client's content in its prompt would copy across tenants. No client picked -> 400; any
+mismatch -> 404 (never 403, never a confirmation). `studio.deliverable_block()` builds
+the prompt block: id, kind, title, status, the `save_deliverable(deliverable_id=...)`
+instruction, then the current content capped at 12000 characters.
+
+**Where the context goes.** It is the *first* thing in the prompt for
+`POST /api/manager/chat` (before history and before `automation_id`'s context) and for
+`POST /api/voice/tool`'s `delegate_to_team`. That order is load-bearing:
+`answer_team_question` copies the previous prompt with a 4000-character cap, so the id
+must never be the part that is cut; the voice block therefore caps content at 2600
+characters. `manager.py`'s SYSTEM has the matching rule (edit that draft with
+`deliverable_id`, never a duplicate), and `start_job(prompt, title, deliverable_id=)` puts
+the id in the child prompt so delegated work edits the open page too.
+
+**Finding what a run wrote.** `GET /api/deliverables?job_id=N` (scoped by `list_scope()`)
+reuses the deliverables list rather than a new outputs endpoint. The canvas watches every
+job id it is given plus every `Manager/child_job` link, polls
+`/api/jobs/<id>/events?after=`, scans outputs when a `save_deliverable` result appears and
+again on completion, and re-reads the open draft by id (a refinement keeps the original
+`job_id`, so only the id lookup finds it).
+
+**The page** (`viewStudio` in `admin.js`, `.studio-*` in `admin.css`): left pane has the
+"Working on: Deliverable #42 · title" chip and a recent-drafts picker, the thread (same
+`bubble`/`thinking`/question-card shapes as the Assistant), the composer and Talk. Right
+pane has **Live job** (events, question card, approvals for the watched ids) and
+**Preview** (sandboxed iframe, desktop/mobile width, refresh, Open full) with automatic
+switching: Live when a job starts (unless it asked a question), Preview when one saves.
+The Studio keeps its own assistant session in `studio:session:<org>:<user>`; typed turns
+send `artifact`, voice turns are persisted through `/api/assistant/sessions/<id>/messages`.
+
+**In-page artifact switches use `history.replaceState`, never `location.hash`.** A
+`hashchange` calls `render()`, which rebuilds the shell and would destroy the thread and
+the docked voice host mid-sentence. Mobile collapses the two panes to Chat/Live/Preview
+buttons (`data-pane`).
+
+**Docked voice.** `AscendVoice.open({host, compact: true, getContext})` moves the one
+existing `.voice-panel` into the Studio's host and adds `.voice-docked`; the overlay,
+pill, Esc-to-close and focus trap are skipped while hosted, and `stop()` puts the panel
+back. `getContext` is read at call time and its value is sent as `artifact` on
+`delegate_to_team` only. One channel owns a question at a time: while the voice is on and
+the team has asked, Send is disabled with a `Type the answer` escape hatch; while a typed
+turn or any watched job runs, Talk is disabled.
+
+**Guards.** `tests/smoke_studio.py` (in preflight) pins tenant rejection with no job
+created, the prompt's id/title/content and its refusal of browser-supplied content, the
+voice block fitting the follow-up cap, `?job_id=` scoping, `start_job`'s id hand-off, and
+the static wiring across all four client files. `tests/voice_ui.mjs` mounts the docked
+panel and proves the artifact rides the delegated call. `tests/smoke_deliverables.py`
+proves a foreign `deliverable_id` leaves that draft untouched.
+
+**Limits.** Generated drafts and live jobs only; `write_site_content`, forms and
+automations are not on this canvas yet. The preview refreshes when a save lands or a job
+finishes - it is not a token stream. A rename through `save_deliverable` does not stick
+(the update path ignores `title`), and neither does a kind change: the block's example
+names the draft's current kind and `save_deliverable` prefers the kind the prompt asked
+for. Typing an answer to a *voice* question starts a new
+manager turn with the question and the draft, not the original brief.
+
 ## Voice — the spoken assistant (2026-10-30)
 
 Browser-direct Live socket, one-use token minted by `voice.py`, key never leaves the
@@ -393,7 +465,10 @@ The six things that must stay true (each has a guard in `tests/smoke_voice.py`):
 The overlay (`admin/voice.js` + `.voice-*` in `admin.css`) is opened by the sheet's Talk
 button, and by the Assistant page and tour through the same `AscendVoice.open`. It is a
 mode: orb scaled from mic/output RMS, live transcripts coalesced by turn, Minimise keeps
-the session alive, Stop/Esc end it. `Settings -> Voice -> Test` checks the v1beta Live
+the session alive, Stop/Esc end it. The same panel can be **docked**:
+`AscendVoice.open({host, compact: true})` moves it into a host (the Studio), where the
+overlay, pill, Esc and the focus trap are skipped and `stop()` returns it.
+`Settings -> Voice -> Test` checks the v1beta Live
 models and then runs `voice.probe_session()`: it mints a token with
 `bidiGenerateContentSetup` (the complete setup: model, audio modalities, tools and
 transcription), opens the exact constrained socket server-side, sends the same

@@ -41,9 +41,8 @@
     micSource: null, micNode: null, micSilent: null, micAnalyser: null,
     outAnalyser: null, micData: null, outData: null, raf: 0,
     level: 0, settled: false, intentional: false,
-    session: null, turns: [], opts: {}, setupTimer: 0,
-    lastError: '', closeInfo: '', calls: 0, sessionId: '',
-    generation: 0, opener: null,
+    session: null, turns: [], opts: {}, setupTimer: 0, host: null,
+    lastError: '', closeInfo: '', calls: 0, sessionId: '', generation: 0, opener: null,
     team: { generation: 0, jobs: {}, timer: 0, ticks: 0, polling: false,
             approvals: {}, awaitingAnswer: false },
     teamQueue: [], teamFlushTimer: 0
@@ -251,7 +250,9 @@
     document.body.appendChild(pill);
 
     document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape' && ui && !ui.overlay.hidden) stop();
+      // Esc closes the full-screen mode. Docked, Esc belongs to the page (and to the
+      // composer beside the panel), so it must not end a session the user is watching.
+      if (event.key === 'Escape' && ui && !ui.overlay.hidden && !state.host) stop();
     });
 
     // A modal must keep Tab inside it. The order is the visible action buttons only.
@@ -304,6 +305,14 @@
 
   function showOverlay() {
     if (!ui) return;
+    if (state.host) {
+      // Docked: the host is the mode. Never raise the overlay, never steal focus from
+      // the composer sitting beside the panel.
+      ui.panel.hidden = false;
+      ui.overlay.hidden = true;
+      ui.pill.hidden = true;
+      return;
+    }
     ui.overlay.hidden = false;
     ui.pill.hidden = true;
     try { ui.stop.focus(); } catch (e) { /* not focusable yet */ }
@@ -313,6 +322,38 @@
     if (!ui) return;
     ui.overlay.hidden = true;
     ui.pill.hidden = true;
+    if (state.host) ui.panel.hidden = true;
+  }
+
+  // ---------- Docked mode ----------
+  // The Studio's left pane hosts the very same panel the overlay shows. Moving the node
+  // is the whole trick: the orb, the transcript, the phases and the team bridge keep
+  // working unchanged, and every full-screen rule above is skipped rather than rewritten.
+  function mountHost(host) {
+    if (!ui) return;
+    if (!host || typeof host.appendChild !== 'function') {
+      unmountHost();
+      return;
+    }
+    state.host = host;
+    ui.overlay.hidden = true;
+    ui.pill.hidden = true;
+    ui.panel.className = 'voice-panel voice-docked';
+    ui.panel.setAttribute('aria-modal', 'false');
+    ui.minimise.hidden = true;
+    if (ui.panel.parentNode) ui.panel.parentNode.removeChild(ui.panel);
+    host.appendChild(ui.panel);
+    ui.panel.hidden = false;
+  }
+
+  function unmountHost() {
+    if (!ui || !state.host) return;
+    state.host = null;
+    ui.panel.className = 'voice-panel';
+    ui.panel.setAttribute('aria-modal', 'true');
+    ui.minimise.hidden = false;
+    if (ui.panel.parentNode) ui.panel.parentNode.removeChild(ui.panel);
+    ui.overlay.appendChild(ui.panel);
   }
 
 
@@ -1095,6 +1136,18 @@
     }
   }
 
+  function voiceContext() {
+    // Read at call time, not at open time: the user may pick another draft while the
+    // dialogue is running, and "make it warmer" has to mean the page in front of them.
+    if (!state.opts || typeof state.opts.getContext !== 'function') return null;
+    try {
+      var value = state.opts.getContext();
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch (e) {
+      return null;      // a broken hook must not stop the request
+    }
+  }
+
   function relay(call) {
     var isAnswer = call.name === 'answer_team_question';
     if (isAnswer && !state.team.awaitingAnswer) {
@@ -1118,10 +1171,18 @@
     state.calls += 1;
     var generation = state.generation;
 
+    var body = { name: call.name, args: call.args || {}, turn_id: turnId };
+    // The canvas on screen is part of a spoken request, not just a typed one. The server
+    // validates the id against this session's client; the model never learns a job id
+    // or a tenant from it.
+    if (!isAnswer) {
+      var artifact = voiceContext();
+      if (artifact) body.artifact = artifact;
+    }
     var options = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: call.name, args: call.args || {}, turn_id: turnId })
+      body: JSON.stringify(body)
     };
     var controller = window.AbortController ? new AbortController() : null;
     var timer = 0;
@@ -1172,6 +1233,7 @@
     resetTeam();
 
     state.opts = options || {};
+    mountHost(state.opts.host || null);
     state.session = null;
     state.turns = [];
     state.calls = 0;
@@ -1239,6 +1301,7 @@
     state.generation += 1;
     resetTeam();
     teardownTransport();
+    unmountHost();
     hideAll();
     setPhase('idle');
     var close = state.opts.onClose;
@@ -1251,7 +1314,7 @@
   }
 
   function minimise() {
-    if (!isLive() || !ui) return;
+    if (state.host || !isLive() || !ui) return;
     ui.overlay.hidden = true;
     ui.pill.hidden = false;
     try { ui.pillOpen.focus(); } catch (e) { /* not focusable */ }
@@ -1259,6 +1322,10 @@
 
   function restore() {
     if (!ui) return;
+    if (state.host) {
+      ui.panel.hidden = false;
+      return;
+    }
     ui.pill.hidden = true;
     ui.overlay.hidden = false;
     try { ui.stop.focus(); } catch (e) { /* not focusable */ }

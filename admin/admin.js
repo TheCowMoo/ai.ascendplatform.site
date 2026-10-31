@@ -26,6 +26,7 @@
       nav: [
         { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
         { id: 'assistant', label: 'Assistant', icon: 'chat', hash: '#/app/assistant' },
+        { id: 'studio', label: 'Studio', icon: 'studio', hash: '#/app/studio' },
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
@@ -2171,6 +2172,13 @@
     return container;
   }
 
+  // One destination for "work on this with the canvas open". The hash is the only way in:
+  // the Studio owns its own thread and voice host, so a link is a fresh page, and an
+  // in-page switch never touches location.hash (that would re-render the shell).
+  function openInStudio(kind, id) {
+    location.hash = '#/app/studio/' + kind + '/' + id;
+  }
+
   function viewJob(jobId) {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -2178,6 +2186,9 @@
     var back = el('button', 'btn btn-ghost', '← Back');
     back.onclick = function () { location.hash = '#/jobs'; };
     head.appendChild(back);
+    var studio = el('button', 'btn btn-primary', 'Open in Studio');
+    studio.onclick = function () { openInStudio('job', jobId); };
+    head.appendChild(studio);
     container.appendChild(head);
 
     var meta = el('div', 'panel-card');
@@ -2740,9 +2751,15 @@
     var actions = el('div', 'row-actions');
     var copy = el('button', 'btn btn-ghost', 'Copy HTML');
     copy.onclick = function () { copyText(item.content, copy); };
+    var studio = el('button', 'btn btn-ghost', 'Open in Studio');
+    studio.onclick = function () {
+      document.body.removeChild(backdrop);
+      openInStudio('deliverable', item.id);
+    };
     var close = el('button', 'btn btn-primary', 'Close');
     close.onclick = function () { document.body.removeChild(backdrop); };
     actions.appendChild(copy);
+    actions.appendChild(studio);
     actions.appendChild(close);
     modal.appendChild(actions);
 
@@ -2860,11 +2877,14 @@
           var td = el('td', 'row-actions');
           var prev = el('button', 'btn btn-ghost btn-sm', 'Preview');
           prev.onclick = function () { previewDeliverable(item); };
-          var pub = el('button', 'btn btn-primary btn-sm', 'Publish');
+          var studio = el('button', 'btn btn-primary btn-sm', 'Studio');
+          studio.onclick = function () { openInStudio('deliverable', item.id); };
+          var pub = el('button', 'btn btn-ghost btn-sm', 'Publish');
           pub.onclick = function () { publishDeliverable(item, load); };
           var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
           edit.onclick = function () { showDeliverableForm('website', item, load); };
           td.appendChild(prev);
+          td.appendChild(studio);
           td.appendChild(pub);
           td.appendChild(edit);
           tr.appendChild(td);
@@ -3116,6 +3136,9 @@
           var preview = el('button', 'btn btn-ghost btn-sm', 'Preview');
           preview.onclick = function () { previewDeliverable(item); };
           td.appendChild(preview);
+          var studio = el('button', 'btn btn-primary btn-sm', 'Studio');
+          studio.onclick = function () { openInStudio('deliverable', item.id); };
+          td.appendChild(studio);
           var open = el('button', 'btn btn-ghost btn-sm', 'Open');
           open.onclick = function () { showDeliverableForm(item.kind, item, refresh); };
           td.appendChild(open);
@@ -4712,6 +4735,797 @@
     };
     return container;
   }
+  // ---------- Studio: a conversation on the left, the artifact on the right ----------
+  // Not a second Assistant: the same manager, the same sessions and the same job
+  // transcript, with the draft the user is looking at named on every turn. The canvas
+  // shows the run while it works, and the generated page once it saves.
+  function viewStudio(kind, id) {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Studio</h2><p class="muted">Talk or type on the left. ' +
+      'The draft you are changing stays on the right - live while the team works, and ' +
+      'as a page once it saves.</p></div>';
+    container.appendChild(head);
+
+    var layout = el('div', 'studio-layout');
+    layout.setAttribute('data-pane', 'chat');
+    container.appendChild(layout);
+
+    // ----- left: the conversation, the same thread voice and typing share -----
+    var chat = el('section', 'studio-chat');
+    var chatHead = el('div', 'studio-chat-head');
+    var chip = el('button', 'studio-chip empty', 'Working on: nothing yet');
+    chip.type = 'button';
+    chip.title = 'Choose the draft this conversation edits';
+    chatHead.appendChild(chip);
+    var pick = el('button', 'btn btn-ghost btn-sm', 'Choose…');
+    pick.type = 'button';
+    chatHead.appendChild(pick);
+    chat.appendChild(chatHead);
+
+    var thread = el('div', 'asst-thread studio-thread');
+    chat.appendChild(thread);
+
+    var box = el('textarea', 'prompt-box');
+    box.placeholder = 'Make the headline shorter…';
+    var send = el('button', 'btn btn-primary', 'Send');
+    var composer = el('div', 'asst-composer');
+    composer.appendChild(box);
+    composer.appendChild(send);
+    chat.appendChild(composer);
+
+    var answerHint = el('p', 'asst-hint');
+    answerHint.hidden = true;
+    var answerText = el('span');
+    answerHint.appendChild(answerText);
+    var typeInstead = el('button', 'btn btn-ghost btn-sm', 'Type the answer');
+    typeInstead.type = 'button';
+    typeInstead.hidden = true;
+    typeInstead.onclick = function () {
+      typedAnswer = true;
+      updateComposerState();
+      try { box.focus(); } catch (e) { /* not focusable yet */ }
+    };
+    answerHint.appendChild(typeInstead);
+    chat.appendChild(answerHint);
+
+    var voiceRow = el('div', 'studio-voice-row');
+    var talk = el('button', 'btn btn-ghost', 'Talk');
+    talk.style.display = 'none';
+    var voiceNote = el('p', 'asst-hint');
+    voiceNote.setAttribute('role', 'status');
+    voiceRow.appendChild(talk);
+    voiceRow.appendChild(voiceNote);
+    chat.appendChild(voiceRow);
+    var voiceHost = el('div', 'studio-voice-host');
+    voiceHost.hidden = true;
+    chat.appendChild(voiceHost);
+    layout.appendChild(chat);
+
+    // ----- right: the canvas -----
+    var canvas = el('section', 'studio-canvas');
+    var canvasHead = el('div', 'studio-canvas-head');
+    var tabs = el('div', 'studio-tabs');
+    var liveTab = el('button', 'studio-tab active', 'Live job');
+    var previewTab = el('button', 'studio-tab', 'Preview');
+    liveTab.type = 'button';
+    previewTab.type = 'button';
+    tabs.appendChild(liveTab);
+    tabs.appendChild(previewTab);
+    canvasHead.appendChild(tabs);
+
+    var tools = el('div', 'studio-tools');
+    var widthToggle = el('button', 'btn btn-ghost btn-sm', 'Mobile');
+    var refresh = el('button', 'btn btn-ghost btn-sm', 'Refresh');
+    var openFull = el('button', 'btn btn-ghost btn-sm', 'Open full');
+    widthToggle.type = 'button';
+    refresh.type = 'button';
+    openFull.type = 'button';
+    tools.appendChild(widthToggle);
+    tools.appendChild(refresh);
+    tools.appendChild(openFull);
+    canvasHead.appendChild(tools);
+    canvas.appendChild(canvasHead);
+
+    // Mobile: one pane at a time, chosen by hand. The desktop layout ignores this.
+    var mobileTabs = el('div', 'studio-mobile-tabs');
+    var mobileButtons = {};
+    function markMobileTab(label) {
+      Object.keys(mobileButtons).forEach(function (key) {
+        mobileButtons[key].className = 'studio-tab' + (key === label ? ' active' : '');
+      });
+    }
+    ['Chat', 'Live', 'Preview'].forEach(function (label) {
+      var button = el('button', 'studio-tab' + (label === 'Chat' ? ' active' : ''), label);
+      button.type = 'button';
+      button.onclick = function () {
+        markMobileTab(label);
+        if (label === 'Chat') { layout.setAttribute('data-pane', 'chat'); return; }
+        layout.setAttribute('data-pane', 'canvas');
+        setTab(label === 'Live' ? 'live' : 'preview');
+      };
+      mobileButtons[label] = button;
+      mobileTabs.appendChild(button);
+    });
+    canvas.appendChild(mobileTabs);
+
+    var livePane = el('div', 'studio-live');
+    var liveSummary = el('p', 'fine-print',
+      'No job is running. Ask for a change and it will appear here.');
+    livePane.appendChild(liveSummary);
+    var approvalsHost = el('div');
+    livePane.appendChild(approvalsHost);
+    var liveLog = el('div', 'studio-log');
+    livePane.appendChild(liveLog);
+    canvas.appendChild(livePane);
+
+    var previewPane = el('div', 'studio-preview');
+    previewPane.hidden = true;
+    var previewHead = el('div', 'studio-preview-head');
+    var previewTitle = el('strong', null, 'Nothing open');
+    var previewMeta = el('span', 'fine-print');
+    previewHead.appendChild(previewTitle);
+    previewHead.appendChild(previewMeta);
+    previewPane.appendChild(previewHead);
+    // sandbox="" - no scripts, no forms, no same-origin access. This markup came from a
+    // model, so the canvas renders it without trusting or executing any of it.
+    var frame = el('iframe', 'studio-preview-frame');
+    frame.setAttribute('sandbox', '');
+    frame.setAttribute('title', 'Draft preview');
+    previewPane.appendChild(frame);
+    previewPane.appendChild(el('p', 'fine-print',
+      'Previews update when the team saves the draft; the live transcript is the part ' +
+      'that is continuous.'));
+    canvas.appendChild(previewPane);
+    layout.appendChild(canvas);
+
+    // ----- state -----
+    var activeArtifact = null;
+    var renderedContent = null;
+    var watched = {};              // job id -> {after, done, status, seen}
+    var typedJobs = {};            // jobs started by a typed turn: their answer belongs in the thread
+    var pendingWait = null;        // the thinking bubble for the current typed turn
+    var pollTimer = 0;
+    var polling = false;
+    var ticks = 0;
+    var busy = false;
+    var sending = false;           // a typed turn is between the click and its job id
+    var voiceOn = false;
+    var voiceWaiting = false;      // the team asked by voice and has not been answered
+    var typedAnswer = false;       // the user chose to answer that question by typing
+    var previewMobile = false;
+    var sessionPending = null;
+    var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
+    var sessionKey = 'studio:session:' + orgKey + ':' + ((state.user && state.user.id) || 0);
+    var sessionId = (function () {
+      try { return parseInt(localStorage.getItem(sessionKey), 10) || null; } catch (e) { return null; }
+    })();
+
+    function setTab(name) {
+      livePane.hidden = name !== 'live';
+      previewPane.hidden = name !== 'preview';
+      liveTab.className = 'studio-tab' + (name === 'live' ? ' active' : '');
+      previewTab.className = 'studio-tab' + (name === 'preview' ? ' active' : '');
+      tools.hidden = name !== 'preview';
+    }
+
+    function updateComposerState() {
+      send.disabled = busy || (voiceWaiting && voiceOn && !typedAnswer);
+      talk.disabled = busy;
+      if (voiceWaiting && voiceOn) {
+        answerHint.hidden = false;
+        answerText.textContent = typedAnswer
+          ? 'Typing the answer here continues the same thread. '
+          : 'The team asked a question by voice. Answer there, or ';
+        typeInstead.hidden = typedAnswer;
+      } else {
+        answerHint.hidden = true;
+        answerText.textContent = '';
+        typeInstead.hidden = true;
+      }
+    }
+
+    function anyRunning() {
+      return Object.keys(watched).some(function (key) {
+        return !watched[key].done;
+      });
+    }
+
+    function refreshBusy() {
+      // Busy is "the team owes us an answer": a typed turn in flight, or any job still
+      // running. Deriving it stops a finished poll from unlocking the composer while a
+      // new send is still waiting for its job id.
+      busy = sending || anyRunning();
+      updateComposerState();
+    }
+
+    function bubble(who, text) {
+      var wrap = el('div', 'asst-msg ' + who);
+      wrap.appendChild(el('div', 'asst-body', text));
+      thread.appendChild(wrap);
+      thread.scrollTop = thread.scrollHeight;
+      return wrap;
+    }
+
+    function welcome() {
+      thread.innerHTML = '';
+      var card = el('div', 'asst-welcome');
+      card.appendChild(el('h3', null, 'What should we change?'));
+      card.appendChild(el('p', 'fine-print',
+        'Open a draft on the right, then say what to change. Voice and typing share ' +
+        'this thread, and the team\u2019s questions arrive here and on the canvas.'));
+      var chips = el('div', 'asst-suggest');
+      ['Make the headline shorter',
+       'Move the sign-up form to the top',
+       'Warmer tone, same structure'].forEach(function (text) {
+        var suggestion = el('button', 'asst-chip', text);
+        suggestion.onclick = function () {
+          box.value = text;
+          sendTurn();
+        };
+        chips.appendChild(suggestion);
+      });
+      card.appendChild(chips);
+      thread.appendChild(card);
+    }
+
+    function renderMessages(messages) {
+      thread.innerHTML = '';
+      if (!messages.length) { welcome(); return; }
+      messages.forEach(function (message) {
+        bubble(message.role === 'user' ? 'me' : 'them', message.content);
+      });
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    function thinking() {
+      var node = el('div', 'asst-msg them think');
+      var dots = el('span', 'think-dots');
+      dots.appendChild(el('span'));
+      dots.appendChild(el('span'));
+      dots.appendChild(el('span'));
+      node.appendChild(dots);
+      var phase = el('span', 'think-phase', 'Thinking');
+      node.appendChild(phase);
+      var steps = el('div', 'think-steps');
+      node.appendChild(steps);
+      thread.appendChild(node);
+      thread.scrollTop = thread.scrollHeight;
+      return {
+        phase: function (text) {
+          phase.textContent = text;
+          thread.scrollTop = thread.scrollHeight;
+        },
+        step: function (text) {
+          steps.appendChild(el('div', 'done', '\u2713 ' + String(text).slice(0, 60)));
+          thread.scrollTop = thread.scrollHeight;
+        },
+        done: function () {
+          if (node.parentNode) node.parentNode.removeChild(node);
+        }
+      };
+    }
+
+    // ----- the thread's server session -----
+    function saveSessionId(value) {
+      sessionId = value || null;
+      try {
+        if (sessionId) localStorage.setItem(sessionKey, String(sessionId));
+        else localStorage.removeItem(sessionKey);
+      } catch (e) { /* private mode: the thread still works for this visit */ }
+    }
+
+    function ensureSession() {
+      if (sessionId) return Promise.resolve(sessionId);
+      if (sessionPending) return sessionPending;
+      sessionPending = api('POST', '/api/assistant/sessions', {}).then(function (d) {
+        var created = (d && d.session) || {};
+        if (created.id) saveSessionId(created.id);
+        return sessionId;
+      }).catch(function () { return null; }).then(function (value) {
+        sessionPending = null;
+        return value;
+      });
+      return sessionPending;
+    }
+
+    function persistTurn(role, text) {
+      var content = String(text || '').trim();
+      if (!content) return;
+      ensureSession().then(function (studioSession) {
+        if (!studioSession) return null;
+        return api('POST', '/api/assistant/sessions/' + studioSession + '/messages',
+                   { role: role, content: content });
+      }).catch(function () { /* the turn is already on screen; a lost save is not a toast */ });
+    }
+
+    // ----- the artifact on the canvas -----
+    function artifactRef() {
+      // The only thing the browser is allowed to name: kind and id. The server loads
+      // the title and the content, and checks the draft belongs to this client.
+      return activeArtifact ? { kind: 'deliverable', id: activeArtifact.id } : null;
+    }
+
+    function renderChip() {
+      if (!activeArtifact) {
+        chip.className = 'studio-chip empty';
+        chip.textContent = 'Working on: nothing yet';
+        return;
+      }
+      chip.className = 'studio-chip';
+      chip.textContent = 'Working on: Deliverable #' + activeArtifact.id + ' \u00b7 ' +
+        (activeArtifact.title || activeArtifact.kind || 'draft');
+    }
+
+    function flashPreview() {
+      previewHead.className = 'studio-preview-head studio-flash';
+      setTimeout(function () { previewHead.className = 'studio-preview-head'; }, 1000);
+    }
+
+    function renderPreview(item, opts) {
+      if (!item) {
+        previewTitle.textContent = 'Nothing open';
+        previewMeta.textContent = 'Open a draft from Pages, Library or Jobs.';
+        if (renderedContent !== '') {
+          renderedContent = '';
+          frame.srcdoc = '<p style="font-family:system-ui;padding:24px;color:#667">' +
+            'Open a draft, or ask the team to build a page.</p>';
+        }
+        return;
+      }
+      previewTitle.textContent = 'Deliverable #' + item.id + ' \u00b7 ' +
+        (item.title || 'untitled');
+      previewMeta.textContent = [item.kind, item.status,
+        item.updated_at ? 'updated ' + String(item.updated_at).slice(0, 16) : '']
+        .filter(Boolean).join(' \u00b7 ');
+      var content = item.content || '';
+      if (content !== renderedContent) {
+        renderedContent = content;
+        frame.srcdoc = content ||
+          '<p style="font-family:system-ui;padding:24px;color:#667">' +
+          'Nothing to preview yet.</p>';
+        if (opts && opts.flash) flashPreview();
+      }
+    }
+
+    function setArtifact(item, opts) {
+      opts = opts || {};
+      activeArtifact = item || null;
+      renderChip();
+      renderPreview(activeArtifact, opts);
+      if (activeArtifact && !opts.keepHash) {
+        try {
+          // replaceState, never location.hash: a hashchange re-renders the whole shell
+          // and would take the thread and the docked voice panel with it.
+          history.replaceState(null, '', '#/app/studio/deliverable/' + activeArtifact.id);
+        } catch (e) { /* a blocked history call must not break the canvas */ }
+      }
+      if (opts.announce && activeArtifact) {
+        toast('Draft #' + activeArtifact.id + ' is on the canvas', true);
+      }
+    }
+
+    function refreshArtifact() {
+      if (!activeArtifact) return;
+      api('GET', '/api/deliverables/' + activeArtifact.id).then(function (d) {
+        var fresh = d.deliverable;
+        if (!fresh) return;
+        var changed = (fresh.content || '') !== (activeArtifact.content || '');
+        setArtifact(fresh, { flash: changed });
+      }).catch(function () { /* deleted or unreachable: leave what is on screen */ });
+    }
+
+    // ----- watching the run -----
+    function ensurePolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(pollOnce, 1500);
+      onCleanup(function () {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; }
+      });
+    }
+
+    function stopPolling() {
+      if (!pollTimer) return;
+      clearInterval(pollTimer);
+      pollTimer = 0;
+    }
+
+    function watchJob(jobId) {
+      var jobKey = Number(jobId);
+      if (!jobKey) return;
+      if (!watched[jobKey]) {
+        watched[jobKey] = { after: 0, done: false, status: 'queued', seen: {} };
+      }
+      setTab('live');
+      ensurePolling();
+      renderWatched();
+      pollOnce();
+    }
+
+    function renderWatched() {
+      var ids = Object.keys(watched);
+      if (!ids.length) {
+        liveSummary.textContent =
+          'No job is running. Ask for a change and it will appear here.';
+        return;
+      }
+      liveSummary.textContent = 'Following ' + ids.map(function (key) {
+        return '#' + key + ' ' + (watched[key].status || 'queued');
+      }).join(' \u00b7 ');
+    }
+
+    function pollJob(jobId) {
+      var watch = watched[jobId];
+      if (!watch || watch.done) return Promise.resolve();
+      return api('GET', '/api/jobs/' + jobId + '/events?after=' + watch.after)
+        .then(function (d) {
+          (d.events || []).forEach(function (ev) {
+            watch.after = Math.max(watch.after, Number(ev.seq) || 0);
+            handleEvent(jobId, ev);
+          });
+          var job = d.job || {};
+          if (job.status) watch.status = String(job.status);
+          if (['done', 'failed', 'cancelled'].indexOf(job.status) === -1) return;
+          watch.done = true;
+          if (job.status === 'done') {
+            // The work saved; the page is what the user wants to see next - unless the
+            // team asked a question, in which case the card on the Live tab is the thing
+            // they need in front of them.
+            if (activeArtifact && !watch.askedQuestion) setTab('preview');
+          } else {
+            appendLive(jobId, {
+              source: 'system', type: 'error',
+              content: job.error || 'The job stopped before it finished.'
+            });
+          }
+          // A run writes its drafts itself; look for them by job id, never by title.
+          refreshOutputs(jobId);
+          refreshArtifact();
+          if (pendingWait && typedJobs[jobId]) {
+            pendingWait.done();
+            pendingWait = null;
+          }
+        })
+        .catch(function () { /* one failed poll is not a reason to tear the canvas down */ });
+    }
+
+    function pollOnce() {
+      if (polling) return;
+      var ids = Object.keys(watched);
+      if (!ids.length) { stopPolling(); return; }
+      polling = true;
+      ticks += 1;
+      var chain = Promise.resolve();
+      ids.forEach(function (key) {
+        chain = chain.then(function () { return pollJob(Number(key)); });
+      });
+      chain.then(function () {
+        polling = false;
+        renderWatched();
+        if (!anyRunning()) stopPolling();
+        refreshBusy();
+      }).catch(function () { polling = false; });
+      if (ticks % 2 === 0) refreshApprovals();
+    }
+
+    function appendLive(jobId, ev) {
+      var row = el('div', 'studio-event type-' + (ev.type || 'system'));
+      row.appendChild(el('span', 'studio-event-head',
+        '#' + jobId + ' \u00b7 ' + (ev.source || 'system') + ' \u00b7 ' + (ev.type || '')));
+      row.appendChild(el('div', 'studio-event-body', String(ev.content || '').slice(0, 2000)));
+      liveLog.appendChild(row);
+      while (liveLog.children.length > 250) liveLog.removeChild(liveLog.firstChild);
+      liveLog.scrollTop = liveLog.scrollHeight;
+    }
+
+    function handleEvent(jobId, ev) {
+      appendLive(jobId, ev);
+      if (ev.source === 'Manager' && ev.type === 'tool' && pendingWait) {
+        pendingWait.step(String(ev.content || '').replace(/_/g, ' '));
+      }
+      if (ev.source === 'Manager' && ev.type === 'message' && typedJobs[jobId] && ev.content) {
+        if (pendingWait) { pendingWait.done(); pendingWait = null; }
+        bubble('them', ev.content);
+      }
+      if (ev.source === 'Manager' && ev.type === 'child_job') {
+        try {
+          var link = JSON.parse(ev.content || '{}');
+          if (link.job_id) watchJob(link.job_id);
+        } catch (e) { /* a malformed link is not worth a toast */ }
+      }
+      if (ev.source === 'Manager' && ev.type === 'question') {
+        var questions = [];
+        try { questions = JSON.parse(ev.content || '[]'); } catch (e) { questions = []; }
+        if (watched[jobId]) watched[jobId].askedQuestion = true;
+        if (pendingWait) { pendingWait.done(); pendingWait = null; }
+        if (questions.length) showQuestions(questions);
+        // A spoken session owns the answer: the composer steps aside until the user
+        // either answers out loud or chooses to type it. Only the Manager asks, and it
+        // asks on the job the Studio is following.
+        voiceWaiting = voiceOn;
+        typedAnswer = false;
+        updateComposerState();
+      }
+      if (ev.type === 'tool_result' &&
+          String(ev.content || '').indexOf('save_deliverable') === 0) {
+        refreshOutputs(jobId);
+      }
+    }
+
+    function refreshOutputs(jobId) {
+      api('GET', '/api/deliverables?job_id=' + jobId).then(function (d) {
+        var rows = d.deliverables || [];
+        if (!rows.length) return;
+        var watch = watched[jobId];
+        rows.forEach(function (row) {
+          var isOpen = activeArtifact && activeArtifact.id === row.id;
+          var seen = watch && watch.seen[row.id];
+          if (watch) watch.seen[row.id] = true;
+          if (!isOpen) {
+            if (seen) return;
+            // The user asked for a different page, or the run produced its first one:
+            // the canvas follows the work instead of asking which draft is meant.
+            setArtifact(row, { announce: true });
+            setTab('preview');
+          } else {
+            // Refreshing the open draft on every save is the point of the canvas.
+            setArtifact(row, { flash: true });
+          }
+        });
+      }).catch(function () { /* a draft that cannot be listed yet is not an error */ });
+    }
+
+    function showQuestions(questions) {
+      var card = el('div', 'panel-card studio-question');
+      card.appendChild(el('strong', null, 'The team needs a little more'));
+      var inputs = questions.map(function (question) {
+        card.appendChild(el('p', 'fine-print', String(question)));
+        var input = el('input');
+        card.appendChild(input);
+        return input;
+      });
+      var reply = el('button', 'btn btn-primary btn-sm', 'Send answers');
+      reply.onclick = function () {
+        var parts = inputs.map(function (input, index) {
+          var text = (input.value || '').trim();
+          return text ? questions[index] + ' ' + text : '';
+        }).filter(function (part) { return part; });
+        if (!parts.length) { toast('Answer at least one question', false); return; }
+        if (card.parentNode) card.parentNode.removeChild(card);
+        voiceWaiting = false;
+        typedAnswer = false;
+        updateComposerState();
+        box.value = parts.join(' ');
+        sendTurn();
+      };
+      card.appendChild(reply);
+      liveLog.appendChild(card);
+      liveLog.scrollTop = liveLog.scrollHeight;
+    }
+
+    function refreshApprovals() {
+      var ids = Object.keys(watched).map(Number);
+      if (!ids.length) return;
+      api('GET', '/api/approvals?status=pending').then(function (d) {
+        approvalsHost.innerHTML = '';
+        if (d.dry_run) return;
+        var rows = (d.approvals || []).filter(function (approval) {
+          return approval.job_id == null || ids.indexOf(Number(approval.job_id)) !== -1;
+        });
+        if (!rows.length) return;
+        var card = el('div', 'panel-card');
+        card.appendChild(el('strong', null, 'Waiting for your approval'));
+        rows.forEach(function (approval) {
+          var row = el('div', 'approval-row');
+          row.appendChild(el('div', null, approval.tool + ' - ' + approval.summary));
+          var buttons = el('div', 'card-actions');
+          var yes = el('button', 'btn btn-primary btn-sm', 'Approve');
+          yes.onclick = function () { decide(approval.id, 'approve'); };
+          var no = el('button', 'btn btn-danger btn-sm', 'Deny');
+          no.onclick = function () { decide(approval.id, 'deny'); };
+          buttons.appendChild(yes);
+          buttons.appendChild(no);
+          row.appendChild(buttons);
+          card.appendChild(row);
+        });
+        approvalsHost.appendChild(card);
+      }).catch(function () { /* approvals are best-effort on this screen */ });
+    }
+
+    function decide(approvalId, decision) {
+      api('POST', '/api/approvals/' + approvalId + '/' + decision)
+        .then(function () { toast('Recorded', true); refreshApprovals(); })
+        .catch(function (e) { toast(e.message, false); });
+    }
+
+    function sendTurn() {
+      var text = (box.value || '').trim();
+      if (!text) { toast('Say what you want first', false); return; }
+      if (busy) return;
+      if (voiceWaiting && voiceOn && !typedAnswer) {
+        // The voice owns the answer; the hint's button is the one-way door out of that.
+        toast('The team asked by voice - answer there, or press Type the answer.', false);
+        return;
+      }
+      box.value = '';
+      box.style.height = 'auto';
+      var hello = thread.querySelector('.asst-welcome');
+      if (hello && hello.parentNode) hello.parentNode.removeChild(hello);
+      bubble('me', text);
+      sending = true;
+      refreshBusy();
+      voiceWaiting = false;
+      typedAnswer = false;
+      updateComposerState();
+      pendingWait = thinking();
+      var payload = { message: text };
+      if (sessionId) payload.session_id = sessionId;
+      else payload.create_session = true;
+      var artifact = artifactRef();
+      if (artifact) payload.artifact = artifact;
+      api('POST', '/api/manager/chat', payload).then(function (d) {
+        if (d.session_id) saveSessionId(d.session_id);
+        typedJobs[d.job_id] = true;
+        if (pendingWait) pendingWait.phase('Reading the draft\u2026');
+        watchJob(d.job_id);
+        sending = false;
+        refreshBusy();
+      }).catch(function (e) {
+        sending = false;
+        if (pendingWait) { pendingWait.done(); pendingWait = null; }
+        bubble('them', e.message);
+        refreshBusy();
+      });
+    }
+
+    function pickArtifact() {
+      api('GET', '/api/deliverables').then(function (d) {
+        var rows = (d.deliverables || []).slice(0, 60);
+        if (!rows.length) { toast('No drafts yet - ask the team for one', false); return; }
+        var options = rows.map(function (row) {
+          return {
+            value: String(row.id),
+            label: '#' + row.id + ' \u00b7 ' + (row.title || 'untitled') +
+                   ' (' + row.kind + ', ' + row.status + ')'
+          };
+        });
+        formModal('Open a draft in the Studio', [
+          { name: 'draft', label: 'Draft', type: 'select', options: options,
+            value: activeArtifact ? String(activeArtifact.id) : options[0].value }
+        ], function (data, fail, ok) {
+          var chosen = rows.filter(function (row) {
+            return String(row.id) === String(data.draft);
+          })[0];
+          if (!chosen) { fail('Choose a draft'); return; }
+          ok();
+          setArtifact(chosen, { announce: true });
+          setTab('preview');
+        });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    chip.onclick = pickArtifact;
+    pick.onclick = pickArtifact;
+    liveTab.onclick = function () { setTab('live'); };
+    previewTab.onclick = function () { setTab('preview'); };
+    widthToggle.onclick = function () {
+      previewMobile = !previewMobile;
+      previewPane.className = 'studio-preview' + (previewMobile ? ' mobile' : '');
+      widthToggle.textContent = previewMobile ? 'Desktop' : 'Mobile';
+    };
+    refresh.onclick = function () { refreshArtifact(); };
+    openFull.onclick = function () {
+      if (!activeArtifact) { toast('Open a draft first', false); return; }
+      previewDeliverable(activeArtifact);
+    };
+    send.onclick = sendTurn;
+
+    box.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendTurn();
+      }
+    });
+    box.addEventListener('input', function () {
+      box.style.height = 'auto';
+      box.style.height = Math.min(160, box.scrollHeight || 48) + 'px';
+    });
+
+    // ----- voice, docked into the left pane -----
+    talk.onclick = function () {
+      if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
+      if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
+      if (busy) return;
+      voiceHost.hidden = false;
+      window.AscendVoice.open({
+        page: 'studio',
+        source: 'studio',
+        host: voiceHost,
+        compact: true,
+        // Read by the voice when it delegates, so "make it warmer" means the page on
+        // screen even if the user picked another draft mid-sentence.
+        getContext: artifactRef,
+        onState: function (phase, label) {
+          voiceOn = ['connecting', 'listening', 'thinking', 'speaking'].indexOf(phase) !== -1;
+          voiceNote.textContent = voiceOn ? 'Voice: ' + label : '';
+          if (!voiceOn) { voiceWaiting = false; typedAnswer = false; }
+          updateComposerState();
+        },
+        onTurn: function (turn) {
+          bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
+          persistTurn(turn.role === 'user' ? 'user' : 'assistant', turn.text);
+        },
+        onJob: function (jobId) {
+          voiceWaiting = false;
+          typedAnswer = false;
+          watchJob(jobId);
+        },
+        onClose: function () {
+          voiceOn = false;
+          voiceWaiting = false;
+          typedAnswer = false;
+          voiceHost.hidden = true;
+          voiceNote.textContent = '';
+          updateComposerState();
+        }
+      });
+    };
+
+    api('GET', '/api/voice/status').then(function (s) {
+      if (!s.available) {
+        voiceNote.textContent = s.reason;
+        return;
+      }
+      talk.style.display = '';
+      voiceNote.textContent = 'Voice: ' + s.voice + ' \u00b7 ' +
+        s.remaining_minutes + ' min left today';
+    }).catch(function () { /* no voice is not an error worth a toast */ });
+
+    onCleanup(function () {
+      stopPolling();
+      if (window.AscendVoice && window.AscendVoice.phase &&
+          window.AscendVoice.phase() !== 'idle') {
+        window.AscendVoice.stop();
+      }
+    });
+
+    // ----- first paint -----
+    renderChip();
+    renderPreview(null);
+    renderWatched();
+    setTab('live');
+    updateComposerState();
+
+    if (sessionId) {
+      api('GET', '/api/assistant/sessions/' + sessionId).then(function (d) {
+        var restored = d.session || {};
+        if (restored.id) saveSessionId(restored.id);
+        renderMessages(d.messages || []);
+      }).catch(function () {
+        saveSessionId(null);
+        welcome();
+      });
+    } else {
+      welcome();
+    }
+
+    if (kind === 'deliverable' && id) {
+      api('GET', '/api/deliverables/' + encodeURIComponent(id)).then(function (d) {
+        if (!d.deliverable) throw new Error('That draft was not found.');
+        setArtifact(d.deliverable, { keepHash: true });
+        setTab('preview');
+        layout.setAttribute('data-pane', 'canvas');
+        markMobileTab('Preview');
+      }).catch(function (e) { toast(e.message, false); });
+    } else if (kind === 'job' && id) {
+      layout.setAttribute('data-pane', 'canvas');
+      markMobileTab('Live');
+      watchJob(Number(id));
+    }
+
+    return container;
+  }
+
 
   // ---------- Contacts: the mini CRM ----------
   // Deliberately no GoHighLevel anywhere on this screen: a client without one gets the
@@ -6749,6 +7563,7 @@
     else if (tab === 'forms') view = viewForms();
     else if (tab === 'media') view = viewMedia();
     else if (tab === 'assistant') view = viewAssistant();
+    else if (tab === 'studio') view = viewStudio(rest[0] || '', rest[1] || '');
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();

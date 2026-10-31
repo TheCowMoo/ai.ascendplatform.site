@@ -75,8 +75,13 @@ def _build_get_metrics(emit, job_id=None):
 
 
 def _build_start_job(emit, job_id=None):
-    async def start_job(prompt: str, title: str = "") -> str:
-        """Hand work to the agent team: writing, reviewing a site, building a page."""
+    async def start_job(prompt: str, title: str = "", deliverable_id: int = 0) -> str:
+        """Hand work to the agent team: writing, reviewing a site, building a page.
+
+        ``deliverable_id`` names an existing draft the work must update. Without it the
+        team saves a new draft, so a Studio edit delegated to the team would leave the
+        page the user is looking at untouched and put a duplicate beside it.
+        """
         import jobs
 
         if not (prompt or "").strip():
@@ -88,9 +93,22 @@ def _build_start_job(emit, job_id=None):
                 "in their Jobs or Library. Pick a client in the workspace switcher, then "
                 "ask me again."
             )
+        task = prompt.strip()
+        try:
+            target_id = int(deliverable_id or 0)
+        except (TypeError, ValueError):
+            target_id = 0
+        if target_id:
+            # The child job's save_deliverable call must land on the same row. Ownership
+            # is still checked there against the child job's own org, never this text.
+            task += (
+                "\n\nSave the finished document with "
+                "save_deliverable(deliverable_id=%d, ...) so it updates draft #%d "
+                "instead of creating a second draft." % (target_id, target_id)
+            )
         new_id = jobs.create_job(
             title.strip() or prompt.strip()[:60],
-            prompt.strip(),
+            task,
             requester_id=requester,
             team_mode="selector",
             task_name="agent_team",

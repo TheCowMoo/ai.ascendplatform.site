@@ -245,6 +245,30 @@ def test_a_second_save_updates_the_same_draft():
     print("second save updated draft #%s instead of duplicating it" % rows[0]["id"])
 
 
+def test_a_save_cannot_name_another_clients_draft():
+    """``deliverable_id`` comes from the model, so ownership is re-checked, not trusted.
+
+    The Studio is the first caller that supplies an id from the browser, which makes
+    this the branch that matters: a wrong id must leave the other client's row exactly
+    as it was, even if it means this job saves a sibling draft instead.
+    """
+    alpha = _org("Deliverable Refine Alpha")
+    beta = _org("Deliverable Refine Beta")
+    theirs = deliverables.create_deliverable(
+        {"kind": "email", "title": "Beta draft %s" % TOKEN,
+         "content": "<p>beta</p>"}, org_id=beta["id"])
+    reply = asyncio.run(_save_tool(_job_in_org(alpha["id"])).run_json(
+        {"kind": "email", "title": "Hijack attempt", "content": "<p>mine</p>",
+         "deliverable_id": theirs["id"]}, DRY))
+    print("cross-client save reply:", reply)
+    after = deliverables.get_deliverable(theirs["id"])
+    assert after["content"] == "<p>beta</p>", after
+    assert after["org_id"] == beta["id"], after
+    mine = deliverables.list_deliverables("email", alpha["id"])
+    assert len(mine) == 1 and mine[0]["id"] != theirs["id"], mine
+    print("a foreign deliverable_id left that draft untouched")
+
+
 def test_a_save_without_content_is_explained():
     org = _org("Deliverable No Content Client")
     reply = asyncio.run(_save_tool(_job_in_org(org["id"])).run_json(
@@ -340,6 +364,7 @@ def main():
     test_api_offers_the_website_kind()
     test_publish_route_validates_the_kind_and_the_session()
     test_a_second_save_updates_the_same_draft()
+    test_a_save_cannot_name_another_clients_draft()
     test_a_save_without_content_is_explained()
     test_kind_aliases_and_tab_enforcement()
     test_unowned_drafts_can_be_assigned()

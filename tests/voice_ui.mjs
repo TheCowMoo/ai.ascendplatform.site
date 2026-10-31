@@ -287,5 +287,50 @@ assert.ok(text('voice-detail').includes('was rejected'), 'it says the session wa
 assert.ok(text('voice-detail').includes('model not found'), 'and quotes the reason');
 Voice.stop();
 
+// ---------- Docked in the Studio ----------
+// The same panel in another parent. Everything above still passes, which is the point:
+// docking changes where the panel lives, not how a session, a transcript or a phase works.
+const host = new Node('div');
+document.body.appendChild(host);
+const studioCanvas = { kind: 'deliverable', id: 42 };
+assert.equal(await Voice.open({
+  page: 'studio', host, getContext: () => studioCanvas
+}), true, 'a docked session opens');
+ws = FakeWebSocket.last;
+ws.onopen();
+assert.equal(host.children.length, 1, 'the panel mounted in the host');
+assert.equal(overlay().hidden, true, 'the overlay is not raised while docked');
+assert.match(host.children[0].className, /voice-docked/,
+             'the panel carries the docked class');
+
+binaryMessage(ws, { setupComplete: {} });
+assert.equal(Voice.phase(), 'listening', 'the docked panel is the same session');
+
+message(ws, { toolCall: { functionCalls: [{
+  id: 'call-dock-1', name: 'delegate_to_team', args: { instruction: 'make it warmer' }
+}] } });
+await new Promise((resolve) => setTimeout(resolve, 20));
+const dockedCall = toolCalls[toolCalls.length - 1];
+assert.equal(dockedCall.name, 'delegate_to_team', 'the docked call delegates');
+assert.deepEqual(dockedCall.artifact, { kind: 'deliverable', id: 42 },
+                 'the request carries the artifact on screen');
+
+// The hook is read when the call is made, not when the session opened: the user may
+// pick another draft while the dialogue is still running.
+studioCanvas.id = 43;
+message(ws, { toolCall: { functionCalls: [{
+  id: 'call-dock-2', name: 'delegate_to_team', args: { instruction: 'shorter' }
+}] } });
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(toolCalls[toolCalls.length - 1].artifact.id, 43,
+             'the canvas is read at call time');
+
+Voice.stop();
+assert.equal(Voice.phase(), 'idle', 'stop ends the docked session');
+assert.equal(host.children.length, 0, 'and detaches the panel from the host');
+assert.equal(document.body.children.filter(
+  (node) => node.className === 'voice-overlay').length, 1,
+  'the overlay is still the one panel owner');
+
 console.log('VOICE UI OK - the gate, the transcripts and the failure paths');
 

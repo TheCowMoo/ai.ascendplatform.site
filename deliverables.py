@@ -96,11 +96,12 @@ def out(row):
     return item
 
 
-def list_deliverables(kind=None, org_id=None, limit=200):
+def list_deliverables(kind=None, org_id=None, limit=200, job_id=None):
     """Deliverables for one client, newest first.
 
     ``org_id=None`` is the platform operator's view and returns every client's.
-    ``kind=None`` returns all of them - which is the Library tab.
+    ``kind=None`` returns all of them - which is the Library tab. ``job_id`` answers
+    the Studio's question: which drafts did the run I am watching just write?
     """
     query = "SELECT * FROM deliverables WHERE 1 = 1"
     params = []
@@ -110,6 +111,9 @@ def list_deliverables(kind=None, org_id=None, limit=200):
     if kind:
         query += " AND kind = ?"
         params.append(kind)
+    if job_id is not None:
+        query += " AND job_id = ?"
+        params.append(int(job_id))
     query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
     params.append(max(1, int(limit)))
     with get_connection() as conn:

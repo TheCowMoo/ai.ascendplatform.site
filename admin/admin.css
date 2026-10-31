@@ -943,8 +943,8 @@ body.graph-full { overflow: hidden; }
 @keyframes voice-breathe { 0%, 100% { opacity: .2; } 50% { opacity: .55; } }
 @keyframes voice-think { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
 @keyframes voice-orbit {
-  from { transform: rotate(0deg) translateX(72px) rotate(0deg); }
-  to { transform: rotate(360deg) translateX(72px) rotate(-360deg); }
+  from { transform: rotate(0deg) translateX(var(--voice-orbit-r, 72px)) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(var(--voice-orbit-r, 72px)) rotate(-360deg); }
 }
 .voice-state { font-size: var(--fs-h3); font-weight: 600; color: var(--ink-900); }
 .voice-detail {
@@ -971,6 +971,31 @@ body.graph-full { overflow: hidden; }
 .voice-note { font-size: var(--fs-micro); color: var(--ink-400); }
 .voice-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 .voice-actions [hidden] { display: none; }
+
+/* Docked in the Studio's left pane: the same panel, made compact. voice.js moves the
+   node into the host; nothing here touches the overlay, the pill or the full-screen
+   keyboard rules, because none of them apply while it is docked. */
+.voice-panel.voice-docked {
+  width: 100%; align-items: stretch; text-align: left; gap: 8px;
+  padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface);
+}
+.voice-docked .voice-kicker, .voice-docked .voice-title { display: none; }
+.voice-docked .voice-stage {
+  --voice-orbit-r: 34px;
+  width: 92px; height: 92px; margin: 0 auto;
+}
+.voice-docked .voice-orb { width: 68px; height: 68px; }
+.voice-docked .voice-orb::before { inset: -6px; }
+.voice-docked .voice-core { width: 38px; height: 38px; }
+.voice-docked .voice-state { font-size: var(--fs-sm); }
+.voice-docked .voice-detail { font-size: var(--fs-micro); }
+.voice-docked .voice-transcript { max-height: 22vh; }
+.voice-docked .voice-actions { justify-content: flex-start; }
+@media (max-width: 560px) {
+  .voice-docked .voice-stage { width: 84px; height: 84px; }
+  .voice-docked .voice-orb { width: 62px; height: 62px; }
+}
 .voice-pill {
   position: fixed; right: 88px; bottom: 22px; z-index: 97;
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -1289,6 +1314,94 @@ select {
 
 .page-head > div { min-width: 0; }
 .nav-veil { display: none; }
+
+/* ---------- Studio ----------
+   Two panes: the conversation on the left, the artifact on the right. The layout is a
+   grid so the canvas keeps its width when the transcript is long, and the mobile rule
+   turns the same markup into one pane at a time rather than a second screen. */
+.studio-layout {
+  display: grid; grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+  gap: var(--s-4); align-items: start;
+}
+.studio-chat, .studio-canvas {
+  min-width: 0; display: flex; flex-direction: column; gap: 10px;
+  padding: var(--s-3); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.studio-chat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.studio-chip {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--accent-soft); background: var(--accent-50);
+  color: var(--accent-700); font: inherit; font-size: var(--fs-sm); font-weight: 600;
+  text-align: left;
+}
+.studio-chip.empty {
+  border-color: var(--line); background: var(--canvas); color: var(--ink-500);
+}
+.studio-thread { max-height: 46vh; }
+.studio-voice-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.studio-voice-row .asst-hint { margin: 0; }
+.studio-voice-host { width: 100%; }
+.studio-canvas-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.studio-tabs {
+  display: inline-flex; gap: 3px; padding: 3px;
+  background: var(--canvas); border: 1px solid var(--line); border-radius: 999px;
+}
+.studio-tab {
+  border: 0; background: none; border-radius: 999px; padding: 6px 14px;
+  font: inherit; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-500);
+  cursor: pointer;
+}
+.studio-tab.active { background: var(--surface); color: var(--accent-700); box-shadow: var(--shadow-1); }
+.studio-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.studio-live { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.studio-log {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 52vh; overflow-y: auto; padding: 10px;
+  background: #fbfbfd; border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.studio-event { padding-bottom: 4px; border-bottom: 1px dashed var(--line); }
+.studio-event:last-child { border-bottom: 0; }
+.studio-event-head {
+  display: block; font-size: var(--fs-micro); text-transform: uppercase;
+  letter-spacing: .08em; color: var(--ink-400);
+}
+.studio-event-body {
+  font-size: var(--fs-sm); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.studio-event.type-error .studio-event-body { color: var(--danger-600); }
+.studio-question input { width: 100%; }
+.studio-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.studio-preview-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap; padding: 4px 6px; border-radius: var(--r-sm);
+}
+.studio-preview-head .fine-print { margin: 0; }
+.studio-preview-frame {
+  width: 100%; height: 58vh; border: 1px solid var(--line);
+  border-radius: var(--r-md); background: #fff;
+}
+.studio-preview.mobile .studio-preview-frame { width: 390px; max-width: 100%; margin: 0 auto; }
+.studio-flash { animation: studio-flash 1s var(--ease); }
+@keyframes studio-flash {
+  0% { background: var(--accent-50); }
+  100% { background: transparent; }
+}
+.studio-mobile-tabs { display: none; }
+@media (max-width: 900px) {
+  .studio-layout { grid-template-columns: 1fr; }
+  .studio-mobile-tabs { display: flex; gap: 4px; }
+  .studio-layout[data-pane="chat"] .studio-canvas,
+  .studio-layout[data-pane="canvas"] .studio-chat { display: none; }
+  .studio-thread { max-height: 40vh; }
+  .studio-log { max-height: 42vh; }
+  .studio-preview-frame { height: 46vh; }
+}
 @media (max-width: 900px) {
   /* Leave room below the last card so the floating Ask control can never sit on top of
      the final action when the page is scrolled to the end. */
