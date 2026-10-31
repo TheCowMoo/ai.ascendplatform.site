@@ -11,6 +11,7 @@ Audio is never stored. What is kept is the transcript, which is the same text th
 """
 
 import asyncio
+import base64
 import datetime
 import json
 import time
@@ -158,24 +159,25 @@ def _stamp(seconds):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def mint_payload(live_setup=None):
-    """The auth-token request for the exact Live setup the browser will send.
+def mint_payload(live_setup=None, include_setup=True):
+    """The auth-token request for the Live setup the browser will send.
 
     The REST AuthToken field is ``bidiGenerateContentSetup`` (not the SDK-level
     ``liveConnectConstraints`` name). Embedding the complete setup ties the token to the
     model, audio modality, tools and transcription config; the connection's setup frame
     is the same object.
     """
-    setup_message = live_setup or setup()["setup"]
-    return {
+    payload = {
         "uses": 1,
         "expireTime": _stamp(SESSION_SECONDS + 60),
         "newSessionExpireTime": _stamp(60),
-        "bidiGenerateContentSetup": setup_message,
     }
+    if include_setup:
+        payload["bidiGenerateContentSetup"] = live_setup or setup()["setup"]
+    return payload
 
 
-def mint(live_setup=None):
+def mint(live_setup=None, include_setup=True):
     """An ephemeral, model-constrained token the browser opens a Live session with.
 
     ``uses=1`` and a minute of expiry mean a leaked token is worth almost nothing: one
@@ -184,7 +186,7 @@ def mint(live_setup=None):
     key = api_key()
     if not key:
         raise VoiceError("No Google Gemini key is configured.")
-    payload = mint_payload(live_setup)
+    payload = mint_payload(live_setup, include_setup=include_setup)
     url = AUTH_TOKENS_URL % api_version()
     data = _post(url, payload, headers={"x-goog-api-key": key})
     token = str(data.get("name") or data.get("token") or "").strip()
@@ -364,6 +366,128 @@ def _live_model_names(data):
         if live:
             found.append(name)
     return sorted(set(found))
+
+
+def direct_socket_url():
+    """The normal API-key Live socket, used only by the server-side diagnostic."""
+    return ("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage"
+            ".%s.GenerativeService.BidiGenerateContent" % api_version())
+
+
+def minimal_setup():
+    """The smallest Live setup: the model and audio output only."""
+    return {
+        "model": "models/" + model(),
+        "generationConfig": {"responseModalities": ["AUDIO"]},
+    }
+
+
+def _silent_audio_message():
+    """A short silent 16 kHz PCM frame, used to test whether setup waits for input."""
+    data = base64.b64encode(b"\x00\x00" * 320).decode()
+    return {"realtimeInput": {"mediaChunks": [{
+        "mimeType": "audio/pcm;rate=16000", "data": data}]}}
+
+
+def _probe_once(url, setup=None, headers=None, send_audio=False, timeout=5):
+    """Open one Live socket, optionally send setup/audio, and report the first result."""
+    async def run():
+        try:
+            import websockets
+        except ImportError:
+            return {"ok": False, "output":
+                    "The server's websockets package is missing; install requirements."}
+        frames = []
+        try:
+            async with websockets.connect(
+                    url, additional_headers=headers or None,
+                    open_timeout=min(8, timeout), close_timeout=3,
+                    max_size=2 ** 20) as ws:
+                if setup is not None:
+                    await ws.send(json.dumps({"setup": setup}))
+                if send_audio:
+                    await ws.send(json.dumps(_silent_audio_message()))
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        return {"ok": False, "output":
+                                "no setupComplete in %ds%s" %
+                                (timeout, ("; frames=%s" % frames[-3:]) if frames else "")}
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", "replace")
+                    try:
+                        message = json.loads(raw)
+                    except ValueError:
+                        return {"ok": False, "output":
+                                "non-JSON frame: %s" % str(raw)[:160]}
+                    frames.append(sorted(message.keys()))
+                    if message.get("setupComplete"):
+                        session = message.get("setupComplete") or {}
+                        session_id = (session.get("sessionId")
+                                      if isinstance(session, dict) else "")
+                        return {"ok": True, "output":
+                                "setupComplete%s" %
+                                ((" (%s)" % session_id) if session_id else "")}
+                    if message.get("error"):
+                        return {"ok": False, "output":
+                                "error=%s" % json.dumps(message["error"])[:300]}
+                    if message.get("goAway"):
+                        return {"ok": False, "output": "goAway before setupComplete"}
+        except Exception as exc:
+            return {"ok": False, "output":
+                    "%s: %s" % (type(exc).__name__, exc)}
+    try:
+        return asyncio.run(run())
+    except RuntimeError as exc:
+        return {"ok": False, "output": "asyncio: %s" % exc}
+
+
+def probe_matrix(live_setup=None, timeout=4):
+    """Diagnose a silent Live setup across direct API-key and ephemeral-token paths."""
+    full = live_setup or setup()["setup"]
+    key = api_key()
+    if not key:
+        return {"ok": False, "current_ok": False,
+                "output": "No Google Gemini key is configured."}
+    results = {}
+
+    def run(name, mode, message, audio=False):
+        try:
+            if mode == "api":
+                target = direct_socket_url()
+                headers = {"x-goog-api-key": key}
+            elif mode == "bare":
+                target = socket_url() + "?access_token=" + urllib.parse.quote(
+                    mint(include_setup=False))
+                headers = None
+            else:
+                target = socket_url() + "?access_token=" + urllib.parse.quote(
+                    mint(message))
+                headers = None
+            results[name] = _probe_once(
+                target, message, headers=headers, send_audio=audio, timeout=timeout)
+        except Exception as exc:
+            results[name] = {"ok": False, "output":
+                             "%s: %s" % (type(exc).__name__, exc)}
+        return results[name]
+
+    current = run("token-full", "token", full)
+    if current.get("ok"):
+        return {"ok": True, "current_ok": True, "results": results,
+                "output": "token-full: " + current["output"]}
+    for name, mode, message, audio in (
+            ("api-full", "api", full, False),
+            ("api-minimal", "api", minimal_setup(), False),
+            ("api-full-audio", "api", full, True),
+            ("token-full-audio", "token", full, True),
+            ("token-minimal", "token", minimal_setup(), False),
+            ("token-bare-full", "bare", full, False)):
+        run(name, mode, message, audio)
+    summary = "; ".join("%s=%s" % (name, item.get("output"))
+                        for name, item in results.items())
+    return {"ok": any(item.get("ok") for item in results.values()),
+            "current_ok": False, "results": results, "output": summary}
 
 
 def _normalise_version(value):

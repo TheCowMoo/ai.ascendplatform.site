@@ -210,7 +210,7 @@ def test_settings_voice_check():
     original_key = voice.api_key
     original_status = voice.status
     original_probe = voice.live_models_by_version
-    original_session_probe = voice.probe_session
+    original_matrix = voice.probe_matrix
     try:
         voice.api_key = lambda: "test-key"
         voice.status = lambda *args, **kwargs: {
@@ -222,17 +222,19 @@ def test_settings_voice_check():
                 "v1beta": {"ok": True, "models": ["gemini-3.8-live"]},
             }
         }
-        voice.probe_session = lambda *args, **kwargs: {
-            "ok": True, "output": "setupComplete received."}
+        voice.probe_matrix = lambda *args, **kwargs: {
+            "ok": True, "current_ok": True,
+            "output": "token-full: setupComplete"}
         result = settings._test_voice()
         check("the voice Test passes when setupComplete is received", result["ok"], True)
         check("it names the v1beta model list",
               "v1beta Live models" in result["output"], True)
         check("it reports the real setup probe",
-              "Live setup probe: setupComplete received." in result["output"], True)
+              "Live setup probe: token-full: setupComplete" in result["output"], True)
 
-        voice.probe_session = lambda *args, **kwargs: {
-            "ok": False, "output": "The Live server refused the setup: model not found"}
+        voice.probe_matrix = lambda *args, **kwargs: {
+            "ok": False, "current_ok": False,
+            "output": "token-full: no setupComplete; api-full: error=model not found"}
         result = settings._test_voice()
         check("a refused setup fails the Test", result["ok"], False)
         check("and prints the server's refusal",
@@ -241,7 +243,7 @@ def test_settings_voice_check():
         voice.api_key = original_key
         voice.status = original_status
         voice.live_models_by_version = original_probe
-        voice.probe_session = original_session_probe
+        voice.probe_matrix = original_matrix
 
 
 def test_the_routes():

@@ -745,10 +745,9 @@ def _test_voice(org_id=None):
     session_version = state["api_version"]
     session_models = (versions.get(session_version) or {}).get("models") or []
     if state["model"] in session_models:
-        setup = voice.setup()["setup"]
-        probe = voice.probe_session(setup)
-        lines.append("Live setup probe: %s" % probe["output"])
-        return {"ok": bool(probe.get("ok")), "output": " ".join(lines)}
+        matrix = voice.probe_matrix(voice.setup()["setup"])
+        lines.append("Live setup probe: %s" % matrix["output"])
+        return {"ok": bool(matrix.get("current_ok")), "output": " ".join(lines)}
     elsewhere = [version for version in voice.API_VERSIONS
                  if state["model"] in ((versions.get(version) or {}).get("models") or [])]
     if elsewhere:
