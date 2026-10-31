@@ -177,8 +177,9 @@ def verify_pending(limit=20):
             break
         if site.get("status") not in ("pending_dns", "dns_ok"):
             continue
-        if site.get("org_id") is None:
-            continue
+        # An unowned site (created before POST /api/sites fell back to the acting client)
+        # is exactly the one no client can refresh, so skipping it here is how a correct
+        # DNS record stays "not detected" forever. This sweep is read-only; include it.
         try:
             report = provisioner.dns_report(site["domain"])
             probe = provisioner.live_probe(site["domain"])

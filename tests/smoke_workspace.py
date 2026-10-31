@@ -14,6 +14,7 @@ client's Emails and Funnels tab. Two things fix that, and this file pins both:
 import asyncio
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,9 +27,13 @@ import db  # noqa: E402
 import deliverables  # noqa: E402
 import jobs  # noqa: E402
 import orgs as orgs_service  # noqa: E402
+import provisioner  # noqa: E402
+import scheduler  # noqa: E402
+import sites as sites_service  # noqa: E402
 import tools as tool_registry  # noqa: E402
 
 DRY = CancellationToken()
+TOKEN = uuid.uuid4().hex[:6]
 
 ALPHA = {
     "name": "Workspace Alpha", "slug": "workspace-alpha",
@@ -58,7 +63,10 @@ def cleanup():
             conn.execute("DELETE FROM jobs WHERE org_id = ?", (org["id"],))
             conn.execute("DELETE FROM users WHERE org_id = ?", (org["id"],))
             conn.execute("DELETE FROM deliverables WHERE org_id = ?", (org["id"],))
+            conn.execute("DELETE FROM sites WHERE org_id = ?", (org["id"],))
             conn.execute("DELETE FROM orgs WHERE id = ?", (org["id"],))
+        # The sweep fixture has no org, so it is not reached by the loop above.
+        conn.execute("DELETE FROM sites WHERE domain LIKE ?", ("%%%s%%" % TOKEN,))
 
 
 def make_clients():
@@ -189,6 +197,62 @@ def test_save_deliverable_refuses_an_unowned_job():
     print("no row written for the unowned job")
 
 
+def test_a_site_created_while_acting_as_a_client_belongs_to_it(alpha, beta):
+    """The switcher is the tenant for a site, not only for a job or a draft.
+
+    Without the fallback the row was written with org_id NULL: invisible to the client,
+    and skipped by the DNS sweep, so a correctly pointed domain never turned green.
+    """
+    owner = login("admin@example.com", "admin123")
+    owner.post("/api/session/org", json={"org_id": alpha["id"]})
+    domain = "site-%s.example.test" % TOKEN
+    created = owner.post("/api/sites", json={"domain": domain, "target": "local"})
+    assert created.status_code == 201, created.get_data(as_text=True)
+    site = created.get_json()["site"]
+    assert site["org_id"] == alpha["id"], site
+    print("acting as A: the site row belongs to org %s" % alpha["id"])
+
+    a_ids = [row["id"] for row in
+             login(ALPHA["email"], ALPHA["password"]).get("/api/sites").get_json()["sites"]]
+    assert site["id"] in a_ids, a_ids
+    b_ids = [row["id"] for row in
+             login(BETA["email"], BETA["password"]).get("/api/sites").get_json()["sites"]]
+    assert site["id"] not in b_ids, b_ids
+    print("client A sees it, client B does not")
+    sites_service.delete_site(site["id"])
+
+
+def test_the_dns_sweep_checks_an_unowned_site():
+    """An org_id NULL site is the one nobody can refresh from a client workspace.
+
+    Skipping it in the sweep is how a domain that points here stays "pending dns" forever.
+    """
+    site = sites_service.create_site(
+        {"domain": "sweep-%s.example.test" % TOKEN, "target": "local"}, org_id=None)
+    assert site["org_id"] is None
+
+    original_list = sites_service.list_sites
+    original_report = provisioner.dns_report
+    original_probe = provisioner.live_probe
+    sites_service.list_sites = lambda limit=200: [site]
+    provisioner.dns_report = lambda domain, server_ip_value=None: {
+        "ok": True, "resolved": ["203.0.113.9"], "reason": "", "proxied": False}
+    provisioner.live_probe = lambda domain, timeout=6, fetcher=None: {
+        "ok": False, "error": "", "hint": "certificate pending"}
+    try:
+        checked = scheduler.verify_pending()
+    finally:
+        sites_service.list_sites = original_list
+        provisioner.dns_report = original_report
+        provisioner.live_probe = original_probe
+
+    fresh = sites_service.get_site(site["id"])
+    assert checked == 1, checked
+    assert fresh["status"] == "dns_ok", fresh
+    print("the sweep refreshed an unowned site to", fresh["status"])
+    sites_service.delete_site(site["id"])
+
+
 def main():
     alpha, beta = make_clients()
     try:
@@ -198,6 +262,8 @@ def main():
         test_a_fresh_login_starts_at_all_clients(alpha)
         test_no_client_means_no_new_work()
         test_save_deliverable_refuses_an_unowned_job()
+        test_a_site_created_while_acting_as_a_client_belongs_to_it(alpha, beta)
+        test_the_dns_sweep_checks_an_unowned_site()
     finally:
         cleanup()
     print("\nWORKSPACE OK - the switcher scopes every list, and unowned work is refused")

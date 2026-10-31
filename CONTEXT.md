@@ -68,6 +68,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `tools/` | `register()`/`resolve()` registry: `site`, `pexels`, `media`, `mail`, `deliverable`, `policy`, `ssh` |
 | `jobs.py` | Job rows, events, artifacts, `TASKS` registry, runners. `submit()` enqueues to arq from a request thread *and* from inside a running job: a child job submitted by `start_job` or an automation node gets a second loop in a short-lived thread, because `asyncio.run` raises there. A failed enqueue now names its reason in the transcript. |
 | `deliverables.py` | Blogs/funnels/emails/websites/proposals; `publish_deliverable()` |
+| `sites.py` | Hosted domains: domain, aliases, docroot, content, status/ssl. `POST /api/sites` takes the tenant from the acting client for the operator too, so a site created while "acting as" a client is that client's. |
 | `review.py` | Weekly brief (two windows), prompt, `site_review` job, digest |
 | `analytics.py` | `data_sources`, `metrics_daily`, `sync_runs`; source CRUD, idempotent metrics |
 | `site_logs.py` | Caddy access log → per-org metrics (no IPs stored) |
@@ -75,7 +76,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `versions.py` | `site_versions` — snapshot on publish, one-call restore |
 | `platform_mail.py` | The operator's own mail through GHL (contact upsert → conversation message) |
 | `invites.py` | Single-use hashed invite tokens, accept → set password |
-| `scheduler.py` | Daily source sync, weekly `site_review` queueing, quip-free guards |
+| `scheduler.py` | Daily source sync, weekly `site_review` queueing, quip-free guards. The hourly DNS sweep (`SITE_VERIFY_MINUTES`, default 60) also re-checks sites with `org_id NULL` — skipping them kept a correctly-pointed domain "pending dns" forever. |
 | `admin/admin.js` | Single-page console: `#/platform/*`, `#/app/*`, `#/accept/<token>` |
 
 

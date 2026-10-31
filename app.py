@@ -2077,8 +2077,13 @@ def create_site():
     # Domains stay globally unique: two clients cannot both own acme.com.
     if sites_service.get_site_by_domain(domain):
         return jsonify({"error": "That domain is already configured"}), 409
-    # The tenant comes from the session, never from the payload.
-    org_id = data.get("org_id") if is_owner() else current_org()
+    # The tenant comes from the session, never from the payload. The operator may still
+    # name one explicitly, but acting as a client is enough: before this fallback, a site
+    # created while "acting as" a client was saved with org_id NULL - no client could see
+    # it, and the DNS sweep skipped it, so a correctly-pointed domain looked undetected.
+    org_id = current_org()
+    if is_owner() and data.get("org_id"):
+        org_id = data.get("org_id")
     return jsonify({
         "site": sites_service.create_site(
             data, owner_id=session["user_id"], org_id=org_id
