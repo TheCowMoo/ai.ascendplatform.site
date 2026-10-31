@@ -5848,13 +5848,62 @@
         esc(String(site.status || 'pending').replace('_', ' ')) + '</span>' +
         (site.dns_last_ip ? ' · resolves to ' + esc(site.dns_last_ip) : '') +
         (site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') + '</div></div>';
+
+      var actions = el('div', 'row-actions');
       var open = el('button', 'btn btn-ghost btn-sm',
         String(openId) === String(site.id) ? 'Hide' : 'Records');
       open.onclick = function () {
         location.hash = String(openId) === String(site.id)
           ? '#/app/domains' : '#/app/domains/' + site.id;
       };
-      card.appendChild(open);
+      actions.appendChild(open);
+
+      // The row is where someone looks when a domain is not detected, so the two things
+      // they need next belong here: a fresh lookup, and the way to publish or remove it.
+      // Before this, a typo could only be deleted from the Websites tab.
+      var check = el('button', 'btn btn-ghost btn-sm', 'Check DNS');
+      check.onclick = function () {
+        check.disabled = true;
+        api('POST', '/api/sites/' + site.id + '/check').then(function (d) {
+          var verdict = d.check || {};
+          toast(verdict.ok ? 'DNS points here'
+                           : 'DNS: ' + (verdict.reason || 'not pointed here yet'),
+                !!verdict.ok);
+          refresh();
+        }).catch(function (e) { toast(e.message, false); })
+          .finally(function () { check.disabled = false; });
+      };
+      actions.appendChild(check);
+
+      var provision = el('button', 'btn btn-primary btn-sm', 'Provision');
+      provision.onclick = function () {
+        provision.disabled = true;
+        api('POST', '/api/sites/' + site.id + '/provision').then(function (d) {
+          var job = (d && d.job) || {};
+          toast('Provisioning queued - job #' + (job.id || '?'), true);
+          if (job.id) location.hash = '#/app/jobs/' + job.id;
+        }).catch(function (e) { toast(e.message, false); })
+          .finally(function () { provision.disabled = false; });
+      };
+      actions.appendChild(provision);
+
+      var remove = el('button', 'btn btn-danger btn-sm', 'Delete');
+      remove.onclick = function () {
+        if (!confirm('Delete ' + site.domain + '? DNS records are not touched.')) return;
+        remove.disabled = true;
+        api('DELETE', '/api/sites/' + site.id).then(function () {
+          toast('Deleted ' + site.domain, true);
+          // Do not leave a Records panel open under an id that no longer exists.
+          if (String(openId) === String(site.id)) location.hash = '#/app/domains';
+          else refresh();
+        }).catch(function (e) {
+          toast(e.message, false);
+          remove.disabled = false;
+        });
+      };
+      actions.appendChild(remove);
+
+      card.appendChild(actions);
       return card;
     }
 

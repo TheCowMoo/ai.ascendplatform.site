@@ -1034,6 +1034,14 @@ body.graph-full { overflow: hidden; }
 }
 /* Domains tab: one row per domain, with the record panel underneath it. */
 .dom-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+/* A domain row: the name and its verdict on the left, the actions on the right. The
+   actions wrap rather than squash the domain on a narrow screen. */
+.dom-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s-3); flex-wrap: wrap;
+}
+.dom-row > div:first-child { min-width: 0; }
+.dom-row .row-actions { justify-content: flex-end; flex-wrap: wrap; }
 .dom-name { font: 600 var(--t-4)/1.3 inherit; color: var(--ink); }
 .dom-meta { font: 400 var(--t-2)/1.5 inherit; color: var(--ink-3); margin-top: 2px; }
 .dom-panel { margin: -4px 0 var(--s-3) 0; border-top-left-radius: 0; border-top-right-radius: 0; }

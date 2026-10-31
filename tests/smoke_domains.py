@@ -183,6 +183,24 @@ def test_a_healthy_certificate_but_a_broken_page_is_not_live():
     print("502 ->", probe["hint"])
 
 
+def test_the_domains_row_offers_its_actions():
+    """Static: the row is where someone looks when a domain is not detected.
+
+    It used to offer only "Records", so removing a typo or re-running provisioning meant
+    finding the Websites page first - which is exactly where this went wrong.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "admin", "admin.js"), encoding="utf-8") as handle:
+        script = handle.read()
+    block = script.split("function row(site)", 1)[1].split("function panel(site)", 1)[0]
+    for label in ("'Check DNS'", "'Provision'", "'Delete'"):
+        assert label in block, "%s is not on the domain row" % label
+    assert "'/api/sites/' + site.id + '/check'" in block, "the row re-checks DNS"
+    assert "'/api/sites/' + site.id + '/provision'" in block, "the row can publish"
+    assert "api('DELETE', '/api/sites/' + site.id)" in block, "the row can remove a typo"
+    print("a domain row checks, provisions and deletes without leaving the tab")
+
+
 def main():
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]
