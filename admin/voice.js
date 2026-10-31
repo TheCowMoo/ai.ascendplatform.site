@@ -424,8 +424,9 @@
         var sample = Math.max(-1, Math.min(1, samples[i]));
         shorts[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
       }
-      send({ realtimeInput: { mediaChunks: [{
-        mimeType: 'audio/pcm;rate=16000', data: bytesToBase64(new Uint8Array(shorts.buffer)) }] } });
+      send({ realtimeInput: { audio: {
+        mimeType: 'audio/pcm;rate=16000',
+        data: bytesToBase64(new Uint8Array(shorts.buffer)) } } });
     };
     source.connect(analyser);
     analyser.connect(silent);

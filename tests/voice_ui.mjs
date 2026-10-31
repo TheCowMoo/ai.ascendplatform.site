@@ -98,7 +98,11 @@ const context = {
     getFloatTimeDomainData(data) { data.fill(0); }
   }),
   createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
-  createScriptProcessor: () => ({ connect() {}, disconnect() {}, onaudioprocess: null }),
+  createScriptProcessor: () => {
+    const node = { connect() {}, disconnect() {}, onaudioprocess: null };
+    context.lastProcessor = node;
+    return node;
+  },
   createBuffer: (channels, length, rate) => ({
     duration: length / rate,
     getChannelData: () => new Float32Array(length)
@@ -185,6 +189,17 @@ assert.equal(Voice.phase(), 'connecting', 'an open socket is not listening');
 binaryMessage(ws, { setupComplete: {} });
 assert.equal(Voice.phase(), 'listening', 'a binary setupComplete is the gate');
 assert.equal(text('voice-state'), 'Listening', 'the state line says listening');
+
+// The microphone path must use realtimeInput.audio, not the generic mediaChunks list.
+context.lastProcessor.onaudioprocess({
+  inputBuffer: { getChannelData: () => new Float32Array(2048) }
+});
+const audioFrame = ws.sent.find((item) => item.realtimeInput && item.realtimeInput.audio);
+assert.ok(audioFrame, 'the microphone sends a realtime audio frame');
+assert.equal(audioFrame.realtimeInput.audio.mimeType, 'audio/pcm;rate=16000',
+              'the frame is 16 kHz PCM');
+assert.equal('mediaChunks' in audioFrame.realtimeInput, false,
+              'audio does not use the generic media chunks field');
 
 message(ws, { serverContent: { inputTranscription: { text: 'hello' } } });
 message(ws, { serverContent: { outputTranscription: { text: 'hi' } } });
