@@ -380,6 +380,10 @@ typing, and its **Talk** button is only shown when the server says a session can
   small pill while you work. If a session is refused, the overlay shows the server's own
   reason, the model it tried, and a **Try again** button; **Copy diagnostics** is there
   for support.
+- The voice is the team's **spokesperson**: when the Manager needs a detail it asks the
+  user aloud, and the spoken answer is carried back into the same request. The voice also
+  announces when the job finishes, follows background jobs started by the Manager, and
+  tells the user when a job is waiting in **Approvals** (it never approves anything itself).
 - The microphone is asked for **before** a token is minted, so a slow permission prompt
   does not spend the session.
 - Configuration lives in **Settings → Voice**. **Test** lists the v1beta Live models,

@@ -358,10 +358,13 @@ assistant row; the floating sheet is not session-backed.
 
 Browser-direct Live socket, one-use token minted by `voice.py`, key never leaves the
 server. `POST /api/voice/session` returns the token, the setup JSON, the constrained
-endpoint, the model and the API version; `POST /api/voice/tool` is the only tool
-(`delegate_to_team`) and it starts a normal `chat` job after `jobs.submit`.
+endpoint, the model and the API version. `POST /api/voice/tool` exposes two tools:
+`delegate_to_team` starts a normal `chat` job after `jobs.submit`, and
+`answer_team_question` continues the job this voice session started when the team asked
+a question. The model never supplies a job id; the server reads it from the signed
+session and checks the requester and tenant.
 
-The five things that must stay true (each has a guard in `tests/smoke_voice.py`):
+The six things that must stay true (each has a guard in `tests/smoke_voice.py`):
 
 1. **Model and API:** default `gemini-3.8-live` on **v1beta**. Ephemeral Live
    tokens are v1beta-only; the v1alpha endpoint could mint a token but never complete
@@ -377,6 +380,15 @@ The five things that must stay true (each has a guard in `tests/smoke_voice.py`)
    "connecting". A 12-second setup timer turns a silent open socket into a visible error.
 5. **Failure is visible:** `message.error`, `goAway`, and `onclose` code/reason all render
    the server's words, with Copy diagnostics. A close before setup reads "rejected".
+6. **The team bridge is one-way at a time:** after a tool response, `admin/voice.js` polls
+   `/api/jobs/<id>/events`. A `Manager/question` becomes an internal `clientContent`
+   update, which the voice reads to the user. The answer calls `answer_team_question`;
+   the server builds the next manager turn from the previous prompt plus the Q/A. A
+   `Manager/child_job` event is followed the same way, so background team work gets a
+   completion. A pending approval is announced, never approved by the voice. The
+   browser waits for `turnComplete` and the audio queue to drain before injecting an
+   update, so it does not talk over "on it" or the question itself.
+   `tests/voice_ui.mjs` drives the question and completion through a fake socket.
 
 The overlay (`admin/voice.js` + `.voice-*` in `admin.css`) is opened by the sheet's Talk
 button, and by the Assistant page and tour through the same `AscendVoice.open`. It is a

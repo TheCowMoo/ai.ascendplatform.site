@@ -2103,8 +2103,9 @@ def check_site(site_id):
 # ---------- The spoken assistant ----------
 # Gemini is the mouth; our agents are the hands. The browser holds the Live socket directly
 # using a one-use token minted here, so the key never leaves the server and no WSGI worker
-# holds a WebSocket open. The model gets one function, delegate_to_team, which creates a
-# normal manager job - so every guard a typed request passes applies to a spoken one.
+# holds a WebSocket open. The model gets two functions: delegate_to_team creates a normal
+# manager job, and answer_team_question continues the job that asked the user a question -
+# so every guard a typed request passes applies to a spoken one.
 
 _VOICE_TURNS = {}
 
@@ -2161,6 +2162,9 @@ def voice_session():
     # refused permission no longer spends a session.
     voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
     session["voice_calls"] = 0
+    # A new spoken session must not inherit the previous session's answer target. The voice
+    # can still ask about the job, but only this session's question may be answered.
+    session.pop("voice_job_id", None)
     return jsonify({
         "token": token,
         "setup": setup_message,
@@ -2177,27 +2181,24 @@ def voice_session():
 @app.route("/api/voice/tool", methods=["POST"])
 @login_required
 def voice_tool():
-    """The only tool the voice has: hand the work to our own agents.
+    """The two tools the voice may use: delegate work, or answer the team's questions.
 
-    The browser relays this call because the socket is browser-direct. That is safe because
+    The browser relays these calls because the socket is browser-direct. That is safe because
     this route - not the model - is what executes: it needs a login, takes the tenant from the
-    session, and starts the same manager job a typed request would.
+    session, and starts the same manager job a typed request would. An answer is bound to the
+    job this browser's voice session started; the model never supplies a job id.
     """
     import voice
 
     data = request.get_json(silent=True) or {}
-    if str(data.get("name") or "") != "delegate_to_team":
-        return jsonify({"error": "The voice may only delegate to the team."}), 403
-    instruction_text = str((data.get("args") or {}).get("instruction") or "").strip()
-    if not instruction_text:
-        return jsonify({"error": "delegate_to_team needs an instruction"}), 400
+    name = str(data.get("name") or "")
+    if name not in ("delegate_to_team", "answer_team_question"):
+        return jsonify({"error": "The voice may only delegate to the team or answer its "
+                                 "questions."}), 403
     # The voice can talk with Gemini alone, but the team it delegates to needs a chat
     # provider. Refuse before creating a job that would only fail in the transcript.
     import llm
 
-    if not llm.configured_providers():
-        return jsonify({"error": "The team's assistant is not configured. Add an AI "
-                                 "provider key in Settings -> AI providers."}), 503
     calls = int(session.get("voice_calls") or 0)
     if calls >= voice.SESSION_CALLS:
         return jsonify({"error": "That is plenty for one spoken session - say continue, or "
@@ -2205,12 +2206,90 @@ def voice_tool():
     turn = str(data.get("turn_id") or "").strip()
     seen = _VOICE_TURNS.setdefault(str(session.get("user_id")), {})
     if turn and turn in seen:
-        # A model retry must not create the same form twice.
+        # A model retry must not create the same job twice.
         return jsonify({"ok": True, "job_id": seen[turn], "duplicate": True,
                         "message": "Already on it."}), 200
+
+    args = data.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    if name == "answer_team_question":
+        answers = args.get("answers", args.get("answer", ""))
+        if isinstance(answers, (list, tuple)):
+            answers = " ".join(str(part) for part in answers if str(part).strip())
+        answers_text = str(answers or "").strip()[:4000]
+        if not answers_text:
+            return jsonify({"error": "answer_team_question needs the user's answer"}), 400
+    else:
+        instruction_text = str(args.get("instruction") or "").strip()
+        if not instruction_text:
+            return jsonify({"error": "delegate_to_team needs an instruction"}), 400
+
+    if not llm.configured_providers():
+        return jsonify({"error": "The team's assistant is not configured. Add an AI "
+                                 "provider key in Settings -> AI providers."}), 503
+
+    if name == "answer_team_question":
+        previous_id = session.get("voice_job_id")
+        if not previous_id:
+            return jsonify({"error": "The team is not waiting for an answer."}), 409
+        try:
+            previous = _job_for_request(int(previous_id))
+        except (TypeError, ValueError):
+            previous = None
+        if (not previous
+                or previous.get("requester_id") != session.get("user_id")):
+            return jsonify({"error": "The team is not waiting for an answer."}), 409
+        events = jobs.get_events(previous["id"], 0)
+        asked = [event for event in events
+                 if event.get("source") == "Manager" and event.get("type") == "question"]
+        if not asked:
+            return jsonify({"error": "The team is not waiting for an answer."}), 409
+        try:
+            parsed = json.loads(asked[-1].get("content") or "[]")
+        except (TypeError, ValueError):
+            parsed = [str(asked[-1].get("content") or "").strip()]
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        questions = [str(question).strip() for question in parsed
+                     if str(question).strip()][:3] if isinstance(parsed, list) else []
+        if not questions:
+            return jsonify({"error": "The team asked a question, but it could not be read."}), 409
+
+        # A manager turn is one question/answer boundary. The answer starts the next turn
+        # with the previous prompt in front of it, which is what the console does with its
+        # history. The conversation stays in the same client's jobs and audit trail.
+        context = str(previous.get("prompt") or "").strip()
+        if len(context) > 4000:
+            context = context[:4000] + "…"
+        question_text = "\n".join(" - " + question for question in questions)
+        prompt = (
+            "[Voice follow-up - continue the same request; do not start a new one]\n"
+            "Previous request or context:\n%s\n\n"
+            "The team asked the user:\n%s\n\n"
+            "The user answered:\n%s\n\n"
+            "Continue the same request now, using these answers. Do not ask those questions "
+            "again. If something essential is still missing, ask at most one new brief "
+            "question with ask_user; otherwise finish the work and report what you did."
+            % (context or "(none stored)", question_text, answers_text)
+        )
+        job_id = jobs.create_job(
+            "Voice follow-up", prompt, session.get("user_id"), "selector", "chat",
+            org_id=previous.get("org_id"))
+        jobs.submit(job_id)
+        session["voice_job_id"] = job_id
+        if turn:
+            seen[turn] = job_id
+            if len(seen) > 50:
+                seen.clear()
+        session["voice_calls"] = calls + 1
+        return jsonify({"ok": True, "job_id": job_id, "continued": True,
+                        "message": "The team has your answer and is continuing."}), 202
+
     job_id = jobs.create_job("Voice request", instruction_text, session.get("user_id"),
                              "selector", "chat", org_id=current_org())
     jobs.submit(job_id)
+    session["voice_job_id"] = job_id
     if turn:
         seen[turn] = job_id
         if len(seen) > 50:

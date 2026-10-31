@@ -9,7 +9,9 @@
  *   - setupComplete is what makes it "listening",
  *   - a close before setup says "rejected" and carries the server's reason,
  *   - a server error and a goAway are visible in the overlay,
- *   - transcription chunks become two turns and turnComplete returns to listening.
+ *   - transcription chunks become two turns and turnComplete returns to listening,
+ *   - a manager question is injected as an internal team update and the answer tool is
+ *     relayed, and a finished job is injected as the result.
  *
  * It is deliberately small: the fake DOM implements only what voice.js touches.
  */
@@ -141,12 +143,36 @@ class FakeWebSocket {
 const window = globalThis;
 window.document = document;
 Object.defineProperty(window, 'navigator', { value: navigator, configurable: true });
-window.fetch = async (url) => {
+const toolCalls = [];
+const jobs = {
+  7: {
+    job: { id: 7, status: 'done', result: 'Asked the user for the brief.' },
+    events: [{ seq: 1, source: 'Manager', type: 'question',
+               content: JSON.stringify(['Who is the trip for?']) }]
+  },
+  8: {
+    job: { id: 8, status: 'done', result: 'The quiz is ready.' },
+    events: [{ seq: 1, source: 'Manager', type: 'message',
+               content: 'The quiz is ready.' }]
+  }
+};
+window.fetch = async (url, options) => {
   if (url === '/api/voice/session') {
     return { ok: true, status: 200, json: async () => session };
   }
   if (url === '/api/voice/tool') {
-    return { ok: true, status: 202, json: async () => ({ message: 'Working on it.', job_id: 7 }) };
+    const body = JSON.parse((options && options.body) || '{}');
+    toolCalls.push(body);
+    const jobId = body.name === 'answer_team_question' ? 8 : 7;
+    return { ok: true, status: 202,
+             json: async () => ({ message: 'Working on it.', job_id: jobId }) };
+  }
+  if (url.indexOf('/api/jobs/') === 0) {
+    const id = Number(url.split('/api/jobs/')[1].split('/')[0]);
+    return { ok: true, status: 200, json: async () => jobs[id] || { job: {}, events: [] } };
+  }
+  if (url.indexOf('/api/approvals') === 0) {
+    return { ok: true, status: 200, json: async () => ({ approvals: [] }) };
   }
   throw new Error('unexpected fetch ' + url);
 };
@@ -206,6 +232,42 @@ message(ws, { serverContent: { outputTranscription: { text: 'hi' } } });
 message(ws, { serverContent: { turnComplete: true } });
 assert.deepEqual(bodies(), ['hello', 'hi'], 'one bubble per turn');
 assert.equal(Voice.phase(), 'listening', 'turnComplete returns to listening');
+
+// ---------- The team bridge ----------
+// A delegated job asks a question. It must reach the Live session as an internal update,
+// not as a new user request, and the second tool must carry the answer back.
+message(ws, { toolCall: { functionCalls: [{
+  id: 'call-1', name: 'delegate_to_team', args: { instruction: 'build a trip quiz' }
+}] } });
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(toolCalls.length, 1, 'the delegation was sent to the server');
+assert.equal(toolCalls[0].name, 'delegate_to_team', 'the first call delegates');
+
+message(ws, { serverContent: { turnComplete: true } });
+const questionUpdate = ws.sent.filter((item) => item.clientContent).pop();
+assert.ok(questionUpdate, 'the question is injected into the Live session');
+assert.match(questionUpdate.clientContent.turns[0].parts[0].text, /Who is the trip for\?/,
+             'the injected update carries the question');
+assert.match(questionUpdate.clientContent.turns[0].parts[0].text, /\[Team update/,
+             'it is marked as an internal team update');
+assert.ok(notes().some((line) => line.includes('Who is the trip for?')),
+          'the manager question is visible in the overlay');
+
+message(ws, { toolCall: { functionCalls: [{
+  id: 'call-2', name: 'answer_team_question', args: { answers: 'For a bakery trip' }
+}] } });
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(toolCalls.length, 2, 'the answer was sent to the server');
+assert.equal(toolCalls[1].name, 'answer_team_question', 'the second call answers');
+assert.equal(toolCalls[1].args.answers, 'For a bakery trip', 'the words are passed through');
+
+message(ws, { serverContent: { turnComplete: true } });
+const resultUpdate = ws.sent.filter((item) => item.clientContent).pop();
+assert.ok(resultUpdate, 'the finished job is injected into the Live session');
+assert.match(resultUpdate.clientContent.turns[0].parts[0].text, /quiz is ready/,
+             'the result is carried back to the voice');
+assert.ok(notes().some((line) => line.includes('The team finished job #8')),
+          'the completion is visible in the overlay');
 
 message(ws, { goAway: { timeLeft: '9s' } });
 assert.ok(notes().some((line) => line.includes('closes in 9s')), 'goAway is visible');

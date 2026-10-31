@@ -3,7 +3,12 @@
  * The socket goes browser -> Google using a one-use token our server minted, because a WSGI
  * worker must not be asked to hold a WebSocket. That means the browser relays the model's
  * tool calls back to us: /api/voice/tool is what executes, and it runs the same manager job a
- * typed request would. The voice can talk and delegate; it cannot act.
+ * typed request would. The voice can talk, delegate, and carry the team's questions and
+ * results between the job and the user; it cannot act.
+ *
+ * The job bridge is deliberately client-side: the Live socket is browser-direct, so the
+ * browser polls the same /api/jobs/<id>/events transcript the console reads and injects a
+ * short internal update with clientContent. The model never learns a job id it could abuse.
  *
  * Three rules this file exists to keep:
  *   1. "Listening" is only said after setupComplete. An open socket is not a session.
@@ -26,6 +31,9 @@
   };
   var SETUP_TIMEOUT = 12000;          // no setupComplete by now is a failure, not a wait
   var TOOL_TIMEOUT = 30000;
+  var TEAM_POLL_MS = 1200;            // a job transcript is cheap; one poll at a time
+  var TEAM_APPROVALS_EVERY = 3;       // pending approvals change far less often
+  var TEAM_UPDATE_DELAY = 300;        // wait for the last spoken chunk before injecting news
   var MUTE_WHILE_SPEAKING = false;    // true would silence barge-in; see startMic()
 
   var state = {
@@ -35,7 +43,10 @@
     level: 0, settled: false, intentional: false,
     session: null, turns: [], opts: {}, setupTimer: 0,
     lastError: '', closeInfo: '', calls: 0, sessionId: '',
-    generation: 0, opener: null
+    generation: 0, opener: null,
+    team: { generation: 0, jobs: {}, timer: 0, ticks: 0, polling: false,
+            approvals: {}, awaitingAnswer: false },
+    teamQueue: [], teamFlushTimer: 0
   };
   var ui = null;
   var sessionCounter = 0;
@@ -131,7 +142,10 @@
           try { source.stop(); } catch (e) { /* already ended */ }
         });
         active.length = 0;
-      }
+      },
+      // The next internal team update must not land while the last spoken word is still
+      // playing: that sounds like the voice talking over itself.
+      busy: function () { return playing || queue.length > 0 || active.length > 0; }
     };
   }
 
@@ -630,6 +644,7 @@
     }
     state.settled = true;
     setPhase('listening', PHASES.listening, 'Speak normally. Tap Stop when you are done.');
+    flushTeamUpdates();
   }
 
   function handleServerContent(content) {
@@ -637,10 +652,16 @@
     if (content.interrupted) {
       if (state.player) state.player.stop();
       setPhase('listening');
+      // An interruption can end a turn without a following model turn. Give the queued
+      // question/result a chance to land instead of waiting for a turnComplete that may not
+      // arrive; the short delay leaves the user's own barge-in sentence alone.
+      scheduleTeamFlush();
     }
     var heard = (content.inputTranscription && content.inputTranscription.text) ||
                 (content.interimInputTranscription && content.interimInputTranscription.text);
-    if (heard) appendTranscript('user', heard, false);
+    // The Live API may echo clientContent as input text. Internal team updates are not the
+    // user's words and must not appear as a "You" bubble.
+    if (heard && heard.indexOf('[Team update') === -1) appendTranscript('user', heard, false);
 
     var said = content.outputTranscription && content.outputTranscription.text;
     if (said) {
@@ -663,8 +684,12 @@
       finalizeTurn('user');
       finalizeTurn('assistant');
       if (state.phase === 'speaking' || state.phase === 'thinking') setPhase('listening');
+      // A question or result that arrived while the voice was talking waits here. Sending it
+      // before turnComplete cuts off "on it" or the question itself.
+      flushTeamUpdates();
     }
     if (content.waitingForInput && state.phase !== 'speaking') setPhase('listening');
+    if (content.waitingForInput) flushTeamUpdates();
   }
 
   function timeLeftText(value) {
@@ -688,6 +713,10 @@
 
   function fail(message, detail) {
     state.lastError = message;
+    // Invalidate any tool fetch or job poll still in flight. Without this a slow response
+    // from the previous session could start polling a job after the overlay has reopened.
+    state.generation += 1;
+    resetTeam();
     teardownAudio();
     setPhase('error', 'The session stopped', message + (detail ? ' ' + detail : ''));
     if (detail) appendSystemNote(detail);
@@ -734,7 +763,7 @@
   }
 
 
-  // ---------- The one tool ----------
+  // ---------- The team tools ----------
   // A stable id per function call: the model may retry the same call, and the server uses
   // this key to refuse a second job. A counter would defeat that by changing on every retry.
   function stableId(call) {
@@ -750,7 +779,7 @@
     var calls = (toolCall && toolCall.functionCalls) || [];
     if (!calls.length) return;
     setPhase('thinking', PHASES.thinking, 'The team has the request.');
-    calls.forEach(delegate);
+    calls.forEach(relay);
   }
 
   function handleCancellation(cancellation) {
@@ -763,11 +792,331 @@
       id: call.id, name: call.name, response: { result: message } }] } });
   }
 
-  function delegate(call) {
-    var instruction = (call.args && call.args.instruction) || '';
-    appendSystemNote(instruction ? 'On it: ' + instruction : 'Handing that to the team…');
+
+  // ---------- Job bridge ----------
+  // The Live socket is browser-direct, so this browser is the only bridge between a manager
+  // job and the voice. Polling the same transcript the console reads keeps every tenant rule
+  // in one place: the job id came from /api/voice/tool, never from the model, and
+  // /api/jobs/<id>/events enforces access on every request.
+  function teamWatch(id, isChild) {
+    return { id: Number(id), isChild: !!isChild, after: 0, status: '',
+             lastMessage: '', result: '', error: '', children: [],
+             questionSent: false, resultSent: false, done: false, failures: 0 };
+  }
+
+  function stopTeamTimer() {
+    if (state.team.timer) {
+      try { window.clearInterval(state.team.timer); } catch (e) { /* already stopped */ }
+      state.team.timer = 0;
+    }
+  }
+
+  function resetTeam() {
+    state.team.generation += 1;
+    stopTeamTimer();
+    state.team.jobs = {};
+    state.team.ticks = 0;
+    state.team.polling = false;
+    state.team.approvals = {};
+    state.team.awaitingAnswer = false;
+    state.teamQueue = [];
+    if (state.teamFlushTimer) {
+      try { window.clearTimeout(state.teamFlushTimer); } catch (e) { /* already fired */ }
+      state.teamFlushTimer = 0;
+    }
+  }
+
+  function activeTeamWatches() {
+    var out = [];
+    Object.keys(state.team.jobs).forEach(function (key) {
+      var watch = state.team.jobs[key];
+      if (watch && !watch.done) out.push(watch);
+    });
+    return out;
+  }
+
+  function addTeamWatch(jobId, isChild) {
+    var id = Number(jobId);
+    if (!id || isNaN(id) || state.team.jobs[id]) return;
+    state.team.jobs[id] = teamWatch(id, isChild);
+    if (!state.team.timer) {
+      state.team.timer = window.setInterval(pollTeam, TEAM_POLL_MS);
+    }
+  }
+
+  function startTeamWatch(jobId) {
+    resetTeam();
+    addTeamWatch(jobId, false);
+    pollTeam();
+  }
+
+  function scheduleTeamFlush() {
+    if (state.teamFlushTimer) return;
+    state.teamFlushTimer = window.setTimeout(function () {
+      state.teamFlushTimer = 0;
+      flushTeamUpdates();
+    }, TEAM_UPDATE_DELAY);
+  }
+
+  function teamSummary(value, limit) {
+    var text = String(value === undefined || value === null ? '' : value)
+      .replace(/\s+/g, ' ').trim();
+    if (text.length > limit) text = text.slice(0, limit - 1).trim() + '…';
+    return text;
+  }
+
+  function teamQuestions(content) {
+    var parsed;
+    try { parsed = JSON.parse(content || '[]'); } catch (e) { parsed = content; }
+    if (typeof parsed === 'string') parsed = [parsed];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(function (question) { return String(question).trim(); })
+      .filter(function (question) { return !!question; }).slice(0, 3);
+  }
+
+  function teamChild(content) {
+    try {
+      var info = JSON.parse(content || '{}');
+      var id = Number(info && info.job_id);
+      return id && !isNaN(id) ? id : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  function queueTeamUpdate(kind, jobId, spoken, note) {
+    state.teamQueue.push({ kind: kind, jobId: jobId, spoken: spoken, note: note });
+    flushTeamUpdates();
+  }
+
+  function queueTeamQuestion(watch, questions) {
+    var listed = questions.map(function (question, index) {
+      return (index + 1) + '. ' + question;
+    }).join('\n');
+    queueTeamUpdate(
+      'question', watch.id,
+      '[Team update - internal, from the team you delegated to. Do not call delegate_to_team. ' +
+      'The team cannot continue until the user answers. Read these questions to the user as one ' +
+      'short numbered list, then wait. Do not answer for the user. When the user answers, call ' +
+      'answer_team_question with their full answer.\n' + listed,
+      'The team needs answers:\n' + listed);
+  }
+
+  // A question/result must not land while the voice is still talking. clientContent is a user
+  // turn, so sending it early cuts off the sentence that was about to explain what happened.
+  function flushTeamUpdates() {
+    if (!state.teamQueue.length) return;
+    if (!state.settled || !state.ws || state.ws.readyState !== 1) return;
+    if (state.phase !== 'listening') return;
+    if (state.team.awaitingAnswer) return;
+    if (state.player && state.player.busy && state.player.busy()) {
+      scheduleTeamFlush();
+      return;
+    }
+    var item = state.teamQueue.shift();
+    var sent = send({ clientContent: {
+      turns: [{ role: 'user', parts: [{ text: item.spoken }] }],
+      turnComplete: true
+    }});
+    if (!sent) {
+      state.teamQueue.unshift(item);
+      return;
+    }
+    appendSystemNote(item.note);
+    if (item.kind === 'question') state.team.awaitingAnswer = true;
+    // The voice is about to read this. If the model sends no audio, turnComplete still comes
+    // back and the next queued update can move.
+    setPhase('thinking', 'Team update…', 'The team has news.');
+  }
+
+  function markTeamLost(watch, status) {
+    if (watch.done) return;
+    watch.done = true;
+    var hint = status ? ' (' + status + ')' : '';
+    queueTeamUpdate(
+      'failed', watch.id,
+      '[Team update - internal. I lost contact with job #' + watch.id + hint + '. Tell the ' +
+      'user plainly and suggest opening Jobs or the Assistant. Do not call a tool.',
+      'I lost track of job #' + watch.id + hint + '. Open Jobs or the Assistant to see it.');
+  }
+
+  function finishTeamJob(watch) {
+    if (watch.resultSent) return;
+    watch.resultSent = true;
+    var status = watch.status || 'done';
+    if (status === 'failed' || status === 'cancelled') {
+      var label = status === 'cancelled' ? 'cancelled' : 'failed';
+      var reason = teamSummary(watch.error || watch.lastMessage, 900) || 'No reason was given.';
+      queueTeamUpdate(
+        'failed', watch.id,
+        '[Team update - internal. The team ' + label + ' job #' + watch.id + '. Tell the user ' +
+        'plainly what happened and suggest opening Jobs or the Assistant. Do not call a tool. ' +
+        'Reason: ' + reason,
+        'The team ' + label + ' job #' + watch.id + ': ' + reason);
+      return;
+    }
+    var text = teamSummary(watch.lastMessage || watch.result, 1200);
+    if (!text) text = 'The job finished without leaving a message.';
+    queueTeamUpdate(
+      'done', watch.id,
+      '[Team update - internal. The team finished job #' + watch.id + '. Tell the user the ' +
+      'result in two short sentences and mention the job number. Do not call a tool. Result: ' +
+      text,
+      'The team finished job #' + watch.id + ': ' + text);
+  }
+
+  function consumeTeam(watch, data) {
+    var events = data.events || [];
+    events.forEach(function (event) {
+      var seq = Number(event.seq) || 0;
+      if (seq > watch.after) watch.after = seq;
+      var content = event.content === undefined || event.content === null
+        ? '' : String(event.content);
+      if (event.type === 'error' && content) watch.error = content;
+      if (event.type === 'message' && content) watch.lastMessage = content;
+      if (event.source === 'Manager' && event.type === 'child_job') {
+        var childId = teamChild(content);
+        if (childId && childId !== watch.id && !state.team.jobs[childId]) {
+          addTeamWatch(childId, true);
+          watch.children.push(childId);
+        }
+      }
+      if (!watch.isChild && event.source === 'Manager' && event.type === 'question' &&
+          !watch.questionSent) {
+        watch.questionSent = true;
+        var questions = teamQuestions(content);
+        if (questions.length) {
+          queueTeamQuestion(watch, questions);
+        } else {
+          queueTeamUpdate(
+            'question', watch.id,
+            '[Team update - internal. The team has a question, but it could not be read. Ask ' +
+            'the user to open Jobs or the Assistant to see it. Do not call a tool.',
+            'The team has a question for you. Open Jobs or the Assistant to see it.');
+        }
+        watch.done = true;
+      }
+    });
+    if (watch.done) return;
+    var job = data.job || {};
+    if (job.status) watch.status = String(job.status);
+    if (job.error) watch.error = String(job.error);
+    if (job.result) watch.result = String(job.result);
+    if (['done', 'failed', 'cancelled'].indexOf(watch.status) === -1) return;
+    watch.done = true;
+    if (watch.questionSent) return;
+    if (watch.isChild) {
+      finishTeamJob(watch);
+      return;
+    }
+    // The manager's "Started job #N" is a hand-off, not the end of the work. The child jobs
+    // below it will speak the actual completion, so do not announce the hand-off as final.
+    if (watch.children.length && watch.status === 'done') return;
+    finishTeamJob(watch);
+  }
+
+  function pollTeamApprovals(generation) {
+    var watched = {};
+    Object.keys(state.team.jobs).forEach(function (key) {
+      var watch = state.team.jobs[key];
+      if (watch && !watch.done) watched[String(watch.id)] = true;
+    });
+    if (!Object.keys(watched).length) return;
+    fetch('/api/approvals?status=pending', { credentials: 'same-origin' })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; });
+      })
+      .then(function (data) {
+        if (state.team.generation !== generation) return;
+        (data.approvals || []).forEach(function (approval) {
+          var jobId = String(approval.job_id || '');
+          if (!watched[jobId] || state.team.approvals[approval.id]) return;
+          state.team.approvals[approval.id] = true;
+          var summary = teamSummary(approval.summary || approval.tool || 'a team action', 300);
+          queueTeamUpdate(
+            'approval', Number(jobId),
+            '[Team update - internal. The team is waiting for the user\'s approval to ' +
+            summary + '. Tell the user briefly to open Approvals and approve or deny it. ' +
+            'Never approve it yourself and do not call a tool.',
+            'The team needs your approval to ' + summary + '. Open Approvals to decide.');
+        });
+      })
+      .catch(function () { /* an approval poll is not worth an error message */ });
+  }
+
+  function pollTeam() {
+    if (state.team.polling) return;
+    var watches = activeTeamWatches();
+    if (!watches.length) { stopTeamTimer(); return; }
+    state.team.polling = true;
+    var generation = state.team.generation;
+    var chain = Promise.resolve();
+    watches.forEach(function (watch) {
+      chain = chain.then(function () {
+        if (state.team.generation !== generation || state.team.jobs[watch.id] !== watch ||
+            watch.done) return null;
+        var url = '/api/jobs/' + watch.id + '/events?after=' + watch.after;
+        return fetch(url, { credentials: 'same-origin' })
+          .then(function (response) {
+            return response.json().catch(function () { return {}; })
+              .then(function (data) {
+                return { ok: response.ok, status: response.status, data: data };
+              });
+          })
+          .then(function (result) {
+            if (state.team.generation !== generation ||
+                state.team.jobs[watch.id] !== watch) return;
+            if (!result.ok) {
+              if (result.status === 401 || result.status === 404) {
+                markTeamLost(watch, result.status);
+              } else {
+                watch.failures += 1;
+                if (watch.failures >= 4) markTeamLost(watch, result.status);
+              }
+              return;
+            }
+            watch.failures = 0;
+            consumeTeam(watch, result.data || {});
+          })
+          .catch(function () {
+            if (state.team.generation !== generation) return;
+            watch.failures += 1;
+            if (watch.failures >= 4) markTeamLost(watch, 0);
+          });
+      });
+    });
+    chain.then(finishPoll, finishPoll);
+    function finishPoll() {
+      if (state.team.generation !== generation) return;
+      state.team.polling = false;
+      state.team.ticks += 1;
+      if (state.team.ticks % TEAM_APPROVALS_EVERY === 0) pollTeamApprovals(generation);
+      if (!activeTeamWatches().length) stopTeamTimer();
+    }
+  }
+
+  function relay(call) {
+    var isAnswer = call.name === 'answer_team_question';
+    if (isAnswer && !state.team.awaitingAnswer) {
+      // The model may try to answer before the team's question actually reached the user.
+      // Do not turn that guess into a job; the server would refuse it too.
+      var noQuestion = 'The team is not waiting for an answer.';
+      appendSystemNote(noQuestion);
+      sendToolResponse(call, noQuestion);
+      return;
+    }
+    var detail = isAnswer
+      ? ((call.args && (call.args.answers || call.args.answer)) || '')
+      : ((call.args && call.args.instruction) || '');
+    // A successful tool response starts a new watch, which clears the previous wait. Keeping
+    // the wait on a network failure lets the user answer the still-pending team question
+    // again instead of locking the voice out of it.
+    appendSystemNote(isAnswer
+      ? 'Passing your answer to the team…'
+      : (detail ? 'On it: ' + detail : 'Handing that to the team…'));
     var turnId = state.sessionId + ':' + (call.id || stableId(call));
     state.calls += 1;
+    var generation = state.generation;
 
     var options = {
       method: 'POST',
@@ -786,15 +1135,20 @@
         return { ok: response.ok, data: data };
       });
     }).then(function (result) {
+      if (generation !== state.generation) return;
       var data = result.data || {};
       var message = data.message || data.error ||
         (result.ok ? 'The team has it.' : 'The team could not take that request.');
-      if (data.job_id && state.opts.onJob) {
-        try { state.opts.onJob(data.job_id, message); } catch (e) { /* a hook is not the product */ }
+      if (data.job_id) {
+        if (state.opts.onJob) {
+          try { state.opts.onJob(data.job_id, message); } catch (e) { /* a hook is not the product */ }
+        }
+        startTeamWatch(data.job_id);
       }
       appendSystemNote(message);
       sendToolResponse(call, message);
     }).catch(function (error) {
+      if (generation !== state.generation) return;
       var message = (error && error.name === 'AbortError')
         ? 'The team did not answer in time - say so, and suggest typing it.'
         : 'The team could not be reached - say so, and suggest typing it.';
@@ -802,7 +1156,7 @@
       sendToolResponse(call, message);
     }).then(function () {
       if (timer) window.clearTimeout(timer);
-      if (state.phase === 'thinking') {
+      if (generation === state.generation && state.phase === 'thinking') {
         setPhase('thinking', PHASES.thinking, 'Waiting for the voice to pick it up.');
       }
     });
@@ -815,6 +1169,7 @@
     if (isLive()) { restore(); return Promise.resolve(true); }
     if (state.phase === 'error') teardownTransport();
     teardownAudio();
+    resetTeam();
 
     state.opts = options || {};
     state.session = null;
@@ -882,6 +1237,7 @@
   function stop() {
     state.intentional = true;
     state.generation += 1;
+    resetTeam();
     teardownTransport();
     hideAll();
     setPhase('idle');
@@ -923,7 +1279,8 @@
       'settled: ' + state.settled,
       'close: ' + (state.closeInfo || 'none'),
       'error: ' + (state.lastError || 'none'),
-      'turns: ' + state.turns.length
+      'turns: ' + state.turns.length,
+      'team jobs: ' + (Object.keys(state.team.jobs).join(', ') || 'none')
     ].join('\n');
   }
 

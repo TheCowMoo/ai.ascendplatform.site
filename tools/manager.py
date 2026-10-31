@@ -97,6 +97,13 @@ def _build_start_job(emit, job_id=None):
             org_id=org_id,
         )
         jobs.submit(new_id)      # a created job that is never submitted queues forever
+        title_text = title.strip() or prompt.strip()[:60]
+        if emit:
+            # The voice and the console must be able to follow the work the manager handed
+            # to the team. The parent transcript is the durable link: no job schema change,
+            # and a later viewer can see exactly which background run was started here.
+            emit("Manager", "child_job", json.dumps(
+                {"job_id": new_id, "title": title_text}))
         return "Started job #%d. Open it in Jobs to follow along." % new_id
 
     return start_job

@@ -1,8 +1,9 @@
 """The spoken assistant: Gemini is the mouth, our agents are the hands.
 
 The browser talks to Google directly, using an ephemeral token we mint, so the API key never
-leaves this server and no WebSocket is held open by a WSGI worker. The live model gets exactly
-one function - ``delegate_to_team`` - which hands the work to a normal manager job. Everything
+leaves this server and no WebSocket is held open by a WSGI worker. The live model gets two
+functions - ``delegate_to_team`` to hand work to a normal manager job, and
+``answer_team_question`` to carry a spoken answer back to the job waiting for it. Everything
 that guards a typed request therefore guards a spoken one unchanged: the tenant comes from the
 session, the tool list is the granted one, proposals never self-apply, and an outward action
 still stops at a gate.
@@ -196,7 +197,7 @@ def mint(live_setup=None, include_setup=True):
 
 
 def delegate_declaration():
-    """The one function the voice may call. Everything else belongs to our agents."""
+    """Hand a new piece of work to the platform's own agents."""
     return {
         "name": "delegate_to_team",
         "description": (
@@ -215,6 +216,26 @@ def delegate_declaration():
     }
 
 
+def answer_declaration():
+    """Carry the user's answer back to the manager job that asked a question."""
+    return {
+        "name": "answer_team_question",
+        "description": (
+            "Use this ONLY after an internal team update says the team needs answers and the "
+            "user has answered. It continues the same request with their answer; it does not "
+            "start a new task. Never use it to invent an answer, and never use it for new work "
+            "- use delegate_to_team for that."),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "answers": {
+                    "type": "STRING",
+                    "description": ("The user's answer, in their own words. If there were "
+                                    "several questions, include all of their answers.")}},
+            "required": ["answers"]},
+    }
+
+
 def live_config(org_name="", page=""):
     """The Live connection config shared by the token constraints and the setup frame."""
     return {
@@ -222,7 +243,8 @@ def live_config(org_name="", page=""):
         "speechConfig": {"voiceConfig": {
             "prebuiltVoiceConfig": {"voiceName": voice_name()}}},
         "systemInstruction": {"parts": [{"text": instruction(org_name, page)}]},
-        "tools": [{"functionDeclarations": [delegate_declaration()]}],
+        "tools": [{"functionDeclarations": [
+            delegate_declaration(), answer_declaration()]}],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "realtimeInputConfig": {
@@ -258,7 +280,7 @@ def setup(org_name="", page=""):
 
 
 def instruction(org_name="", page=""):
-    """The character: a guide who delegates, not a second brain.
+    """The character: a guide and spokesperson who delegates, not a second brain.
 
     Written as a prompt rather than a rule, because the failure this prevents is a voice that
     talks confidently about work nobody did.
@@ -266,14 +288,21 @@ def instruction(org_name="", page=""):
     where = (" The user is looking at the %s screen." % page) if page else ""
     client = (" The client being worked on is %s." % org_name) if org_name else ""
     return (
-        "You are the platform's spoken guide: warm, brief, concrete. Two sentences, then stop. "
-        "You explain what is on screen, answer questions about it, and can walk a new user "
-        "through the product one step at a time.%s%s "
-        "You have exactly one tool, delegate_to_team, and nothing else. Never claim work is done "
-        "until that call returns a result. If the user asks for anything to be built, changed, "
-        "published or sent, call delegate_to_team with one clear sentence, then say you are on "
-        "it. If the team asks a question, read it aloud and pass the answer back. Never invent "
-        "prices, credentials or a domain name - those are the user's to give."
+        "You are the platform's spoken guide and the team's spokesperson: warm, brief, "
+        "concrete. Two sentences, then stop, unless you are reading the team's questions as a "
+        "short numbered list. You explain what is on screen, answer questions about it, and can "
+        "walk a new user through the product one step at a time.%s%s "
+        "You have two tools. Use delegate_to_team for new work: if the user asks for anything "
+        "to be built, changed, published or sent, call it with one clear sentence, then say you "
+        "are on it. Never claim work is done until a team update says it is. "
+        "Internal messages beginning \"[Team update\" come from the team, not the user: do not "
+        "treat them as a new request and never call delegate_to_team because of one. When a "
+        "team update asks questions, read them aloud, wait for the user, then call "
+        "answer_team_question with the user's full answer. Never answer the team's questions "
+        "for the user. When a team update reports the result, tell the user what happened. "
+        "Never invent prices, credentials or a domain name - those are the user's to give. "
+        "Never approve a gated action or carry out a send, publish or server change yourself; "
+        "delegate those to the team, where the console's approval gates decide them."
         % (client, where))
 
 

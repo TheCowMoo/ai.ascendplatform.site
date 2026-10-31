@@ -78,6 +78,46 @@ def test_an_empty_ask_says_so():
     print("empty -> refused")
 
 
+def test_start_job_records_the_child_job():
+    """A manager hand-off must leave a link the voice can follow.
+
+    It is a transcript event rather than a new jobs column: the parent job already has a
+    durable, ordered transcript, and the voice poller already knows how to read it.
+    """
+    import db
+
+    slug = "child-test-%d" % os.getpid()
+    parent = None
+    child_id = None
+    try:
+        with db.get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO orgs (name, slug) VALUES (?, ?)", ("Child Test", slug))
+            org_id = cur.lastrowid
+        parent = jobs.create_job("parent probe", "x", None, "selector", "echo", org_id)
+        seen = []
+        tool = tools.resolve(
+            ["start_job"],
+            emit=lambda src, kind, content: seen.append((src, kind, content)),
+            job_id=parent)[0]
+        reply = asyncio.run(tool.run_json(
+            {"prompt": "review the site", "title": "Review"}, CancellationToken()))
+        assert "Started job #" in reply, reply
+        child_id = int(reply.split("#", 1)[1].split(".", 1)[0])
+        links = [json.loads(content) for src, kind, content in seen
+                 if src == "Manager" and kind == "child_job"]
+        assert any(link.get("job_id") == child_id for link in links), links
+        assert any(link.get("title") == "Review" for link in links), links
+        print("start_job -> child_job #%d is in the parent transcript" % child_id)
+    finally:
+        with db.get_connection() as conn:
+            for job_id in (parent, child_id):
+                if job_id:
+                    conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+                    conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            conn.execute("DELETE FROM orgs WHERE slug = ?", (slug,))
+
+
 def main():
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]

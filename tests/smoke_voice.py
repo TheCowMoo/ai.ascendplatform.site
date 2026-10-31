@@ -1,8 +1,9 @@
 """The spoken assistant: Gemini is the mouth, our agents are the hands.
 
 What is tested is the boundary, not the audio: a token minted server-side, a status that says
-*why* the microphone is missing, and a delegation route that can only ever start a normal
-manager job. Audio never enters these tests because it never enters this server.
+*why* the microphone is missing, a delegation route that can only ever start a normal manager
+job, and the answer route that continues the job which asked a question. Audio never enters
+these tests because it never enters this server.
 """
 
 import os
@@ -52,10 +53,11 @@ def test_status_tells_the_truth():
         voice.api_key = original
 
 
-def test_setup_declares_one_tool():
+def test_setup_declares_team_tools():
     setup = voice.setup()["setup"]
     names = [item["name"] for item in setup["tools"][0]["functionDeclarations"]]
-    check("the voice has exactly one tool", names, ["delegate_to_team"])
+    check("the voice can delegate and answer", names,
+          ["delegate_to_team", "answer_team_question"])
     check("it asks for audio back", setup["generationConfig"]["responseModalities"], ["AUDIO"])
     check("it asks for the user's words", setup.get("inputAudioTranscription"), {})
     check("it asks for its own words", setup.get("outputAudioTranscription"), {})
@@ -65,6 +67,11 @@ def test_setup_declares_one_tool():
     check("the instruction forbids claiming work it did not do",
           "Never claim work is done" in text, True)
     check("and forbids inventing credentials", "Never invent" in text, True)
+    check("the instruction explains internal team updates",
+          "[Team update" in text, True)
+    check("the instruction names the answer tool",
+          "answer_team_question" in text, True)
+    check("and forbids the voice approving writes", "Never approve" in text, True)
 
 
 def test_the_setup_can_be_diagnosed():
@@ -307,9 +314,10 @@ def test_the_routes():
               ".v1beta." in (data.get("endpoint") or ""), True)
         check("the session names the model it will use", data.get("model"), voice.model())
         check("the session names its api version", data.get("api_version"), voice.api_version())
-        check("the setup carries the tool",
-              data["setup"]["setup"]["tools"][0]["functionDeclarations"][0]["name"],
-              "delegate_to_team")
+        check("the setup carries the tools",
+              [item["name"] for item in
+               data["setup"]["setup"]["tools"][0]["functionDeclarations"]],
+              ["delegate_to_team", "answer_team_question"])
 
         voice.model_availability = lambda: {
             "ok": False, "checked": True, "model": voice.model(),
@@ -343,14 +351,23 @@ def test_the_routes():
         voice.model_availability = original_availability
 
     bad = client.post("/api/voice/tool", json={"name": "create_form", "args": {}})
-    check("only delegate_to_team may be called", bad.status_code, 403)
+    check("only the two voice tools may be called", bad.status_code, 403)
     empty = client.post("/api/voice/tool", json={"name": "delegate_to_team", "args": {}})
     check("an empty instruction is refused", empty.status_code, 400)
+    no_answer = client.post("/api/voice/tool",
+                            json={"name": "answer_team_question", "args": {}})
+    check("an empty answer is refused", no_answer.status_code, 400)
 
-    # The delegation route now refuses before creating a job when no chat provider is
-    # configured; this test is about the route, not the deployment's keys, so provide one.
+    # The delegation route refuses before creating a job when no chat provider is configured;
+    # this test is about the route, not the deployment's keys, so provide one before the
+    # calls that need to get past that guard.
     original_providers = llm.configured_providers
     llm.configured_providers = lambda: ["deepseek"]
+    no_pending = client.post("/api/voice/tool",
+                             json={"name": "answer_team_question",
+                                   "args": {"answers": "A bakery"}})
+    check("answering without a pending team question is refused",
+          no_pending.status_code, 409)
 
     orgs = client.get("/api/orgs").get_json().get("orgs") or []
     if orgs:
@@ -368,15 +385,54 @@ def test_the_routes():
         after = conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE title = 'Voice request'"
                              ).fetchone()["n"]
         rows = conn.execute("SELECT task, org_id FROM jobs WHERE id = ?", (job_id,)).fetchall()
-        conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     check("one job was created", after - before, 1)
     check("it is a chat job, the same as typing", [row["task"] for row in rows], ["chat"])
+
+    early = client.post("/api/voice/tool",
+                        json={"name": "answer_team_question", "turn_id": "turn-2",
+                              "args": {"answers": "For a bakery's customers"}})
+    check("answering before the team asks is refused", early.status_code, 409)
+
+    question = "Who is the trip for?"
+    answer = "For a bakery's customers"
+    import jobs as jobs_service  # noqa: E402 - only this route test needs the fixture
+
+    jobs_service.add_event(job_id, "Manager", "question", json.dumps([question]))
+    answered = client.post("/api/voice/tool",
+                           json={"name": "answer_team_question", "turn_id": "turn-3",
+                                 "args": {"answers": answer}})
+    check("a pending question accepts an answer", answered.status_code, 202)
+    answer_data = answered.get_json() or {}
+    follow_id = answer_data.get("job_id")
+    check("the answer continues in a new job", bool(follow_id) and follow_id != job_id, True)
+    check("and says it is continuing", answer_data.get("continued"), True)
+    follow = {}
+    prompt = ""
+    if follow_id:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT title, task, prompt, org_id FROM jobs WHERE id = ?", (follow_id,)
+            ).fetchone()
+            follow = dict(row) if row else {}
+            prompt = str(follow.get("prompt") or "")
+    check("the follow-up is a manager turn", follow.get("task"), "chat")
+    check("it has its own title", follow.get("title"), "Voice follow-up")
+    check("it keeps the original request", "build a trip quiz" in prompt, True)
+    check("it carries the question", question in prompt, True)
+    check("and the spoken answer", answer in prompt, True)
 
     again = client.post("/api/voice/tool",
                         json={"name": "delegate_to_team", "turn_id": "turn-1",
                               "args": {"instruction": "build a trip quiz"}})
     check("the same turn is not run twice", (again.get_json() or {}).get("duplicate"), True)
+
+    with db.get_connection() as conn:
+        ids = [job_id]
+        if follow_id:
+            ids.append(follow_id)
+        conn.execute("DELETE FROM job_events WHERE job_id IN (?, ?)",
+                     (ids[0], ids[-1]))
+        conn.execute("DELETE FROM jobs WHERE id IN (?, ?)", (ids[0], ids[-1]))
     llm.configured_providers = original_providers
 
 
@@ -413,6 +469,20 @@ def test_the_browser_half_is_wired():
     check("mic audio is 16 kHz pcm", "audio/pcm;rate=16000" in client_js, True)
     check("barge-in silences the queue", "content.interrupted" in client_js, True)
     check("a tool call is relayed to our route", "'/api/voice/tool'" in client_js, True)
+    check("the browser follows the job it started", "/api/jobs/" in client_js, True)
+    check("it injects a team update into the Live session",
+          "clientContent" in client_js, True)
+    check("it reads the Manager's questions",
+          "event.type === 'question'" in client_js, True)
+    check("it can answer them with the second tool",
+          "answer_team_question" in client_js, True)
+    check("it follows a background child job", "child_job" in client_js, True)
+    check("it announces a pending approval without approving it",
+          "/api/approvals?status=pending" in client_js, True)
+    check("it waits for the spoken turn to finish before injecting",
+          "flushTeamUpdates" in client_js, True)
+    check("and marks internal updates so they are not user turns",
+          "[Team update" in client_js, True)
     check("the mic is asked for before a token is minted",
           client_js.index("getUserMedia") < client_js.index("/api/voice/session"), True)
     check("both sides are analysed", "createAnalyser" in client_js, True)
@@ -448,7 +518,7 @@ def test_the_browser_half_is_wired():
 
 if __name__ == "__main__":
     test_status_tells_the_truth()
-    test_setup_declares_one_tool()
+    test_setup_declares_team_tools()
     test_the_setup_can_be_diagnosed()
     test_real_live_model_list_path()
     test_live_model_and_token_constraints()
@@ -459,4 +529,5 @@ if __name__ == "__main__":
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)
-    print("\nVOICE OK - the key stays here, the token expires, and the voice can only delegate")
+    print("\nVOICE OK - the key stays here, the token expires, and the voice can ask "
+          "and answer")
