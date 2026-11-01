@@ -83,8 +83,10 @@ def test_gateway_mode():
     assert info["models"]["anthropic"] == "anthropic/claude-sonnet-4-5"
     assert info["models"]["prefixed"] == "gemini/gemini-2.5-flash"  # already prefixed
     assert info["models"]["blank"] == ""
-    # One client class for every provider, pointed at the gateway.
-    assert info["client_type"] == "OpenAIChatCompletionClient", info["client_type"]
+    # One OpenAI-compatible client family for every provider, pointed at the gateway.
+    # It is the metered subclass, so the name carries the wrapper as well as the base.
+    assert info["client_type"] in ("OpenAIChatCompletionClient", "MeteredOpenAIClient"), \
+        info["client_type"]
     assert GATEWAY in info["base_url"], info["base_url"]
     print("GATEWAY MODE OK")
 

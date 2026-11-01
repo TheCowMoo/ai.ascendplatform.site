@@ -63,7 +63,9 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `settings.py` | SPEC of every setting, panel→env→default resolution, `all_for_ui(org_id)` (client sees only `scope=client`), write guard, audit history, per-group live tests |
 | `orgs.py` | Tenants (clients) + their users; `client_admin` / `client_member` / `owner` |
 | `profile.py` | Business Profile per org — the brand facts the agents write from |
-| `llm.py` | `PROVIDERS` (the single source of truth for capabilities), `get_model_client()`, `_clean_messages()` + `without_empty_blocks()` payload repair for Anthropic |
+| `llm.py` | `PROVIDERS` (the single source of truth for capabilities), `get_model_client()`, `_clean_messages()` + `without_empty_blocks()` payload repair for Anthropic. Also wraps the SDK response to capture the raw usage AutoGen folds away, and returns metered client subclasses. |
+| `rates.py` | The price list in dollars per 1M tokens / minute / image; `price_model`, `price_unit`, `missing_rates`, `python -m rates import <file>`. |
+| `usage.py` | Normalises each provider's usage into four buckets, writes `usage_events` and the credit ledger, `bind()` for job attribution, `guard()` for enforcement, `summary`/`reconcile`/`job_cost`, `python -m usage calibrate`. |
 | `agents.py` | Roster (`DEFAULT_ROSTER`), seeding, `build_team()`, `run_team()`, `system_message_for()`, `unique_name()`, `guard_tools_supported()` |
 | `tools/` | `register()`/`resolve()` registry: `site`, `pexels`, `media`, `mail`, `deliverable`, `policy`, `ssh` |
 | `jobs.py` | Job rows, events, artifacts, `TASKS` registry, runners. `submit()` enqueues to arq from a request thread *and* from inside a running job: a child job submitted by `start_job` or an automation node gets a second loop in a short-lived thread, because `asyncio.run` raises there. A failed enqueue now names its reason in the transcript. |
@@ -439,6 +441,81 @@ finishes - it is not a token stream. A rename through `save_deliverable` does no
 names the draft's current kind and `save_deliverable` prefers the kind the prompt asked
 for. Typing an answer to a *voice* question starts a new
 manager turn with the question and the draft, not the original brief.
+
+## Usage & credits (2026-11-01, phase 1: meter only)
+
+Every billable call is recorded with the token split the provider actually billed, and
+priced from a rate card in **dollars**. Phase 1 is shadow mode: nothing is blocked, no
+UI yet. The point is to see real numbers for a week before anyone is charged.
+
+**Units.** `1 credit = $0.001`; the database stores **milli-credits** ($0.000001) so a
+cheap call never rounds to zero. Rates are dollars per 1M tokens / per minute / per
+image, because that is what the provider dashboard shows. With tokens and dollars both
+per million, `milli = tokens x dollars_per_1M`.
+
+**Which tokens.** Providers disagree, so `usage.normalise_openai` / `normalise_anthropic`
+produce four buckets - `input_uncached`, `input_cached`, `cache_write`, `output` -
+plus `reasoning` (recorded, already inside output for OpenAI). Anthropic's
+`input_tokens` excludes cache reads/writes; OpenAI's `prompt_tokens` includes the cached
+subset; DeepSeek reports `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`. Folding
+them into one total overcharges every cache-read call.
+
+**Where the raw numbers come from.** AutoGen 0.7.5 keeps only
+`RequestUsage(prompt_tokens, completion_tokens)` and discards cache fields, reasoning and
+the returned model name. So `llm.py` wraps the SDK resource itself:
+
+* `_instrument_openai_client` wraps `client._client.chat.completions.create` (and the
+  beta `parse`); a stream is teed through `_tee_openai_stream` to read the final chunk's
+  `usage` and `model`.
+* `_patch_anthropic_client` (which already sanitised empty blocks) now also reads
+  `message_start.message.usage` (input + both cache fields) and `message_delta.usage`
+  (output) on a stream, or `response.usage`/`response.model` otherwise.
+* Metered subclasses (`_MeteredMixin` + `_metered_openai_class` /
+  `_metered_anthropic_class`) are built inside `get_model_client`, so every agent, the
+  Manager and the selector are covered without touching their code. `agents.build_team`
+  passes `usage_label=<agent name>`; the Manager passes `manager`; the selector `selector`.
+* OpenAI-compatible streams force `stream_options.include_usage`; if a provider rejects
+  it the request is retried once without it and the event is marked `autogen-fallback`.
+  A missing capture also falls back to AutoGen's pair and is marked the same way, so a
+  gap is visible instead of silent (`usage_source`: raw | autogen-fallback | missing).
+
+**Attribution.** `jobs.run_job` wraps the task in `usage.bind(org_id, requester_id,
+job_id)`, so a model call inherits the client and job without the tool knowing either.
+The job transcript ends with `Usage: N credits` (and how many calls are unpriced). Widget
+replies (`app.py`, plain OpenAI SDK) record themselves against the bot's org; voice is
+billed by reserved session minutes (the Live socket is browser→Google, so the server
+never sees audio tokens); `generate_image` records one image.
+
+**Money.** `usage_events` is the record; `credit_ledger` is append-only truth;
+`credit_balances` caches the sum (updated in the same transaction, with an
+IntegrityError fallback for two workers creating the row at once); `rate_card` is the
+price list. The credits a call cost are snapshotted on the event, so editing a rate
+never rewrites history. `usage.reconcile(org)` asserts ledger == cached balance.
+
+**Operating it.**
+
+```bash
+python -m usage calibrate                 # one tiny live call per provider: prints the raw split
+python -m rates import rates.json         # fill the card from the dashboard (dollars)
+python -m usage show [org_id]             # balance + spend by kind/provider/model/agent
+python -m usage grant <org_id> <credits> [note]
+```
+
+`USAGE_ENFORCE` is `shadow` (default) | `warn` | `hard`. A client with **no balance row**
+is not on the credit system and is never blocked; `hard` only refuses at zero for a
+client that has a ledger. An unpriced model records `credits_milli NULL` and appears in
+`rates.missing_rates()` - it is never priced at a default.
+
+**Guards.** `tests/test_usage.py` (preflight) pins the three provider shapes, the
+four-bucket price, cache-aware totals, the zero-rate fallback, missing-rate flagging,
+the ledger/balance agreement, attribution via `bind`, enforcement modes, the voice/image
+units, and the SDK wrappers (non-stream, stream, Anthropic cache fields, meter
+fallback). `test_db_dialect` and `test_migrations` include migration
+`0021_usage_credits`; `smoke_llm_gateway` accepts the metered client type.
+
+**Next (phase 2):** the client Usage page and operator ledger/adjust UI, plan allowances
+per `orgs.plan`, top-ups, the reconciliation report against provider invoices, and
+`hard` enforcement once the numbers are trusted.
 
 ## Voice — the spoken assistant (2026-10-30)
 

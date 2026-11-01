@@ -91,6 +91,14 @@ def _build_generate_image(emit, job_id=None):
 
         if not save_inline_image(response, path):
             return "The model returned no image data."
+        # One image is one billable unit; the rate card prices it per image.
+        try:
+            import usage as usage_service
+
+            usage_service.record_image(provider="gemini", model=model(), count=1,
+                                       label="generate_image")
+        except Exception:
+            pass          # a broken meter must not lose the image
         return "Generated %s" % path
 
     return generate_image

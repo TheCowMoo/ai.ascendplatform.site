@@ -143,8 +143,8 @@ def is_configured(provider):
     return bool(spec and _resolve_api_key(spec))
 
 
-def _gateway_client(provider, spec, model_name, temperature, extra):
-    """Build an OpenAI-compatible client pointed at the LiteLLM gateway."""
+def _gateway_client(provider, spec, model_name, temperature, extra, label=""):
+    """Build a metered, OpenAI-compatible client pointed at the LiteLLM gateway."""
     try:
         from autogen_core.models import ModelInfo
         from autogen_ext.models.openai import OpenAIChatCompletionClient
@@ -169,7 +169,9 @@ def _gateway_client(provider, spec, model_name, temperature, extra):
     if temperature is not None:
         options["temperature"] = temperature
     options.update(extra)
-    return OpenAIChatCompletionClient(**options)
+    client = _metered_openai_class()(**options)
+    capture = _instrument_openai_client(client)
+    return _decorate_metered(client, provider, model_name, label, capture)
 
 
 def list_providers():
@@ -299,8 +301,265 @@ def _shapes(messages):
     return " ".join(parts)[:600]
 
 
+# ---------------------------------------------------------------------------
+# Usage capture
+#
+# AutoGen folds a provider's usage into RequestUsage(prompt_tokens, completion_tokens)
+# and throws away cache reads, cache writes, reasoning tokens and the model name the
+# provider actually returned. Those are exactly the fields that decide the price, so the
+# SDK resource is wrapped here and the raw figures are kept on the client until the
+# metered subclass has recorded them.
+# ---------------------------------------------------------------------------
+class RawUsage:
+    """One request's raw token split, before it is priced."""
+
+    def __init__(self):
+        self.split = {}
+
+    def record(self, split):
+        if not split:
+            return
+        merged = dict(self.split)
+        merged.update(split)
+        # A later, seen split wins; an empty streaming chunk never erases a real one.
+        if split.get("seen") or not self.split.get("seen"):
+            self.split = merged
+
+    def take(self):
+        split = self.split
+        self.split = {}
+        return split
+
+
+def _split_openai(usage_obj, model, capture):
+    import usage as usage_service
+
+    capture.record(usage_service.normalise_openai(usage_obj, model))
+
+
+def _split_anthropic(usage_obj, model, capture):
+    import usage as usage_service
+
+    capture.record(usage_service.normalise_anthropic(usage_obj, model))
+
+
+async def _close_quietly(stream):
+    close = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception:  # pragma: no cover - closing an already-closed stream
+        pass
+
+
+async def _tee_openai_stream(stream, capture):
+    """Pass chunks through, recording the final usage and the real model name."""
+    try:
+        async for chunk in stream:
+            model = getattr(chunk, "model", None)
+            payload = getattr(chunk, "usage", None)
+            if payload is not None:
+                _split_openai(payload, model or "", capture)
+            elif model and not capture.split.get("model"):
+                capture.split["model"] = str(model)
+            yield chunk
+    finally:
+        await _close_quietly(stream)
+
+
+async def _tee_anthropic_stream(stream, capture):
+    """Anthropic sends input and cache figures on message_start, output on message_delta."""
+    model = ""
+    try:
+        async for event in stream:
+            kind = getattr(event, "type", "")
+            if kind == "message_start":
+                message = getattr(event, "message", None)
+                model = str(getattr(message, "model", "") or model)
+                payload = getattr(message, "usage", None)
+                if payload is not None:
+                    _split_anthropic(payload, model, capture)
+            elif kind == "message_delta":
+                payload = getattr(event, "usage", None)
+                output = int(getattr(payload, "output_tokens", 0) or 0) if payload else 0
+                if output:
+                    current = capture.split or {}
+                    current["output"] = output
+                    current["seen"] = True
+                    current["model"] = model or current.get("model", "")
+                    capture.split = current
+            yield event
+    finally:
+        await _close_quietly(stream)
+
+
+def _instrument_openai_client(client):
+    """Wrap the OpenAI-compatible SDK resource. Returns the capture, or None."""
+    capture = RawUsage()
+    sdk = getattr(client, "_client", None)
+    if sdk is None:
+        return None
+    completions = getattr(getattr(sdk, "chat", None), "completions", None)
+    original = getattr(completions, "create", None) if completions is not None else None
+    if original is None:
+        return None
+
+    async def create(*args, **kwargs):
+        response = await original(*args, **kwargs)
+        if kwargs.get("stream"):
+            return _tee_openai_stream(response, capture)
+        _split_openai(getattr(response, "usage", None), getattr(response, "model", ""),
+                      capture)
+        return response
+
+    try:
+        completions.create = create
+    except (AttributeError, TypeError):  # pragma: no cover - slotted resource
+        return None
+
+    # Structured output takes the beta resource. The agent path does not use it today,
+    # but a meter that silently misses one path is worse than one that is visibly partial.
+    beta = getattr(getattr(sdk, "beta", None), "chat", None)
+    beta_completions = getattr(beta, "completions", None) if beta is not None else None
+    beta_original = (getattr(beta_completions, "parse", None)
+                     if beta_completions is not None else None)
+    if beta_original is not None:
+        async def parse(*args, **kwargs):
+            response = await beta_original(*args, **kwargs)
+            _split_openai(getattr(response, "usage", None),
+                          getattr(response, "model", ""), capture)
+            return response
+
+        try:
+            beta_completions.parse = parse
+        except (AttributeError, TypeError):  # pragma: no cover
+            pass
+    return capture
+
+
+def _include_usage_error(exc):
+    """True when the provider refused ``stream_options.include_usage`` itself."""
+    text = str(exc).lower()
+    return "include_usage" in text or "stream_options" in text
+
+
+class _MeteredMixin:
+    """Record every model call on the client AutoGen was given.
+
+    Subclassed, not wrapped: AssistantAgent type-checks its client, which is also why the
+    Anthropic cleanup client is a subclass. Accounting failures are printed by the usage
+    service and never raised - a broken meter must not lose an answer.
+    """
+
+    _usage_provider = ""
+    _usage_model = ""
+    _usage_label = ""
+    _usage_capture = None
+
+    def _usage_guard(self):
+        import usage as usage_service
+
+        usage_service.guard()
+
+    def _usage_record(self, result):
+        import usage as usage_service
+
+        capture = self._usage_capture
+        split = capture.take() if capture is not None else {}
+        source = "raw"
+        if not split.get("seen"):
+            raw = getattr(result, "usage", None) if result is not None else None
+            if raw is not None:
+                split = usage_service.normalise_autogen(raw, self._usage_model)
+                source = "autogen-fallback"
+            else:
+                split = {"model": self._usage_model, "seen": False}
+                source = "missing"
+        usage_service.record_model(
+            provider=self._usage_provider,
+            model_configured=self._usage_model,
+            model_returned=split.get("model") or "",
+            label=self._usage_label,
+            split=split,
+            usage_source=source,
+        )
+
+    async def create(self, *args, **kwargs):
+        self._usage_guard()
+        result = await super().create(*args, **kwargs)
+        self._usage_record(result)
+        return result
+
+
+def _decorate_metered(client, provider, model, label, capture):
+    client._usage_provider = provider
+    client._usage_model = model
+    client._usage_label = label or ""
+    client._usage_capture = capture
+    return client
+
+
+def _metered_openai_class():
+    """A metered subclass of the OpenAI-compatible client, built when AutoGen is present.
+
+    Streaming forces ``stream_options.include_usage``: without it the provider reports no
+    tokens at all. A provider that rejects the flag is retried once without it, and the
+    event is marked ``autogen-fallback`` rather than silently costing nothing.
+    """
+    from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+    class MeteredOpenAIClient(_MeteredMixin, OpenAIChatCompletionClient):
+        async def create_stream(self, *args, **kwargs):
+            self._usage_guard()
+            allow_retry = "include_usage" not in kwargs or kwargs.get(
+                "include_usage") is True
+            kwargs.setdefault("include_usage", True)
+            produced = 0
+            last = None
+            try:
+                try:
+                    async for chunk in super().create_stream(*args, **kwargs):
+                        produced += 1
+                        last = chunk
+                        yield chunk
+                except Exception as exc:
+                    if produced or not allow_retry or not _include_usage_error(exc):
+                        raise
+                    kwargs.pop("include_usage", None)
+                    async for chunk in super().create_stream(*args, **kwargs):
+                        last = chunk
+                        yield chunk
+            finally:
+                self._usage_record(last)
+
+    return MeteredOpenAIClient
+
+
+def _metered_anthropic_class(base):
+    """A metered subclass over the message-cleaning Anthropic client."""
+
+    class MeteredAnthropicClient(_MeteredMixin, base):
+        async def create_stream(self, *args, **kwargs):
+            self._usage_guard()
+            last = None
+            try:
+                async for chunk in super().create_stream(*args, **kwargs):
+                    last = chunk
+                    yield chunk
+            finally:
+                self._usage_record(last)
+
+    return MeteredAnthropicClient
+
+
 def _patch_anthropic_client(client):
-    """Sanitise the request the SDK actually sends, not the messages we hand over."""
+    """Sanitise the request the SDK sends, and keep the usage it returns.
+
+    Returns the client; ``client._usage_capture`` is set when the wrapper installed, so
+    the metered subclass can attach the raw figures to the call it just made.
+    """
+    capture = RawUsage()
     try:
         resource = client._client.messages
         original = resource.create
@@ -312,12 +571,18 @@ def _patch_anthropic_client(client):
         # Fail here, with the index, rather than paying for a 400 that names only a
         # message position and leaves us guessing at the shape.
         assert_valid(kwargs["messages"])
-        return await original(*args, **kwargs)
+        response = await original(*args, **kwargs)
+        if kwargs.get("stream"):
+            return _tee_anthropic_stream(response, capture)
+        _split_anthropic(getattr(response, "usage", None),
+                         getattr(response, "model", ""), capture)
+        return response
 
     try:
         resource.create = create
     except (AttributeError, TypeError):  # pragma: no cover - slotted resource
         return client
+    client._usage_capture = capture
     return client
 
 
@@ -374,9 +639,13 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
 
     model_name = _resolve_model(spec, model)
 
+    # Which agent asked. Recorded on every usage event, so "who cost this" is answerable
+    # without guessing from the job's prompt. Popped here: it is ours, not the client's.
+    label = str(kwargs.pop("usage_label", "") or "")
+
     if gateway_enabled():
         # The gateway holds the provider keys, so no local key is required.
-        return _gateway_client(provider, spec, model_name, temperature, kwargs)
+        return _gateway_client(provider, spec, model_name, temperature, kwargs, label)
 
     api_key = _resolve_api_key(spec)
     if not api_key:
@@ -428,11 +697,13 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
                     ):
                         yield chunk
 
-            return _patch_anthropic_client(CleanMessagesClient(**opts))
+            client = _metered_anthropic_class(CleanMessagesClient)(**opts)
+            client = _patch_anthropic_client(client)
+            return _decorate_metered(client, provider, model_name, label,
+                                     getattr(client, "_usage_capture", None))
 
         # OpenAI-compatible path: DeepSeek and Gemini (no native Gemini client).
         from autogen_core.models import ModelInfo
-        from autogen_ext.models.openai import OpenAIChatCompletionClient
 
         opts = {
             "model": model_name,
@@ -451,7 +722,9 @@ def get_model_client(provider, model=None, temperature=None, **kwargs):
         if temperature is not None:
             opts["temperature"] = temperature
         opts.update(kwargs)
-        return OpenAIChatCompletionClient(**opts)
+        client = _metered_openai_class()(**opts)
+        capture = _instrument_openai_client(client)
+        return _decorate_metered(client, provider, model_name, label, capture)
 
     except ImportError as exc:
         raise ValueError(

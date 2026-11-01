@@ -481,7 +481,8 @@ async def build_team(job, emit, factory):
         missing = tool_registry.unknown(granted)
         if missing:
             emit("system", "system", "Agent '%s' references unknown tools: %s" % (row["name"], ", ".join(missing)))
-        client_kwargs = {}
+        # The label is what makes a usage event say which agent spent it.
+        client_kwargs = {"usage_label": row["name"]}
         if row.get("temperature") is not None:
             client_kwargs["temperature"] = float(row["temperature"])
         model_client = factory(row["provider"], row["model"] or None, **client_kwargs)
@@ -515,7 +516,7 @@ async def build_team(job, emit, factory):
         router_model = (os.environ.get("AGENT_ROUTER_MODEL") or "").strip() or None
         team = SelectorGroupChat(
             participants,
-            model_client=factory(router_provider, router_model),
+            model_client=factory(router_provider, router_model, usage_label="selector"),
             termination_condition=termination,
         )
     return team, participants

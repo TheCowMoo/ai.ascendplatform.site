@@ -235,6 +235,23 @@ class JobRunner:
 # ---------------------------------------------------------------------------
 # Execution (shared by the in-process runner and the arq worker)
 # ---------------------------------------------------------------------------
+def _report_usage(job_id):
+    """Put the run's cost in its own transcript: a job that spent money should say so."""
+    try:
+        import usage
+
+        credits, unpriced = usage.job_cost(job_id)
+        if credits is None:
+            return
+        note = "Usage: %s credits" % credits
+        if unpriced:
+            note += " (%d call(s) unpriced - add a rate)" % unpriced
+        add_event(job_id, "system", "system", note)
+    except Exception as exc:
+        print("[jobs] could not report usage for job %s (%s: %s)"
+              % (job_id, type(exc).__name__, exc))
+
+
 async def run_job(job_id):
     """Execute one job by id. Safe to call from any asyncio loop."""
     job = get_job(job_id)
@@ -255,14 +272,21 @@ async def run_job(job_id):
         add_event(job_id, source, type_, content)
 
     try:
-        output = fn(job, emit)
-        if asyncio.iscoroutine(output):
-            output = await output
+        import usage
+
+        # Everything a model call records while this job runs is attributed to its
+        # client, its requester and its own id; the context is cleared when it ends.
+        with usage.bind(job.get("org_id"), job.get("requester_id"), job_id):
+            output = fn(job, emit)
+            if asyncio.iscoroutine(output):
+                output = await output
         if is_cancelled(job_id):
             add_event(job_id, "system", "system", "Job cancelled")
+            _report_usage(job_id)
             return None
         _mark_finished(job_id, "done", result=str(output or "done"))
         add_event(job_id, "system", "system", "Job finished")
+        _report_usage(job_id)
         return output
     except Exception as exc:
         # Full traceback goes into the transcript (useful in the UI); stdout gets
@@ -271,6 +295,7 @@ async def run_job(job_id):
         print("[job %s] failed: %s: %s" % (job_id, type(exc).__name__, exc))
         add_event(job_id, "system", "error", detail)
         _mark_finished(job_id, "failed", error=str(exc))
+        _report_usage(job_id)          # a failed run still spent what it spent
         return None
 
 

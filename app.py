@@ -1070,6 +1070,23 @@ def generate_reply(bot, user_message, history, conversation_id):
     resp = chat_client.chat.completions.create(
         model=model_name, messages=messages, temperature=0.2, max_tokens=800
     )
+    # The widget reply is billable too, and this path does not go through AutoGen, so it
+    # records its own usage. Recorded before parsing: the tokens were spent either way.
+    try:
+        import usage as usage_service
+
+        split = usage_service.normalise_openai(
+            getattr(resp, "usage", None), getattr(resp, "model", "") or model_name)
+        usage_service.record_model(
+            provider="deepseek", model_configured=model_name,
+            model_returned=split.get("model") or model_name,
+            label="widget:%s" % (bot.get("name") or bot.get("id")),
+            split=split,
+            usage_source="raw" if split.get("seen") else "missing",
+            org_id=bot.get("org_id"),
+        )
+    except Exception:
+        pass          # a broken meter must not break the visitor's reply
     webhook_payload, reply = _extract_webhook_payload(resp.choices[0].message.content)
     if not reply:
         reply = "Got it — thanks!"
@@ -2212,6 +2229,17 @@ def voice_session():
     # not become free minutes. The microphone is opened before this route is called, so a
     # refused permission no longer spends a session.
     voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
+    # The Live socket is browser->Google, so the server never sees audio tokens; the
+    # session's reserved minutes are the stable unit to bill. Charged at mint, like the
+    # daily cap above - a session that ends early is rounded up to its reservation.
+    try:
+        import usage as usage_service
+
+        usage_service.record_voice(org_id=current_org(), user_id=session.get("user_id"),
+                                   seconds=voice.SESSION_SECONDS, provider="gemini",
+                                   model=voice.model(), label="voice")
+    except Exception:
+        pass          # a broken meter must not stop the session
     session["voice_calls"] = 0
     # A new spoken session must not inherit the previous session's answer target. The voice
     # can still ask about the job, but only this session's question may be answered.

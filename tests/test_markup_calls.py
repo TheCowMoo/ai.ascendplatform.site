@@ -96,7 +96,7 @@ def test_chat_task_runs_what_the_model_wrote():
     import autogen_agentchat.agents as agents_module
 
     agents_module.AssistantAgent = FakeAgent
-    llm.get_model_client = lambda provider: None
+    llm.get_model_client = lambda provider, **kwargs: None
     job_id = jobs.create_job("chat", "make a sequence", None, "selector", "chat")
     events = []
     answer = asyncio.run(manager.chat_task(

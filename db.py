@@ -762,6 +762,94 @@ client_settings = Table(
 
 
 # ---------------------------------------------------------------------------
+# Usage and credits (migration 0021)
+# ---------------------------------------------------------------------------
+# Every billable call lands in ``usage_events`` with the token split the provider
+# actually billed. Cached input is separated from uncached input because they are
+# priced differently - folding them together is what makes a meter drift.
+#
+# Money is stored in **milli-credits**: 1 credit = $0.001, 1 milli-credit = $0.000001.
+# With a rate expressed in dollars per 1M tokens, the arithmetic collapses to
+# ``milli = tokens x dollars``, so a cheap call does not round to zero.
+usage_events = Table(
+    "usage_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),
+    Column("user_id", Integer),
+    Column("job_id", Integer),
+    Column("kind", Text, nullable=False, server_default=_literal("model")),
+    Column("provider", Text, nullable=False, server_default=_literal("")),
+    Column("model_configured", Text, nullable=False, server_default=_literal("")),
+    Column("model_returned", Text, nullable=False, server_default=_literal("")),
+    Column("label", Text, nullable=False, server_default=_literal("")),
+    Column("input_uncached", Integer, nullable=False, server_default=text("0")),
+    Column("input_cached", Integer, nullable=False, server_default=text("0")),
+    Column("cache_write", Integer, nullable=False, server_default=text("0")),
+    Column("output_tokens", Integer, nullable=False, server_default=text("0")),
+    Column("reasoning_tokens", Integer, nullable=False, server_default=text("0")),
+    Column("quantity", Integer, nullable=False, server_default=text("0")),
+    Column("unit", Text, nullable=False, server_default=_literal("tokens")),
+    Column("usage_source", Text, nullable=False, server_default=_literal("raw")),
+    Column("credits_milli", Integer),          # NULL = no rate for this model yet
+    Column("rate_json", Text, nullable=False, server_default=_literal("")),
+    Column("meta_json", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+Index("idx_usage_events_org", usage_events.c.org_id, usage_events.c.created_at)
+Index("idx_usage_events_job", usage_events.c.job_id)
+
+# Append-only money. The balance below is a cache of SUM(delta_milli); the ledger is
+# the truth, and a balance that disagrees with it can be rebuilt.
+credit_ledger = Table(
+    "credit_ledger",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("delta_milli", Integer, nullable=False, server_default=text("0")),
+    Column("reason", Text, nullable=False, server_default=_literal("adjustment")),
+    Column("usage_id", Integer),
+    Column("actor_id", Integer),
+    Column("note", Text, nullable=False, server_default=_literal("")),
+    Column("period", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+Index("idx_credit_ledger_org", credit_ledger.c.org_id, credit_ledger.c.created_at)
+
+# A row existing is what "this client has credits" means. No row = not on the credit
+# system yet, which is why enforcement never blocks a deployment that has not granted
+# anything.
+credit_balances = Table(
+    "credit_balances",
+    metadata,
+    Column("org_id", Integer, primary_key=True),
+    Column("balance_milli", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+# Rates are dollars, because that is what the provider dashboard shows: copy the
+# number, do not convert it. ``kind`` is "model", "voice" or "image"; ``per_unit`` is
+# dollars per minute or per image. Changing a row only affects future events - the
+# credits each event cost are snapshotted on the event itself.
+rate_card = Table(
+    "rate_card",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("provider", Text, nullable=False, server_default=_literal("")),
+    Column("model", Text, nullable=False, server_default=_literal("")),
+    Column("kind", Text, nullable=False, server_default=_literal("model")),
+    Column("input_per_1m", Float, nullable=False, server_default=text("0")),
+    Column("cached_input_per_1m", Float, nullable=False, server_default=text("0")),
+    Column("cache_write_per_1m", Float, nullable=False, server_default=text("0")),
+    Column("output_per_1m", Float, nullable=False, server_default=text("0")),
+    Column("per_unit", Float, nullable=False, server_default=text("0")),
+    Column("note", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+Index("idx_rate_card_lookup", rate_card.c.provider, rate_card.c.model, rate_card.c.kind)
+
+
+# ---------------------------------------------------------------------------
 # Connection / result adapters
 # ---------------------------------------------------------------------------
 class Row(dict):

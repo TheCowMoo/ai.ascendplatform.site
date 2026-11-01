@@ -169,7 +169,7 @@ async def chat_task(job, emit):
     tools = tool_registry.resolve(list(GRANTED), emit, job_id=job.get("id"))
     agent = AssistantAgent(
         name="Manager",
-        model_client=llm.get_model_client(provider),
+        model_client=llm.get_model_client(provider, usage_label="manager"),
         system_message=SYSTEM,
         tools=tools,
         # Without this AutoGen returns the tool's result and stops, so a turn that needed
