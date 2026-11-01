@@ -27,6 +27,7 @@
         { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
         { id: 'assistant', label: 'Assistant', icon: 'chat', hash: '#/app/assistant' },
         { id: 'studio', label: 'Studio', icon: 'studio', hash: '#/app/studio' },
+        { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/app/usage' },
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
         { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
@@ -51,6 +52,7 @@
       home: '#/platform/clients',
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
+        { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/platform/usage' },
         { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
         { id: 'sources', label: 'Data sources', icon: 'dashboard', hash: '#/platform/sources' },
         { id: 'servers', label: 'Servers', icon: 'server', hash: '#/platform/servers' },
@@ -113,6 +115,14 @@
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
+  }
+
+  // Credits are stored in milli-credits; the console shows credits with three decimals.
+  function fmtCredits(value) {
+    if (value === null || value === undefined) return '-';
+    var number = Number(value);
+    if (!isFinite(number)) return String(value);
+    return number.toLocaleString(undefined, { maximumFractionDigits: 3 });
   }
 
   function el(tag, cls, text) {
@@ -5527,6 +5537,286 @@
   }
 
 
+  // ---------- Usage: what the team spent, and on what ----------
+  // The client's own meter. The operator's cross-client screen is separate, because it
+  // owns the rate card and the credits themselves.
+  function viewUsage() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Usage</h2><p class="muted">What the team has spent, in ' +
+      'credits. 1 credit = $0.001; cached input is priced as cached input, not as fresh ' +
+      'input.</p></div>';
+    var range = el('select');
+    range.innerHTML = '<option value="7">Last 7 days</option>' +
+      '<option value="30" selected>Last 30 days</option>' +
+      '<option value="90">Last 90 days</option>';
+    head.appendChild(range);
+    container.appendChild(head);
+    var body = el('div');
+    container.appendChild(body);
+
+    function load() {
+      api('GET', '/api/usage?days=' + encodeURIComponent(range.value)).then(function (d) {
+        body.innerHTML = '';
+        var card = el('div', 'panel usage-head');
+        card.appendChild(el('div', 'usage-balance',
+          d.balance === null || d.balance === undefined
+            ? 'No credits yet' : fmtCredits(d.balance) + ' credits'));
+        card.appendChild(el('p', 'muted', [
+          'Plan ' + (d.plan || 'standard'),
+          d.allowance ? fmtCredits(d.allowance) + ' credits a month' : 'no monthly allowance',
+          'enforcement: ' + (d.enforce || 'shadow')
+        ].join(' \u00b7 ')));
+        if (d.low) {
+          card.appendChild(el('p', 'form-error',
+            'Low balance. Once enforcement is on, new work is refused at zero.'));
+        }
+        body.appendChild(card);
+
+        if ((d.missing_rates || []).length) {
+          var warn = el('div', 'panel');
+          warn.appendChild(el('h3', null, 'Unpriced models'));
+          warn.appendChild(el('p', 'muted', 'These calls are recorded but not priced. ' +
+            'An operator adds them in Platform \u2192 Usage \u2192 Rate card.'));
+          d.missing_rates.slice(0, 8).forEach(function (row) {
+            warn.appendChild(el('div', 'fine-print',
+              (row.provider || '?') + ' / ' +
+              (row.model_returned || row.model_configured || '?') +
+              ' \u00b7 ' + (row.calls || 0) + ' call(s)'));
+          });
+          body.appendChild(warn);
+        }
+
+        var summary = el('div', 'panel');
+        summary.appendChild(el('h3', null, 'Spend by model and agent'));
+        var rows = d.rows || [];
+        if (!rows.length) {
+          summary.appendChild(el('p', 'muted', 'Nothing has been spent in this window.'));
+        } else {
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Where</th><th>Agent</th><th>Calls</th>' +
+            '<th>Input (cached)</th><th>Output</th><th>Credits</th></tr></thead>';
+          var tbody = el('tbody');
+          rows.forEach(function (row) {
+            var tr = el('tr');
+            tr.innerHTML = '<td><span class="badge">' + esc(row.kind) + '</span> ' +
+              esc(row.provider || '') + (row.model ? ' \u00b7 ' + esc(row.model) : '') + '</td>' +
+              '<td>' + esc(row.label || '-') + '</td>' +
+              '<td>' + esc(row.calls || 0) + '</td>' +
+              '<td>' + esc(row.input_uncached || 0) +
+              (row.input_cached ? ' <span class="muted">(' + esc(row.input_cached) +
+                ' cached)</span>' : '') + '</td>' +
+              '<td>' + esc(row.output_tokens || 0) + '</td>' +
+              '<td>' + (row.unpriced
+                ? '<span class="badge badge-queued">unpriced</span> '
+                : '') + esc(fmtCredits(row.credits)) + '</td>';
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          summary.appendChild(table);
+        }
+        body.appendChild(summary);
+
+        var recent = el('div', 'panel');
+        recent.appendChild(el('h3', null, 'Recent calls'));
+        var items = d.recent || [];
+        if (!items.length) {
+          recent.appendChild(el('p', 'muted', 'No calls yet.'));
+        } else {
+          var list = el('table', 'table');
+          list.innerHTML = '<thead><tr><th>When</th><th>Kind</th><th>Model</th>' +
+            '<th>Agent</th><th>Credits</th></tr></thead>';
+          var listBody = el('tbody');
+          items.forEach(function (item) {
+            var tr = el('tr');
+            tr.innerHTML = '<td class="muted">' +
+              esc((item.created_at || '').slice(0, 16)) + '</td>' +
+              '<td>' + esc(item.kind) + '</td>' +
+              '<td>' + esc(item.model_returned || item.model_configured || '-') + '</td>' +
+              '<td>' + esc(item.label || '-') + '</td>' +
+              '<td>' + (item.credits_milli === null
+                ? '<span class="badge badge-queued">unpriced</span>'
+                : esc(fmtCredits(item.credits_milli / 1000))) + '</td>';
+            listBody.appendChild(tr);
+          });
+          list.appendChild(listBody);
+          recent.appendChild(list);
+        }
+        body.appendChild(recent);
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+    }
+    range.onchange = load;
+    load();
+    return container;
+  }
+
+  // ---------- Platform usage: every client's balance, and the price list ----------
+  function viewPlatformUsage() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Usage</h2><p class="muted">Every client\u2019s balance, ' +
+      'the rate card in dollars, and the models nobody has priced yet.</p></div>';
+    var grant = el('button', 'btn btn-ghost', 'Grant monthly now');
+    grant.onclick = function () {
+      grant.disabled = true;
+      api('POST', '/api/usage/grant-monthly', {}).then(function (d) {
+        toast('Granted ' + d.granted + ' client(s)', true);
+        load();
+      }).catch(function (e) { toast(e.message, false); })
+        .finally(function () { grant.disabled = false; });
+    };
+    head.appendChild(grant);
+    container.appendChild(head);
+    var body = el('div');
+    container.appendChild(body);
+
+    function grantForm(org) {
+      formModal('Add credits to ' + org.name, [
+        { name: 'credits', label: 'Credits', help: 'Negative corrects a balance.' },
+        { name: 'note', label: 'Note', placeholder: 'why' }
+      ], function (data, fail, ok) {
+        api('POST', '/api/orgs/' + org.id + '/credits', {
+          credits: data.credits, note: data.note
+        }).then(function (res) {
+          ok();
+          toast('Balance now ' + fmtCredits(res.balance) + ' credits', true);
+          load();
+        }).catch(function (e) { fail(e.message); });
+      });
+    }
+
+    function rateForm(rate) {
+      rate = rate || {};
+      formModal(rate.id ? 'Edit rate' : 'Add a rate', [
+        { name: 'provider', label: 'Provider', value: rate.provider || '',
+          placeholder: 'deepseek' },
+        { name: 'model', label: 'Model', value: rate.model || '',
+          placeholder: 'deepseek-chat' },
+        { name: 'kind', label: 'Kind', type: 'select',
+          options: ['model', 'voice', 'image'], value: rate.kind || 'model' },
+        { name: 'input_per_1m', label: 'Input ($ / 1M tokens)',
+          value: rate.input_per_1m || 0 },
+        { name: 'cached_input_per_1m', label: 'Cached input ($ / 1M)',
+          value: rate.cached_input_per_1m || 0 },
+        { name: 'cache_write_per_1m', label: 'Cache write ($ / 1M)',
+          value: rate.cache_write_per_1m || 0 },
+        { name: 'output_per_1m', label: 'Output ($ / 1M)',
+          value: rate.output_per_1m || 0 },
+        { name: 'per_unit', label: 'Per minute / per image ($)',
+          value: rate.per_unit || 0 },
+        { name: 'note', label: 'Note', value: rate.note || '',
+          placeholder: 'list price 2026-11' }
+      ], function (data, fail, ok) {
+        api('POST', '/api/usage/rates', data).then(function () {
+          ok(); toast('Rate saved', true); load();
+        }).catch(function (e) { fail(e.message); });
+      });
+    }
+
+    function load() {
+      api('GET', '/api/usage?days=30').then(function (d) {
+        body.innerHTML = '';
+        var clients = el('div', 'panel');
+        clients.appendChild(el('h3', null, 'Clients'));
+        var orgs = d.orgs || [];
+        if (!orgs.length) {
+          clients.appendChild(el('p', 'muted', 'No clients yet.'));
+        } else {
+          var table = el('table', 'table');
+          table.innerHTML = '<thead><tr><th>Client</th><th>Plan</th><th>Allowance</th>' +
+            '<th>Balance</th><th></th></tr></thead>';
+          var tbody = el('tbody');
+          orgs.forEach(function (org) {
+            var tr = el('tr');
+            var balance = org.balance === null || org.balance === undefined
+              ? '-' : fmtCredits(org.balance);
+            tr.innerHTML = '<td>' + esc(org.name) +
+              '<div class="fine-print">' + esc(org.status) + '</div></td>' +
+              '<td><span class="badge">' + esc(org.plan) + '</span></td>' +
+              '<td>' + (org.allowance ? esc(fmtCredits(org.allowance)) : '-') + '</td>' +
+              '<td>' + esc(balance) + '</td>';
+            var td = el('td', 'row-actions');
+            var add = el('button', 'btn btn-ghost btn-sm', 'Credits');
+            add.onclick = function () { grantForm(org); };
+            td.appendChild(add);
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          clients.appendChild(table);
+        }
+        body.appendChild(clients);
+
+        var ratesCard = el('div', 'panel');
+        var bar = el('div', 'panel-head');
+        bar.appendChild(el('h3', null, 'Rate card (dollars)'));
+        var addRate = el('button', 'btn btn-primary btn-sm', '+ Add rate');
+        addRate.onclick = function () { rateForm(null); };
+        bar.appendChild(addRate);
+        ratesCard.appendChild(bar);
+        ratesCard.appendChild(el('p', 'fine-print',
+          'Copy the numbers from the provider dashboard. Input, cached input, cache ' +
+          'write and output are per million tokens; the unit is per minute or per image.'));
+        body.appendChild(ratesCard);
+        api('GET', '/api/usage/rates').then(function (r) {
+          var rows = r.rates || [];
+          if (!rows.length) {
+            ratesCard.appendChild(el('p', 'muted',
+              'No rates yet. Add one for every model in use, or its calls stay unpriced.'));
+          } else {
+            var rt = el('table', 'table');
+            rt.innerHTML = '<thead><tr><th>Provider</th><th>Model</th><th>Kind</th>' +
+              '<th>In / cached / write / out ($ per 1M)</th><th>Unit ($)</th><th></th></tr></thead>';
+            var rtb = el('tbody');
+            rows.forEach(function (row) {
+              var tr = el('tr');
+              tr.innerHTML = '<td>' + esc(row.provider) + '</td>' +
+                '<td>' + esc(row.model) + '</td>' +
+                '<td><span class="badge">' + esc(row.kind) + '</span></td>' +
+                '<td class="muted">' + esc(row.input_per_1m) + ' / ' +
+                esc(row.cached_input_per_1m) + ' / ' + esc(row.cache_write_per_1m) +
+                ' / ' + esc(row.output_per_1m) + '</td>' +
+                '<td>' + esc(row.per_unit) + '</td>';
+              var td = el('td', 'row-actions');
+              var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+              edit.onclick = function () { rateForm(row); };
+              var del = el('button', 'btn btn-danger btn-sm', 'Delete');
+              del.onclick = function () {
+                if (!confirm('Delete this rate?')) return;
+                api('DELETE', '/api/usage/rates/' + row.id).then(function () {
+                  toast('Deleted', true); load();
+                }).catch(function (e) { toast(e.message, false); });
+              };
+              td.appendChild(edit);
+              td.appendChild(del);
+              tr.appendChild(td);
+              rtb.appendChild(tr);
+            });
+            rt.appendChild(rtb);
+            ratesCard.appendChild(rt);
+          }
+          var missing = r.missing || [];
+          if (missing.length) {
+            ratesCard.appendChild(el('p', 'form-error', 'Unpriced models in use: ' +
+              missing.map(function (item) {
+                return (item.provider || '?') + '/' +
+                  (item.model_returned || item.model_configured || '?');
+              }).join(', ')));
+          }
+        }).catch(function (e) {
+          ratesCard.appendChild(el('p', 'form-error', esc(e.message)));
+        });
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+    }
+
+    load();
+    return container;
+  }
+
   // ---------- Contacts: the mini CRM ----------
   // Deliberately no GoHighLevel anywhere on this screen: a client without one gets the
   // same product, and the form endpoint is the thing most people come here for.
@@ -7592,6 +7882,7 @@
     var view;
     if (area === 'platform') {
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
+      else if (tab === 'usage') view = viewPlatformUsage();
       else if (tab === 'servers') view = viewServers();
       else if (tab === 'email') view = viewPlatformEmail();
       else if (tab === 'sources') view = viewDataSources();
@@ -7613,6 +7904,7 @@
     else if (tab === 'media') view = viewMedia();
     else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'studio') view = viewStudio(rest[0] || '', rest[1] || '');
+    else if (tab === 'usage') view = viewUsage();
     else if (tab === 'analytics') view = viewAnalytics();
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();

@@ -338,6 +338,75 @@ def enforcement_mode():
     return value if value in ("shadow", "warn", "hard") else "shadow"
 
 
+def _setting(key, default=""):
+    try:
+        import settings
+
+        return settings.get(key, default)
+    except Exception:
+        return os.environ.get(key, default)
+
+
+PLAN_KEYS = {"trial": "USAGE_PLAN_TRIAL", "standard": "USAGE_PLAN_STANDARD",
+             "pro": "USAGE_PLAN_PRO", "enterprise": "USAGE_PLAN_ENTERPRISE"}
+
+
+def plan_allowance(plan):
+    """Credits a plan includes per month, from the Usage settings group."""
+    key = PLAN_KEYS.get(str(plan or "standard").strip().lower(),
+                        "USAGE_PLAN_STANDARD")
+    try:
+        return float(_setting(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def low_water():
+    try:
+        return float(_setting("USAGE_LOW_WATER", 1000) or 0)
+    except (TypeError, ValueError):
+        return 1000.0
+
+
+def grant_monthly(period=None):
+    """Grant each active client its plan allowance once per month.
+
+    Idempotent by (org, reason='grant', period): the scheduler runs this hourly, and a
+    restart or a second worker must not grant the same month twice. Returns how many
+    clients were granted.
+    """
+    import datetime
+
+    import orgs as orgs_service
+
+    period = period or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+    granted = 0
+    for org in orgs_service.list_orgs(limit=1000):
+        if (org.get("status") or "active") != "active":
+            continue
+        amount = plan_allowance(org.get("plan"))
+        if amount <= 0:
+            continue
+        with get_connection() as conn:
+            already = conn.execute(
+                "SELECT id FROM credit_ledger WHERE org_id = ? AND reason = 'grant' "
+                "AND period = ?", (org["id"], period)).fetchone()
+        if already:
+            continue
+        _apply_delta(org["id"], int(round(amount * rates.MILLI_PER_CREDIT)), "grant",
+                     note="Monthly allowance (%s)" % period, period=period)
+        granted += 1
+    return granted
+
+
+def ledger(org_id, limit=50):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM credit_ledger WHERE org_id = ? ORDER BY id DESC LIMIT ?",
+            (org_id, max(1, int(limit)))).fetchall()
+    return [_as_dict(row) for row in rows]
+
+
 def guard(org_id=None, estimated_milli=0):
     """Refuse billable work when the client is out of credits and hard mode is on.
 
@@ -388,6 +457,8 @@ def summary(org_id=None, days=30):
             tuple(params),
         ).fetchall()
     rows = [_as_dict(row) for row in rows]
+    for row in rows:
+        row["credits"] = rates.credits(int(row["credits_milli"] or 0))
     total = sum(int(row["credits_milli"] or 0) for row in rows)
     return {
         "org_id": org_id,

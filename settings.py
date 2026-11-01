@@ -225,6 +225,29 @@ SPEC = [
         ],
     },
     {
+        "id": "usage",
+        "label": "Usage & credits",
+        "icon": "trend",
+        "blurb": "What a call costs, what each plan includes, and whether the console "
+                 "stops a client at zero. Rates themselves live in the rate card, in "
+                 "dollars, so a price change never needs a deploy.",
+        "fields": [
+            _f("USAGE_ENFORCE", "Enforcement", kind="choice", default="shadow",
+               choices=("shadow", "warn", "hard"),
+               help="shadow records only; warn records and logs; hard refuses new work "
+                    "once a client's balance reaches zero."),
+            _f("USAGE_PLAN_TRIAL", "Trial: credits per month", kind="int", default="0",
+               help="0 means no automatic grant. Set what this plan includes; it is "
+                    "granted once per month to active clients."),
+            _f("USAGE_PLAN_STANDARD", "Standard: credits per month", kind="int",
+               default="0"),
+            _f("USAGE_PLAN_PRO", "Pro: credits per month", kind="int", default="0"),
+            _f("USAGE_PLAN_ENTERPRISE", "Enterprise: credits per month", kind="int",
+               default="0", help="0 means no automatic grant; add credits by hand."),
+            _f("USAGE_LOW_WATER", "Warn below (credits)", kind="int", default="1000"),
+        ],
+    },
+    {
         "id": "app",
         "label": "App & branding",
         "icon": "sliders",

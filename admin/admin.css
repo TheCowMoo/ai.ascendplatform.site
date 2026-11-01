@@ -1323,6 +1323,13 @@ select {
 .page-head > div { min-width: 0; }
 .nav-veil { display: none; }
 
+/* ---------- Usage ----------
+   The balance is the one number on the page, so it gets the weight. */
+.usage-head { display: flex; flex-direction: column; gap: 2px; }
+.usage-balance {
+  font-size: 30px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink);
+}
+
 /* ---------- Studio ----------
    Two panes: the conversation on the left, the artifact on the right. The layout is a
    grid so the canvas keeps its width when the transcript is long, and the mobile rule

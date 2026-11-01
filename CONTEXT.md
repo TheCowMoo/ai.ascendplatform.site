@@ -513,9 +513,25 @@ units, and the SDK wrappers (non-stream, stream, Anthropic cache fields, meter
 fallback). `test_db_dialect` and `test_migrations` include migration
 `0021_usage_credits`; `smoke_llm_gateway` accepts the metered client type.
 
-**Next (phase 2):** the client Usage page and operator ledger/adjust UI, plan allowances
-per `orgs.plan`, top-ups, the reconciliation report against provider invoices, and
-`hard` enforcement once the numbers are trusted.
+**The screens (phase 2).** Workspace → **Usage** (`viewUsage`) shows the client its
+balance, plan, allowance, enforcement mode, a low-balance banner, spend by
+kind/provider/model/agent (input, cached input, output, credits), recent calls, and an
+"Unpriced models" warning. Platform → **Usage** (`viewPlatformUsage`) lists every
+client with plan/allowance/balance and a **Credits** action (positive = top-up,
+negative = adjustment), a **Grant monthly now** button, and the **rate card** in dollars
+with add/edit/delete plus the unpriced-model list. Settings → **Usage & credits** holds
+`USAGE_ENFORCE` (shadow/warn/hard), the per-plan monthly credits and `USAGE_LOW_WATER`.
+`usage.grant_monthly()` runs in the scheduler tick and is idempotent per
+`(org, reason='grant', period='YYYY-MM')`, so an hourly sweep or a restart grants once.
+
+API: `GET /api/usage` (own meter; the operator with no client picked gets every client),
+`GET /api/orgs/<id>/usage`, `POST /api/orgs/<id>/credits`, `POST /api/usage/grant-monthly`,
+`GET|POST /api/usage/rates`, `DELETE /api/usage/rates/<id>`. Credits and rates are
+`owner_required`; a client cannot read another client's usage.
+
+**Next (phase 3):** a top-up flow with a payment processor, the reconciliation report
+against provider invoices, voice accuracy (a close/heartbeat endpoint instead of the
+5-minute reservation), and turning `hard` on once the numbers agree with a real invoice.
 
 ## Voice — the spoken assistant (2026-10-30)
 

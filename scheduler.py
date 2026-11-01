@@ -226,6 +226,14 @@ def start_verifier():
                 automations.wake_due()
             except Exception:
                 pass
+            try:
+                import usage
+
+                # Idempotent per month: running this hourly (and on every restart) must
+                # grant the allowance exactly once.
+                usage.grant_monthly()
+            except Exception:
+                pass          # a grant failure must not stop the DNS sweep
             time.sleep(minutes * 60)
 
     threading.Thread(target=_tick, name="site-verify", daemon=True).start()

@@ -43,6 +43,8 @@ import settings
 import orgs as orgs_service
 import deliverables as deliverables_service
 import studio as studio_service
+import rates as rates_service
+import usage as usage_service
 import analytics as analytics_service
 import invites as invites_service
 import tools as tool_registry
@@ -1351,6 +1353,150 @@ def add_org_user(org_id):
     except orgs_service.OrgError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"users": users}), 201
+
+
+# ---------------------------------------------------------------------------
+# Usage and credits
+#
+# The client sees its own balance and spend; the operator sees every client, can grant
+# or correct credits, and owns the rate card. The numbers themselves are written by
+# ``usage.py`` from the raw provider response, not recomputed here.
+# ---------------------------------------------------------------------------
+def _usage_days(default=30):
+    try:
+        return max(1, min(365, int(request.args.get("days") or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _org_usage(org, days=30):
+    org_id = org["id"] if org else None
+    data = usage_service.summary(org_id, days=days)
+    plan = (org or {}).get("plan") or "standard"
+    balance = usage_service.balance_credits(org_id)
+    data.update({
+        "org_id": org_id,
+        "org_name": (org or {}).get("name") or "",
+        "plan": plan,
+        "allowance": usage_service.plan_allowance(plan),
+        "low_water": usage_service.low_water(),
+        "enforce": usage_service.enforcement_mode(),
+        "balance": balance,
+        "low": balance is not None and balance <= usage_service.low_water(),
+        "ledger": usage_service.ledger(org_id, limit=25) if org_id else [],
+        "reconcile": usage_service.reconcile(org_id) if org_id else None,
+    })
+    return data
+
+
+@app.route("/api/usage", methods=["GET"])
+@login_required
+def usage_overview():
+    """A client's own meter; the operator's cross-client overview when none is picked."""
+    org = current_org()
+    days = _usage_days()
+    if org is None:
+        if not is_owner():
+            return jsonify({"error": "Pick a client first"}), 400
+        rows = [{
+            "id": item["id"], "name": item["name"], "plan": item["plan"],
+            "status": item["status"],
+            "balance": usage_service.balance_credits(item["id"]),
+            "allowance": usage_service.plan_allowance(item["plan"]),
+        } for item in orgs_service.list_orgs(limit=1000)]
+        data = usage_service.summary(None, days=days)
+        data.update({"org_id": None, "orgs": rows, "balance": None, "low": False,
+                     "enforce": usage_service.enforcement_mode(),
+                     "low_water": usage_service.low_water(),
+                     "missing_rates": rates_service.missing_rates()})
+        return jsonify(data)
+
+    data = _org_usage(orgs_service.get_org(org), days)
+    data["recent"] = usage_service.recent(org, limit=25)
+    if is_owner():
+        data["missing_rates"] = rates_service.missing_rates()
+    return jsonify(data)
+
+
+@app.route("/api/orgs/<int:org_id>/usage", methods=["GET"])
+@owner_required
+def org_usage(org_id):
+    org = orgs_service.get_org(org_id)
+    if not org:
+        return jsonify({"error": "Not found"}), 404
+    data = _org_usage(org, _usage_days())
+    data["recent"] = usage_service.recent(org_id, limit=50)
+    data["missing_rates"] = rates_service.missing_rates()
+    return jsonify(data)
+
+
+@app.route("/api/orgs/<int:org_id>/credits", methods=["POST"])
+@owner_required
+def add_org_credits(org_id):
+    """Grant a top-up, or correct a balance. Negative amounts are an adjustment."""
+    org = orgs_service.get_org(org_id)
+    if not org:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        amount = float(data.get("credits"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "credits must be a number"}), 400
+    if amount == 0:
+        return jsonify({"error": "credits cannot be zero"}), 400
+    note = str(data.get("note") or "")[:200]
+    if amount < 0 or data.get("reason") == "adjustment":
+        balance = usage_service.adjust(org_id, amount, actor_id=session.get("user_id"),
+                                       note=note)
+    else:
+        balance = usage_service.grant(org_id, amount, actor_id=session.get("user_id"),
+                                      note=note)
+    return jsonify({"balance": rates_service.credits(balance),
+                    "reconcile": usage_service.reconcile(org_id)})
+
+
+@app.route("/api/usage/grant-monthly", methods=["POST"])
+@owner_required
+def usage_grant_monthly():
+    """Run the monthly allowance now. Idempotent, so a second press is harmless."""
+    period = (request.get_json(silent=True) or {}).get("period") or None
+    granted = usage_service.grant_monthly(period)
+    return jsonify({"granted": granted, "period": period})
+
+
+@app.route("/api/usage/rates", methods=["GET"])
+@owner_required
+def list_usage_rates():
+    return jsonify({"rates": rates_service.list_rates(),
+                    "missing": rates_service.missing_rates()})
+
+
+@app.route("/api/usage/rates", methods=["POST"])
+@owner_required
+def save_usage_rate():
+    data = request.get_json(silent=True) or {}
+    try:
+        numbers = {
+            field: float(data.get(field) or 0)
+            for field in ("input_per_1m", "cached_input_per_1m", "cache_write_per_1m",
+                          "output_per_1m", "per_unit")
+        }
+    except (TypeError, ValueError):
+        return jsonify({"error": "rates must be numbers, in dollars"}), 400
+    numbers["note"] = str(data.get("note") or "")[:200]
+    try:
+        row = rates_service.set_rate(data.get("provider"), data.get("model"),
+                                     data.get("kind") or "model", **numbers)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"rate": row}), 201
+
+
+@app.route("/api/usage/rates/<int:rate_id>", methods=["DELETE"])
+@owner_required
+def delete_usage_rate(rate_id):
+    rates_service.delete_rate(rate_id)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
