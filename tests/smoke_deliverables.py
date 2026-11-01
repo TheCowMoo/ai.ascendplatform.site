@@ -269,6 +269,28 @@ def test_a_save_cannot_name_another_clients_draft():
     print("a foreign deliverable_id left that draft untouched")
 
 
+def test_another_job_refines_a_draft_by_id():
+    """The Studio's revise path: job B edits the draft job A saved.
+
+    The id reaches the tool from the browser, not from the model's memory, so this is the
+    cross-job branch: the save must land on that row rather than create a sibling.
+    """
+    org = _org("Deliverable Refine By Id Client")
+    asyncio.run(_save_tool(_job_in_org(org["id"])).run_json(
+        {"kind": "email", "title": "Draft", "content": "<p>first</p>"}, DRY))
+    draft = deliverables.list_deliverables("email", org["id"])[0]
+
+    reply = asyncio.run(_save_tool(_job_in_org(org["id"])).run_json(
+        {"kind": "email", "title": "Draft", "content": "<p>second</p>",
+         "deliverable_id": draft["id"]}, DRY))
+    rows = deliverables.list_deliverables("email", org["id"])
+    assert len(rows) == 1, rows
+    assert rows[0]["id"] == draft["id"], rows
+    assert rows[0]["content"] == "<p>second</p>", rows[0]
+    assert reply.startswith("Updated"), reply
+    print("a newer job updated draft #%s in place" % draft["id"])
+
+
 def test_a_save_without_content_is_explained():
     org = _org("Deliverable No Content Client")
     reply = asyncio.run(_save_tool(_job_in_org(org["id"])).run_json(
@@ -365,6 +387,7 @@ def main():
     test_publish_route_validates_the_kind_and_the_session()
     test_a_second_save_updates_the_same_draft()
     test_a_save_cannot_name_another_clients_draft()
+    test_another_job_refines_a_draft_by_id()
     test_a_save_without_content_is_explained()
     test_kind_aliases_and_tab_enforcement()
     test_unowned_drafts_can_be_assigned()

@@ -1499,6 +1499,26 @@ def delete_usage_rate(rate_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/usage/reconciliation", methods=["GET"])
+@owner_required
+def list_usage_reconciliation():
+    return jsonify({"rows": usage_service.reconciliations()})
+
+
+@app.route("/api/usage/reconciliation", methods=["POST"])
+@owner_required
+def save_usage_reconciliation():
+    """Our computed cost beside one provider invoice, for the month given."""
+    data = request.get_json(silent=True) or {}
+    try:
+        row = usage_service.save_reconciliation(
+            data.get("provider"), data.get("period"), data.get("billed_usd"),
+            actor_id=session.get("user_id"), note=data.get("note") or "")
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc) or "billed_usd must be a number"}), 400
+    return jsonify({"reconciliation": row}), 201
+
+
 # ---------------------------------------------------------------------------
 # Deliverables (the content a client publishes)
 #
@@ -2375,15 +2395,16 @@ def voice_session():
     # not become free minutes. The microphone is opened before this route is called, so a
     # refused permission no longer spends a session.
     voice.record_use(session.get("user_id"), voice.SESSION_SECONDS)
-    # The Live socket is browser->Google, so the server never sees audio tokens; the
-    # session's reserved minutes are the stable unit to bill. Charged at mint, like the
-    # daily cap above - a session that ends early is rounded up to its reservation.
+    # The reservation is recorded, not charged. The Live socket is browser->Google, so the
+    # only honest measure of what was used is how long this token stays open: the browser
+    # posts it back when the user stops, and the scheduler settles any that never return.
+    voice_token = ""
     try:
         import usage as usage_service
 
-        usage_service.record_voice(org_id=current_org(), user_id=session.get("user_id"),
-                                   seconds=voice.SESSION_SECONDS, provider="gemini",
-                                   model=voice.model(), label="voice")
+        voice_token = usage_service.open_voice_session(
+            current_org(), session.get("user_id"), voice.SESSION_SECONDS,
+            provider="gemini", model=voice.model())
     except Exception:
         pass          # a broken meter must not stop the session
     session["voice_calls"] = 0
@@ -2392,6 +2413,7 @@ def voice_session():
     session.pop("voice_job_id", None)
     return jsonify({
         "token": token,
+        "session_id": voice_token,
         "setup": setup_message,
         "endpoint": voice.socket_url(),
         "model": voice.model(),
@@ -2401,6 +2423,32 @@ def voice_session():
         "calls": voice.SESSION_CALLS,
         "remaining_minutes": round(voice.remaining_minutes(session.get("user_id")), 1),
     })
+
+
+@app.route("/api/voice/usage", methods=["POST"])
+@login_required
+def voice_usage():
+    """Settle one spoken session: the browser posts its token when the user stops.
+
+    A token rather than a number of seconds: the server measures elapsed time from the
+    mint, so a client cannot claim a shorter session. The reservation is the ceiling.
+    """
+    import usage as usage_service
+
+    data = request.get_json(silent=True) or {}
+    token = data.get("session_id") or request.form.get("session_id") or ""
+    if not token:
+        # sendBeacon may arrive as text/plain; read the body rather than lose the close.
+        try:
+            token = (json.loads(request.get_data(as_text=True) or "{}") or {}).get(
+                "session_id") or ""
+        except (TypeError, ValueError):
+            token = ""
+    settled = usage_service.settle_voice_session(token,
+                                                 user_id=session.get("user_id"))
+    if not settled:
+        return jsonify({"error": "That voice session is not open."}), 409
+    return jsonify(settled)
 
 
 @app.route("/api/voice/tool", methods=["POST"])

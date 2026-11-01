@@ -61,11 +61,14 @@ def cleanup():
         ).fetchall()
         for org in orgs:
             org_id = org["id"]
-            for table in ("usage_events", "credit_ledger", "credit_balances"):
+            for table in ("usage_events", "credit_ledger", "credit_balances",
+                          "voice_sessions"):
                 conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org_id,))
             conn.execute("DELETE FROM users WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM orgs WHERE id = ?", (org_id,))
         conn.execute("DELETE FROM rate_card WHERE provider LIKE ?",
+                     ("test-%s%%" % TOKEN,))
+        conn.execute("DELETE FROM usage_reconciliations WHERE provider LIKE ?",
                      ("test-%s%%" % TOKEN,))
 
 
@@ -391,6 +394,85 @@ def test_the_metered_client_records_and_falls_back():
     print("a client with no raw capture is metered, and marked as a fallback")
 
 
+def test_voice_is_billed_when_it_closes():
+    """A spoken session is charged for how long its token was open, not at mint.
+
+    The browser holds a token, and the price comes from the server's clock: a client
+    that posts "0 seconds" after a five-minute call must not get the minutes back.
+    """
+    _rates()
+    org = _org()
+    voice_model = "voice-%s" % TOKEN
+    token = usage.open_voice_session(org["id"], 7, 300, provider=PROVIDER,
+                                     model=voice_model)
+    with db.get_connection() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) AS n FROM usage_events WHERE org_id = ?",
+            (org["id"],)).fetchone()["n"]
+    check("minting a session charges nothing", before, 0)
+    check("another user cannot close it",
+          usage.settle_voice_session(token, user_id=8), None)
+    settled = usage.settle_voice_session(token, user_id=7)
+    check("the owner closes it", settled is not None, True)
+    check("and pays for the elapsed seconds, not the reservation",
+          settled["billed_seconds"] < 300, True)
+    check("a closed session cannot be settled twice",
+          usage.settle_voice_session(token, user_id=7), None)
+    with db.get_connection() as conn:
+        event = conn.execute(
+            "SELECT kind, quantity FROM usage_events WHERE org_id = ? "
+            "ORDER BY id DESC LIMIT 1", (org["id"],)).fetchone()
+    check("the event records the billed seconds",
+          (event["kind"], event["quantity"]), ("voice", settled["billed_seconds"]))
+    print("a spoken session is billed for how long it was open")
+
+    # A tab that never comes back: the sweep bills the whole reservation, so a crashed
+    # browser cannot be free. The row is aged by hand rather than waiting five minutes.
+    abandoned = usage.open_voice_session(org["id"], 7, 300, provider=PROVIDER,
+                                         model=voice_model)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE voice_sessions SET created_at = ? WHERE id = ?",
+                     ("2020-01-01 00:00:00", abandoned))
+    usage.sweep_voice_sessions()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, billed_seconds FROM voice_sessions "
+                           "WHERE id = ?", (abandoned,)).fetchone()
+    check("the sweep bills an abandoned session at its reservation",
+          (row["status"], row["billed_seconds"]), ("settled", 300))
+    print("a session nobody closed is settled by the sweep")
+
+
+def test_reconciliation_compares_the_meter_to_the_invoice():
+    _rates()
+    org = _org()
+    usage.record_model(PROVIDER, MODEL, MODEL, "agent",
+                       {"input_uncached": 1000000, "output": 0}, org_id=org["id"])
+    period = db.now_str()[:7]
+    computed = usage.computed_milli(PROVIDER, period)
+    check("the month's cost is summed from the snapshot", computed > 0, True)
+
+    row = usage.save_reconciliation(PROVIDER, period, computed / rates.MILLI_PER_USD)
+    check("an invoice that matches the meter has no variance", row["variance_milli"], 0)
+    check("and it reads back in dollars", row["variance_usd"], 0.0)
+
+    row = usage.save_reconciliation(PROVIDER, period,
+                                    computed / rates.MILLI_PER_USD + 1.0)
+    check("a larger invoice is a shortfall, in milli-credits",
+          row["variance_milli"], -rates.MILLI_PER_USD)
+    check("the provider and month are stored as given",
+          (row["provider"], row["period"]), (PROVIDER, period))
+
+    rows = usage.reconciliations(2)
+    check("saved months are listed newest first", rows[0]["id"], row["id"])
+
+    try:
+        usage.save_reconciliation(PROVIDER, "November", 1)
+        check("a malformed month is refused", False, True)
+    except ValueError:
+        check("a malformed month is refused", True, True)
+    print("a provider invoice is checked against what we charged")
+
+
 def main():
     try:
         test_openai_shapes()
@@ -406,6 +488,8 @@ def main():
         test_raw_capture_reads_a_stream()
         test_anthropic_capture_keeps_cache_fields()
         test_the_metered_client_records_and_falls_back()
+        test_voice_is_billed_when_it_closes()
+        test_reconciliation_compares_the_meter_to_the_invoice()
     finally:
         cleanup()
     if FAILED:

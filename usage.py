@@ -430,8 +430,162 @@ def guard(org_id=None, estimated_milli=0):
 
 
 # ---------------------------------------------------------------------------
+# Voice: reserve at mint, bill when the session closes
+# ---------------------------------------------------------------------------
+def _age_seconds(stamp):
+    import datetime
+
+    try:
+        then = datetime.datetime.strptime(str(stamp), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, (datetime.datetime.now(datetime.timezone.utc) - then).total_seconds())
+
+
+def open_voice_session(org_id, user_id, reserved_seconds, provider="gemini", model=""):
+    """Record the reservation and return the token the browser holds.
+
+    Nothing is charged here: the socket is browser->Google, so the only honest measure of
+    what was used is how long the token was open. ``stop()`` posts it back, and the
+    scheduler settles any that never came back.
+    """
+    import secrets
+
+    token = secrets.token_urlsafe(18)
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO voice_sessions (id, org_id, user_id, reserved_seconds, provider, "
+            "model, status) VALUES (?, ?, ?, ?, ?, ?, 'open')",
+            (token, org_id, user_id, int(reserved_seconds or 0), provider or "gemini",
+             model or ""))
+    return token
+
+
+def settle_voice_session(token, user_id=None):
+    """Bill a session's elapsed time and close it. ``None`` if it cannot be settled.
+
+    Elapsed is measured server-side from the mint; the browser cannot claim a shorter
+    session. It is capped by the reservation, so a tab left open overnight is not a
+    surprise invoice.
+    """
+    token = str(token or "").strip()
+    if not token:
+        return None
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM voice_sessions WHERE id = ?", (token,)).fetchone()
+        if not row or row["status"] != "open":
+            return None
+        if user_id is not None and row["user_id"] not in (None, user_id):
+            return None
+        reserved = int(row["reserved_seconds"] or 0)
+        # +2 seconds for clock granularity; the reservation is the ceiling.
+        billed = int(min(reserved, _age_seconds(row["created_at"]) + 2))
+        claimed = conn.execute(
+            "UPDATE voice_sessions SET status = 'settled', billed_seconds = ?, "
+            "closed_at = ? WHERE id = ? AND status = 'open'",
+            (billed, now_str(), token))
+        if not getattr(claimed, "rowcount", 0):
+            return None
+    try:
+        record_voice(org_id=row["org_id"], user_id=row["user_id"], seconds=billed,
+                     provider=row["provider"] or "gemini", model=row["model"] or "",
+                     label="voice")
+    except Exception as exc:
+        # The session is closed either way; the log is the alarm. Charging twice would be
+        # worse than a missing line, and the missing line is visible here.
+        print("[usage] could not bill voice session %s (%s: %s)"
+              % (token, type(exc).__name__, exc))
+    credits_milli, _ = rates.price_unit(row["provider"] or "gemini",
+                                        row["model"] or "", "voice", billed)
+    return {"session_id": token, "billed_seconds": billed,
+            "credits": rates.credits(credits_milli)}
+
+
+def sweep_voice_sessions(grace_seconds=120):
+    """Settle sessions whose browser never came back (closed tab, crash, killed app)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, reserved_seconds, created_at FROM voice_sessions "
+            "WHERE status = 'open'").fetchall()
+    settled = 0
+    for row in rows:
+        if _age_seconds(row["created_at"]) > int(
+                row["reserved_seconds"] or 0) + grace_seconds:
+            if settle_voice_session(row["id"]):
+                settled += 1
+    return settled
+
+
+# ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Reconciliation against the provider's invoice
+# ---------------------------------------------------------------------------
+def computed_milli(provider=None, period=None):
+    """Our own cost for a provider and month, from the snapshot on each event."""
+    where, params = [], []
+    if provider:
+        where.append("provider = ?")
+        params.append(provider)
+    if period:
+        where.append("created_at LIKE ?")
+        params.append("%s%%" % period)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(credits_milli), 0) AS milli FROM usage_events" + clause,
+            tuple(params)).fetchone()
+    return int(row["milli"] or 0)
+
+
+def _reconciliation_out(row):
+    item = _as_dict(row)
+    billed_milli = int(round(float(item.get("billed_usd") or 0) * rates.MILLI_PER_USD))
+    computed = int(item.get("computed_milli") or 0)
+    item["computed_usd"] = round(computed / rates.MILLI_PER_USD, 4)
+    item["variance_usd"] = round(int(item.get("variance_milli") or 0)
+                                 / rates.MILLI_PER_USD, 4)
+    item["variance_pct"] = (round(100.0 * int(item.get("variance_milli") or 0)
+                                  / billed_milli, 2) if billed_milli else None)
+    return item
+
+
+def save_reconciliation(provider, period, billed_usd, actor_id=None, note=""):
+    """Store our computed cost beside the provider's invoice for one month.
+
+    ``variance`` is computed minus billed: positive means the meter charges more than the
+    invoice, which is the safe direction to be wrong in.
+    """
+    import re
+
+    provider = (provider or "").strip().lower()
+    period = (period or "").strip()
+    if not provider or not re.match(r"^\d{4}-\d{2}$", period):
+        raise ValueError("provider and period (YYYY-MM) are required")
+    billed = float(billed_usd or 0)
+    computed = computed_milli(provider, period)
+    billed_milli = int(round(billed * rates.MILLI_PER_USD))
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO usage_reconciliations (provider, period, billed_usd, "
+            "computed_milli, variance_milli, note, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (provider, period, billed, computed, computed - billed_milli,
+             str(note or "")[:200], actor_id))
+        row = conn.execute("SELECT * FROM usage_reconciliations WHERE id = ?",
+                           (cur.lastrowid,)).fetchone()
+    return _reconciliation_out(row)
+
+
+def reconciliations(limit=24):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM usage_reconciliations ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),)).fetchall()
+    return [_reconciliation_out(row) for row in rows]
+
+
 def summary(org_id=None, days=30):
     """Spend by kind/provider/model/label for the last N days."""
     import datetime
@@ -516,7 +670,8 @@ def calibration_report():
 def _main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print("usage: python -m usage show [org_id] | calibrate | "
-              "grant <org_id> <credits> [note]")
+              "grant <org_id> <credits> [note] | "
+              "reconcile <provider> <YYYY-MM> <billed_usd> [note]")
         return 0
     if argv[0] == "show":
         org = int(argv[1]) if len(argv) > 1 else None
@@ -542,6 +697,17 @@ def _main(argv):
         new_balance = grant(int(argv[1]), float(argv[2]),
                             note=argv[3] if len(argv) > 3 else "")
         print("balance now %s credits" % rates.credits(new_balance))
+        return 0
+    if argv[0] == "reconcile" and len(argv) > 3:
+        try:
+            row = save_reconciliation(argv[1], argv[2], float(argv[3]),
+                                      note=argv[4] if len(argv) > 4 else "")
+        except ValueError as exc:
+            print(exc)
+            return 2
+        print("billed $%s | computed $%s | variance $%s (%s%%)"
+              % (row["billed_usd"], row["computed_usd"], row["variance_usd"],
+                 row["variance_pct"]))
         return 0
     print("unknown command")
     return 2

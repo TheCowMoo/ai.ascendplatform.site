@@ -483,8 +483,8 @@ the returned model name. So `llm.py` wraps the SDK resource itself:
 job_id)`, so a model call inherits the client and job without the tool knowing either.
 The job transcript ends with `Usage: N credits` (and how many calls are unpriced). Widget
 replies (`app.py`, plain OpenAI SDK) record themselves against the bot's org; voice is
-billed by reserved session minutes (the Live socket is browser→Google, so the server
-never sees audio tokens); `generate_image` records one image.
+billed for the seconds its session was held open (see phase 3 below); `generate_image`
+records one image.
 
 **Money.** `usage_events` is the record; `credit_ledger` is append-only truth;
 `credit_balances` caches the sum (updated in the same transaction, with an
@@ -510,8 +510,12 @@ client that has a ledger. An unpriced model records `credits_milli NULL` and app
 four-bucket price, cache-aware totals, the zero-rate fallback, missing-rate flagging,
 the ledger/balance agreement, attribution via `bind`, enforcement modes, the voice/image
 units, and the SDK wrappers (non-stream, stream, Anthropic cache fields, meter
-fallback). `test_db_dialect` and `test_migrations` include migration
-`0021_usage_credits`; `smoke_llm_gateway` accepts the metered client type.
+fallback). `test_db_dialect` and `test_migrations` include migrations
+`0021_usage_credits` and `0022_voice_and_reconciliation`; `smoke_llm_gateway` accepts the
+metered client type. Phase 3 adds voice settlement (nothing at mint, elapsed on close,
+sweep for abandoned tokens, one settle per token, owner only, text/plain beacons) and the
+invoice check (zero variance when the numbers match, a negative variance when they do
+not, newest first, malformed months refused) to `test_usage` and `smoke_usage_api`.
 
 **The screens (phase 2).** Workspace → **Usage** (`viewUsage`) shows the client its
 balance, plan, allowance, enforcement mode, a low-balance banner, spend by
@@ -529,9 +533,30 @@ API: `GET /api/usage` (own meter; the operator with no client picked gets every 
 `GET|POST /api/usage/rates`, `DELETE /api/usage/rates/<id>`. Credits and rates are
 `owner_required`; a client cannot read another client's usage.
 
-**Next (phase 3):** a top-up flow with a payment processor, the reconciliation report
-against provider invoices, voice accuracy (a close/heartbeat endpoint instead of the
-5-minute reservation), and turning `hard` on once the numbers agree with a real invoice.
+**Voice accuracy (phase 3).** The reservation is no longer charged at mint. `POST
+/api/voice/session` inserts a `voice_sessions` row (token, org, user, reserved seconds,
+provider, model) and returns its id; nothing is billed yet. When the user stops,
+`admin/voice.js` posts the token to `POST /api/voice/usage` (sendBeacon, else keepalive
+fetch, plus a `beforeunload` for a closing tab). The route bills **elapsed seconds measured
+by the server from the mint**, capped by the reservation: a browser cannot claim a shorter
+call, and a tab left open overnight is not a surprise invoice. A session that never comes
+back is settled by `usage.sweep_voice_sessions()` in the scheduler tick at its full
+reservation, so a crash is never free. A closed token cannot be settled twice (claimed by
+`UPDATE ... WHERE status='open'`), and only the user who minted it may settle it.
+
+**Invoices (phase 3).** `usage_reconciliations` stores one row per provider invoice:
+provider, `YYYY-MM`, the dashboard total in dollars, and our computed cost for the same
+month (`SUM(credits_milli)` over `usage_events`). `variance = computed - billed`, so a
+positive number means the meter charges more than the invoice. Platform → Usage →
+**Reconcile against the invoice** files one per month and lists the history, with a
+negative variance in red. API: `GET|POST /api/usage/reconciliation` (`owner_required`).
+
+```bash
+python -m usage reconcile deepseek 2026-11 12.34 "invoice #123"
+```
+
+**Next:** a top-up flow with a payment processor, and turning `hard` on once a real
+invoice reconciles within a few percent.
 
 ## Voice — the spoken assistant (2026-10-30)
 

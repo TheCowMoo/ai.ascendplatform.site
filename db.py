@@ -849,6 +849,45 @@ rate_card = Table(
 Index("idx_rate_card_lookup", rate_card.c.provider, rate_card.c.model, rate_card.c.kind)
 
 
+# A spoken session is charged when it ends, not when it starts. The browser holds this
+# token and reports the seconds it used; if it never reports (closed tab, crash), the
+# scheduler sweep settles the reservation instead, so the money is never lost.
+voice_sessions = Table(
+    "voice_sessions",
+    metadata,
+    Column("id", Text, primary_key=True),          # the token the browser holds
+    Column("org_id", Integer),
+    Column("user_id", Integer),
+    Column("reserved_seconds", Integer, nullable=False, server_default=text("0")),
+    Column("billed_seconds", Integer),
+    Column("provider", Text, nullable=False, server_default=_literal("")),
+    Column("model", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("open")),
+    _created_at(),
+    Column("closed_at", Text),
+)
+Index("idx_voice_sessions_user", voice_sessions.c.user_id, voice_sessions.c.status)
+
+# One row per provider invoice checked against our own meter. Variance is our computed
+# cost minus what the provider billed, in milli-credits; a positive number means we are
+# charging more than the invoice, which is the safe direction to be wrong in.
+usage_reconciliations = Table(
+    "usage_reconciliations",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("provider", Text, nullable=False, server_default=_literal("")),
+    Column("period", Text, nullable=False, server_default=_literal("")),
+    Column("billed_usd", Float, nullable=False, server_default=text("0")),
+    Column("computed_milli", Integer, nullable=False, server_default=text("0")),
+    Column("variance_milli", Integer, nullable=False, server_default=text("0")),
+    Column("note", Text, nullable=False, server_default=_literal("")),
+    Column("actor_id", Integer),
+    _created_at(),
+)
+Index("idx_usage_recon_period", usage_reconciliations.c.provider,
+      usage_reconciliations.c.period)
+
+
 # ---------------------------------------------------------------------------
 # Connection / result adapters
 # ---------------------------------------------------------------------------

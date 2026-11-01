@@ -10,6 +10,7 @@ What this pins:
 * the monthly allowance is granted once per period, even when the sweep runs again.
 """
 
+import json
 import os
 import sys
 import uuid
@@ -70,11 +71,14 @@ def cleanup():
         ).fetchall()
         for org in orgs:
             org_id = org["id"]
-            for table in ("usage_events", "credit_ledger", "credit_balances"):
+            for table in ("usage_events", "credit_ledger", "credit_balances",
+                          "voice_sessions"):
                 conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org_id,))
             conn.execute("DELETE FROM users WHERE org_id = ?", (org_id,))
             conn.execute("DELETE FROM orgs WHERE id = ?", (org_id,))
         conn.execute("DELETE FROM rate_card WHERE provider LIKE ?",
+                     ("testapi-%s%%" % TOKEN,))
+        conn.execute("DELETE FROM usage_reconciliations WHERE provider LIKE ?",
                      ("testapi-%s%%" % TOKEN,))
 
 
@@ -161,6 +165,59 @@ def test_the_monthly_grant_is_idempotent(alpha):
     print("the monthly allowance lands once per period")
 
 
+def test_a_voice_session_is_settled_by_its_owner(alpha, beta):
+    """The browser posts the session token back; nobody else can close it."""
+    a = _login(alpha)
+    with db.get_connection() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE org_id = ?",
+                               (alpha["id"],)).fetchone()["id"]
+    token = usage.open_voice_session(alpha["id"], user_id, 300, provider="gemini",
+                                     model="voice-test-%s" % TOKEN)
+    closed = a.post("/api/voice/usage", json={"session_id": token})
+    check("the owner settles the session", closed.status_code, 200)
+    check("the seconds come from the server's clock",
+          closed.get_json()["billed_seconds"] < 300, True)
+    check("a second post is refused",
+          a.post("/api/voice/usage", json={"session_id": token}).status_code, 409)
+
+    other = usage.open_voice_session(alpha["id"], user_id, 300)
+    b = _login(beta)
+    check("another client cannot close it",
+          b.post("/api/voice/usage", json={"session_id": other}).status_code, 409)
+    check("the owner still can",
+          a.post("/api/voice/usage", json={"session_id": other}).status_code, 200)
+
+    # sendBeacon posts text/plain; refusing that shape would leave the session open
+    # until the sweep charges the whole reservation.
+    beacon = usage.open_voice_session(alpha["id"], user_id, 300)
+    plain = a.post("/api/voice/usage", data=json.dumps({"session_id": beacon}),
+                   content_type="text/plain")
+    check("a text/plain beacon is accepted", plain.status_code, 200)
+    print("a spoken session is settled by the user who opened it")
+
+
+def test_invoices_are_reconciled_by_the_operator(alpha):
+    owner = _owner()
+    a = _login(alpha)
+    body = {"provider": "testapi-%s" % TOKEN, "period": db.now_str()[:7],
+            "billed_usd": 1.25, "note": "smoke invoice"}
+    check("a client cannot file an invoice",
+          a.post("/api/usage/reconciliation", json=body).status_code, 403)
+    saved = owner.post("/api/usage/reconciliation", json=body)
+    check("the operator files an invoice", saved.status_code, 201)
+    row = saved.get_json()["reconciliation"]
+    check("the computed cost and the variance are reported",
+          "computed_usd" in row and "variance_usd" in row, True)
+    listed = owner.get("/api/usage/reconciliation").get_json()["rows"]
+    check("the month is in the list", any(item["id"] == row["id"] for item in listed), True)
+    check("a client cannot read the list",
+          a.get("/api/usage/reconciliation").status_code, 403)
+    check("a bad month is refused",
+          owner.post("/api/usage/reconciliation",
+                     json=dict(body, period="soon")).status_code, 400)
+    print("invoices are reconciled by the operator, and clients never see them")
+
+
 def test_the_console_is_wired():
     """Static: the endpoints can be perfect and the screens still never load."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -180,6 +237,11 @@ def test_the_console_is_wired():
     check("credits are added from the platform page",
           "'/api/orgs/' + org.id + '/credits'" in admin_js, True)
     check("the rate card is edited there", "'/api/usage/rates'" in admin_js, True)
+    check("invoices are checked from the platform page",
+          "'/api/usage/reconciliation'" in admin_js, True)
+    voice_js = read("admin", "voice.js")
+    check("the browser hands the voice token back when it stops",
+          "'/api/voice/usage'" in voice_js and "data.session_id" in voice_js, True)
     check("the nav icon exists", 'id="i-credits"' in page, True)
     check("the balance is the page's one number", ".usage-balance" in css, True)
     print("the usage screens are wired to the endpoints")
@@ -192,6 +254,8 @@ def main():
         test_only_the_operator_moves_money(alpha, beta)
         test_the_rate_card_is_editable()
         test_the_monthly_grant_is_idempotent(alpha)
+        test_a_voice_session_is_settled_by_its_owner(alpha, beta)
+        test_invoices_are_reconciled_by_the_operator(alpha)
         test_the_console_is_wired()
     finally:
         cleanup()

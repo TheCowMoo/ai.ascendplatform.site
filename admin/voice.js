@@ -42,7 +42,8 @@
     outAnalyser: null, micData: null, outData: null, raf: 0,
     level: 0, settled: false, intentional: false,
     session: null, turns: [], opts: {}, setupTimer: 0, host: null,
-    lastError: '', closeInfo: '', calls: 0, sessionId: '', generation: 0, opener: null,
+    lastError: '', closeInfo: '', calls: 0, sessionId: '', voiceToken: '',
+    generation: 0, opener: null,
     team: { generation: 0, jobs: {}, timer: 0, ticks: 0, polling: false,
             approvals: {}, awaitingAnswer: false },
     teamQueue: [], teamFlushTimer: 0
@@ -254,6 +255,10 @@
       // composer beside the panel), so it must not end a session the user is watching.
       if (event.key === 'Escape' && ui && !ui.overlay.hidden && !state.host) stop();
     });
+
+    // Closing the tab ends the call, so tell the server now: a beacon queued here still
+    // leaves. Without it the scheduler settles the session at its reservation instead.
+    window.addEventListener('beforeunload', function () { settleSession(); });
 
     // A modal must keep Tab inside it. The order is the visible action buttons only.
     document.addEventListener('keydown', function (event) {
@@ -525,7 +530,33 @@
     }
   }
 
+  // The server bills a spoken session by how long its token was open, so handing the token
+  // back is the only thing the browser has to report. sendBeacon survives the tab going
+  // away; keepalive fetch covers browsers without it. If neither lands, the scheduler
+  // settles the session at its reservation - never free, just less precise.
+  function settleSession() {
+    var token = state.voiceToken;
+    state.voiceToken = '';
+    if (!token) return;
+    var body = JSON.stringify({ session_id: token });
+    try {
+      if (navigator.sendBeacon && typeof Blob === 'function') {
+        var blob = new Blob([body], { type: 'application/json' });
+        if (navigator.sendBeacon('/api/voice/usage', blob)) return;
+      }
+    } catch (e) { /* fall through to fetch */ }
+    try {
+      fetch('/api/voice/usage', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: body
+      }).catch(function () { /* the scheduler settles it */ });
+    } catch (e) { /* the scheduler settles it */ }
+  }
+
   function teardownTransport() {
+    settleSession();
     if (state.setupTimer) {
       try { window.clearTimeout(state.setupTimer); } catch (e) { /* no timer */ }
       state.setupTimer = 0;
@@ -1279,6 +1310,7 @@
       if (generation !== state.generation) throw { cancelled: true };
       state.session = data;
       state.sessionId = 's' + Date.now().toString(36) + '-' + (++sessionCounter);
+      state.voiceToken = data.session_id || '';
       updateNote();
       if (data.model_note) appendSystemNote(data.model_note);
       return openAudio(generation).then(function () {

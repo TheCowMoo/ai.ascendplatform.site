@@ -229,8 +229,10 @@ def start_verifier():
             try:
                 import usage
 
-                # Idempotent per month: running this hourly (and on every restart) must
-                # grant the allowance exactly once.
+                # A voice session whose browser never came back is billed at its
+                # reservation; the monthly grant is skipped if the sweep raises, and the
+                # next tick tries again.
+                usage.sweep_voice_sessions()
                 usage.grant_monthly()
             except Exception:
                 pass          # a grant failure must not stop the DNS sweep

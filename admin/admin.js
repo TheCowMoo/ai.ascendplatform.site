@@ -5687,6 +5687,24 @@
       });
     }
 
+    function reconForm() {
+      formModal('Reconcile a month', [
+        { name: 'provider', label: 'Provider', placeholder: 'deepseek' },
+        { name: 'period', label: 'Month', placeholder: '2026-11',
+          value: new Date().toISOString().slice(0, 7) },
+        { name: 'billed_usd', label: 'Billed ($)', placeholder: '12.34' },
+        { name: 'note', label: 'Note', placeholder: 'invoice number' }
+      ], function (data, fail, ok) {
+        api('POST', '/api/usage/reconciliation', data).then(function (res) {
+          ok();
+          var row = res.reconciliation;
+          toast('We computed $' + Number(row.computed_usd || 0).toFixed(2) +
+                ' against $' + Number(row.billed_usd || 0).toFixed(2) + ' billed', true);
+          load();
+        }).catch(function (e) { fail(e.message); });
+      });
+    }
+
     function rateForm(rate) {
       rate = rate || {};
       formModal(rate.id ? 'Edit rate' : 'Add a rate', [
@@ -5748,6 +5766,54 @@
           clients.appendChild(table);
         }
         body.appendChild(clients);
+
+        // The invoice check. The provider bills one number for a month; we compute the
+        // same month from the snapshot on every call. Variance is ours minus theirs, so
+        // a negative red row means the meter is charging less than the bill.
+        var recon = el('div', 'panel');
+        var reconBar = el('div', 'panel-head');
+        reconBar.appendChild(el('h3', null, 'Reconcile against the invoice'));
+        var addRecon = el('button', 'btn btn-ghost btn-sm', 'Check a month');
+        addRecon.onclick = function () { reconForm(); };
+        reconBar.appendChild(addRecon);
+        recon.appendChild(reconBar);
+        recon.appendChild(el('p', 'fine-print',
+          'Provider, month and the total from their dashboard. A positive variance means ' +
+          'the meter charges more than the invoice; a negative one means it charges less.'));
+        body.appendChild(recon);
+        api('GET', '/api/usage/reconciliation').then(function (r) {
+          var rows = r.rows || [];
+          if (!rows.length) {
+            recon.appendChild(el('p', 'muted',
+              'No month checked yet. Until one is, the meter has only been read by us.'));
+            return;
+          }
+          var rt = el('table', 'table');
+          rt.innerHTML = '<thead><tr><th>Checked</th><th>Provider</th><th>Month</th>' +
+            '<th>Billed</th><th>We computed</th><th>Variance</th><th>Note</th></tr></thead>';
+          var rtb = el('tbody');
+          rows.forEach(function (row) {
+            var tr = el('tr');
+            var short = Number(row.variance_usd || 0) < 0;
+            tr.innerHTML = '<td class="muted">' +
+              esc((row.created_at || '').slice(0, 16)) + '</td>' +
+              '<td>' + esc(row.provider) + '</td>' +
+              '<td>' + esc(row.period) + '</td>' +
+              '<td>$' + esc(Number(row.billed_usd || 0).toFixed(2)) + '</td>' +
+              '<td>$' + esc(Number(row.computed_usd || 0).toFixed(2)) + '</td>' +
+              '<td class="' + (short ? 'form-error' : '') + '">$' +
+              esc(Number(row.variance_usd || 0).toFixed(2)) +
+              (row.variance_pct === null || row.variance_pct === undefined
+                ? '' : ' <span class="muted">(' + esc(row.variance_pct) + '%)</span>') +
+              '</td>' +
+              '<td class="muted">' + esc(row.note || '') + '</td>';
+            rtb.appendChild(tr);
+          });
+          rt.appendChild(rtb);
+          recon.appendChild(rt);
+        }).catch(function (e) {
+          recon.appendChild(el('p', 'form-error', esc(e.message)));
+        });
 
         var ratesCard = el('div', 'panel');
         var bar = el('div', 'panel-head');

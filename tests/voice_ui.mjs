@@ -116,6 +116,7 @@ const context = {
 
 const session = {
   token: 'ephemeral-token',
+  session_id: 'voice-token-1',
   endpoint: 'wss://example.test/live',
   model: 'gemini-3.8-live',
   api_version: 'v1beta',
@@ -143,7 +144,10 @@ class FakeWebSocket {
 const window = globalThis;
 window.document = document;
 Object.defineProperty(window, 'navigator', { value: navigator, configurable: true });
+const listeners = {};
+window.addEventListener = (type, handler) => { listeners[type] = handler; };
 const toolCalls = [];
+const closes = [];
 const jobs = {
   7: {
     job: { id: 7, status: 'done', result: 'Asked the user for the brief.' },
@@ -159,6 +163,12 @@ const jobs = {
 window.fetch = async (url, options) => {
   if (url === '/api/voice/session') {
     return { ok: true, status: 200, json: async () => session };
+  }
+  if (url === '/api/voice/usage') {
+    const body = JSON.parse((options && options.body) || '{}');
+    closes.push(body);
+    return { ok: true, status: 200,
+             json: async () => ({ billed_seconds: 3, credits: 0.1 }) };
   }
   if (url === '/api/voice/tool') {
     const body = JSON.parse((options && options.body) || '{}');
@@ -277,6 +287,8 @@ assert.equal(Voice.phase(), 'error', 'a server error is an error');
 assert.ok(text('voice-detail').includes('model not found'), 'the server words survive');
 Voice.stop();
 assert.equal(Voice.phase(), 'idle', 'stop closes the mode');
+assert.equal(closes.length, 1, 'stop settles the spoken session exactly once');
+assert.equal(closes[0].session_id, 'voice-token-1', 'the token goes back to the server');
 
 assert.equal(await Voice.open({ page: 'test' }), true, 'a second session opens');
 ws = FakeWebSocket.last;
@@ -305,6 +317,8 @@ assert.match(host.children[0].className, /voice-docked/,
 
 binaryMessage(ws, { setupComplete: {} });
 assert.equal(Voice.phase(), 'listening', 'the docked panel is the same session');
+assert.equal(typeof listeners.beforeunload, 'function',
+             'closing the tab also settles the session');
 
 message(ws, { toolCall: { functionCalls: [{
   id: 'call-dock-1', name: 'delegate_to_team', args: { instruction: 'make it warmer' }

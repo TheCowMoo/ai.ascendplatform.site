@@ -141,6 +141,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Usage        ", "/api/usage", ["rows", "balance", "plan"], "ok"),
         # The rate card and the money are the operator's, and refused with 403 to a client.
         ("Usage        ", "/api/usage/rates", [], "deny"),
+        ("Usage        ", "/api/usage/reconciliation", [], "deny"),
         # Platform area: the client must be refused, and refused with 403 rather than 500.
         ("Platform     ", "/api/orgs", ["orgs"], "deny"),
         ("Platform     ", "/api/orgs/%d" % org["id"], [], "deny"),
