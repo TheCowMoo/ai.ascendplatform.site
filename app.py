@@ -1369,7 +1369,7 @@ def _usage_days(default=30):
         return default
 
 
-def _org_usage(org, days=30):
+def _org_usage(org, days=30, pricing=False):
     org_id = org["id"] if org else None
     data = usage_service.summary(org_id, days=days)
     plan = (org or {}).get("plan") or "standard"
@@ -1388,6 +1388,14 @@ def _org_usage(org, days=30):
         "ledger": usage_service.ledger(org_id, limit=25) if org_id else [],
         "reconcile": usage_service.reconcile(org_id) if org_id else None,
     })
+    if pricing:
+        # Operator-only: what a credit sells for and the margin it carries. A client's
+        # payload never contains these - their console shows credits and nothing else.
+        data.update({
+            "credit_usd": usage_service.credit_price(),
+            "markup_percent": usage_service.credit_markup_percent(),
+            "margin_percent": usage_service.credit_margin_percent(),
+        })
     return data
 
 
@@ -1410,10 +1418,13 @@ def usage_overview():
         data.update({"org_id": None, "orgs": rows, "balance": None, "low": False,
                      "enforce": usage_service.enforcement_mode(),
                      "low_water": usage_service.low_water(),
+                     "credit_usd": usage_service.credit_price(),
+                     "markup_percent": usage_service.credit_markup_percent(),
+                     "margin_percent": usage_service.credit_margin_percent(),
                      "missing_rates": rates_service.missing_rates()})
         return jsonify(data)
 
-    data = _org_usage(orgs_service.get_org(org), days)
+    data = _org_usage(orgs_service.get_org(org), days, pricing=is_owner())
     data["recent"] = usage_service.recent(org, limit=25)
     if is_owner():
         data["missing_rates"] = rates_service.missing_rates()
@@ -1426,7 +1437,7 @@ def org_usage(org_id):
     org = orgs_service.get_org(org_id)
     if not org:
         return jsonify({"error": "Not found"}), 404
-    data = _org_usage(org, _usage_days())
+    data = _org_usage(org, _usage_days(), pricing=True)
     data["recent"] = usage_service.recent(org_id, limit=50)
     data["missing_rates"] = rates_service.missing_rates()
     return jsonify(data)

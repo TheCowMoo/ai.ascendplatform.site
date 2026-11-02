@@ -5301,9 +5301,11 @@
   function viewUsage() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Usage</h2><p class="muted">What the team has spent, in ' +
-      'credits. 1 credit = $0.001; cached input is priced as cached input, not as fresh ' +
-      'input.</p></div>';
+    // Credits only. The dollar price of a credit is the operator's business, and it is
+    // deliberately absent from this screen and from a client's payload.
+    head.innerHTML = '<div><h2>Usage</h2><p class="muted">What the team has used, in ' +
+      'credits. Cached input costs less than fresh input, so a cached prompt is cheaper ' +
+      'to run.</p></div>';
     var range = el('select');
     range.innerHTML = '<option value="7">Last 7 days</option>' +
       '<option value="30" selected>Last 30 days</option>' +
@@ -5494,6 +5496,18 @@
     function load() {
       api('GET', '/api/usage?days=30').then(function (d) {
         body.innerHTML = '';
+        // One price, stated once. The rate card below stays in provider cost, so
+        // reconciliation never carries the markup and this line cannot disagree with it.
+        var price = Number(d.credit_usd || 0);
+        if (price > 0) {
+          var priceCard = el('div', 'panel');
+          priceCard.appendChild(el('h3', null, 'Credit price'));
+          priceCard.appendChild(el('p', 'muted',
+            '1 credit = $' + String(price) + ' · ' + fmtCredits(d.markup_percent) +
+            '% markup · ' + fmtCredits(d.margin_percent) + '% margin. Clients see ' +
+            'credits only; the rate card below is what the provider charges us.'));
+          body.appendChild(priceCard);
+        }
         var clients = el('div', 'panel');
         clients.appendChild(el('h3', null, 'Clients'));
         var orgs = d.orgs || [];
@@ -5502,7 +5516,7 @@
         } else {
           var table = el('table', 'table');
           table.innerHTML = '<thead><tr><th>Client</th><th>Plan</th><th>Allowance</th>' +
-            '<th>Balance</th><th></th></tr></thead>';
+            '<th>Balance</th><th>Value</th><th></th></tr></thead>';
           var tbody = el('tbody');
           orgs.forEach(function (org) {
             var tr = el('tr');
@@ -5512,7 +5526,9 @@
               '<div class="fine-print">' + esc(org.status) + '</div></td>' +
               '<td><span class="badge">' + esc(org.plan) + '</span></td>' +
               '<td>' + (org.allowance ? esc(fmtCredits(org.allowance)) : '-') + '</td>' +
-              '<td>' + esc(balance) + '</td>';
+              '<td>' + esc(balance) + '</td>' +
+              '<td>' + (org.balance === null || org.balance === undefined ? '-' :
+                '$' + (Number(org.balance) * price).toFixed(2)) + '</td>';
             var td = el('td', 'row-actions');
             var add = el('button', 'btn btn-ghost btn-sm', 'Credits');
             add.onclick = function () { grantForm(org); };

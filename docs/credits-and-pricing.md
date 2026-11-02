@@ -1,20 +1,28 @@
 # Credits, costs and pricing
 
-The meter runs at **cost**. `rates.py` stores the provider's own list prices (dollars per
-million tokens, per minute, per image) and converts them to credits; nothing in the meter
-adds a margin. What you charge is a separate decision made on the plan or the top-up -
-see [Pricing](#pricing).
+There are two numbers, and they never mix:
+
+* **Cost** - what the provider charges us. The rate card holds it, and every usage event
+  is recorded in credits at that cost.
+* **Sale price** - what a credit sells for. One setting, `CREDIT_PRICE_USD` in
+  Settings -> Usage & credits, currently **$0.05**.
+
+Credits are cost units. A call that costs $0.001 uses one credit; selling that credit for
+$0.05 does not change the meter, the ledger or the reconciliation - it only changes what
+the operator reads. Clients never see a dollar figure at all.
 
 ## Units
 
-| Unit | Value | Constant |
+| Unit | Value | Where |
 |---|---|---|
-| 1 credit | $0.001 | `rates.CREDITS_PER_USD` |
+| 1 credit (cost) | $0.001 of provider spend | `rates.CREDITS_PER_USD` |
 | 1 milli-credit | $0.000001 (what the database stores) | `rates.MILLI_PER_CREDIT` |
-| $1 | 1,000 credits / 1,000,000 milli | `rates.MILLI_PER_USD` |
+| Sale price | **$0.05 per credit** | `CREDIT_PRICE_USD` |
+| Markup over cost | **4,900%** | `usage.credit_markup_percent()` |
+| Gross margin | **98%** | `usage.credit_margin_percent()` |
 
-The rate card keeps **dollars exactly as the dashboard shows them**. The conversion lives
-in one place so a price copied from an invoice never has to be pre-multiplied.
+The rate card keeps **dollars exactly as the provider dashboard shows them**. Conversion
+lives in one place so a price copied from an invoice is never pre-multiplied.
 
 ## What a model call costs
 
@@ -24,22 +32,19 @@ milli = round( fresh_tokens       x input_per_1m
              + cache_write_tokens x effective(cache_write_per_1m)
              + output_tokens      x effective(output_per_1m) )
 
-credits = milli / 1000          dollars = milli / 1,000,000
+credits = milli / 1000          cost_dollars = milli / 1,000,000
 ```
 
-Both sides are per million, so `tokens x $/1M = $ x 1,000,000 = milli-credits`.
+Both sides are per million: `tokens x $/1M = $ x 1,000,000 = milli-credits`.
 
-> **credits per 1M tokens of a bucket = its dollar price per 1M x 1000.**
-> $0.27/1M input -> 270 credits per 1M tokens. $1.10/1M output -> 1,100 per 1M.
+> **credits per 1M tokens of a bucket = its $/1M price x 1000.**
+> $0.27/1M input -> 270 credits per 1M. $1.10/1M output -> 1,100 per 1M.
 
-`effective(field)` returns the field when it is non-zero, otherwise `input_per_1m`. **A
-zero means "not filled in", never "free"** - so fill every column, or output is charged at
-the input price.
+`effective(field)` returns the field when it is non-zero, otherwise `input_per_1m`.
+**A zero means "not filled in", never "free"** - fill every column or output is charged
+at the input price.
 
 ### The four buckets
-
-Providers disagree about what their totals include, so the meter normalises to four
-buckets before pricing:
 
 | Provider | Fresh input | Cached input | Cache write | Output |
 |---|---|---|---|---|
@@ -47,8 +52,8 @@ buckets before pricing:
 | OpenAI | `prompt_tokens - cached_tokens` | `prompt_tokens_details.cached_tokens` | - | `completion_tokens` |
 | DeepSeek | `prompt_cache_miss_tokens` | `prompt_cache_hit_tokens` | - | `completion_tokens` |
 
-Reasoning tokens are stored for visibility and are **not charged twice**: providers
-already count them inside output.
+Reasoning tokens are stored for visibility and are not charged twice: providers already
+count them inside output.
 
 ## Voice and images
 
@@ -57,28 +62,26 @@ voice:  milli = round( seconds / 60 x per_unit($ per minute) x 1,000,000 )
 image:  milli = round( images        x per_unit($ per image)  x 1,000,000 )
 ```
 
-A `per_unit` of 0 or missing means **unpriced**, not free - unlike model fields, units have
-no fallback. Voice is billed when the session ends, at
-`min(reservation, server_elapsed_seconds + 2)`; a browser that never reports back is
-settled by the scheduler at its full reservation.
+A `per_unit` of 0 or missing means **unpriced**, not free. Voice is billed when the
+session ends, at `min(reservation, server_elapsed_seconds + 2)`; a browser that never
+reports back is settled by the scheduler at its full reservation.
 
 ## What the ledger records
 
-* Every priced call writes a `usage_events` row (the four buckets, the price snapshot) and
-  a `credit_ledger` row with `reason='usage'`, `delta_milli = -credits_milli`.
+* Every priced call writes a `usage_events` row (four buckets, price snapshot) and a
+  `credit_ledger` row `reason='usage'`, `delta_milli = -credits_milli`.
 * `credit_balances` caches the sum; the ledger is the truth and `usage.reconcile(org)`
   asserts they agree.
-* Grants and top-ups are `reason='grant'`; corrections are `adjustment`. A negative
-  adjustment lowers the balance, a positive one raises it.
-* The monthly allowance is granted once per `(org, 'grant', 'YYYY-MM')`, so the scheduler
-  can run hourly without double-granting. Unused credits roll over; the balance is
-  cumulative.
-* Charges apply even under shadow enforcement, so a balance can go negative. The
-  enforcement mode decides whether **new work is accepted**, not whether spending is
-  recorded. `USAGE_ENFORCE=hard` refuses at zero for a client that has a ledger; a client
-  with no balance row is never blocked.
+* Grants and top-ups are `reason='grant'`; corrections are `adjustment`.
+* The monthly allowance is granted once per `(org, 'grant', 'YYYY-MM')`; unused credits
+  roll over because the balance is cumulative.
+* **The sale price is not written on an event.** `credits_milli` is cost, so changing
+  `CREDIT_PRICE_USD` never rewrites history and never disturbs reconciliation.
+* Charges apply under shadow enforcement, so a balance can go negative; enforcement
+  decides whether new work is accepted. `USAGE_ENFORCE=hard` refuses at zero for a client
+  with a ledger; a client with no balance row is never blocked.
 
-## Worked examples
+## Worked cost examples
 
 Prices below are placeholders; use your dashboard.
 
@@ -90,77 +93,89 @@ $1.10/1M:
   200,000 x 0.07 =  14,000
   150,000 x 1.10 = 165,000
                  --------
-                  449,000 milli = 449 credits = $0.449
+                  449,000 milli = 449 credits = $0.449 of cost
 ```
 
 **A job of 30 calls**, each 8k fresh / 12k cached / 1.5k output at those prices:
 
 ```
 per call: 8,000x0.27 + 12,000x0.07 + 1,500x1.10 = 2,160 + 840 + 1,650 = 4,650 milli
-job:      30 x 4.65 = 139.5 credits = $0.1395
+job:      30 x 4.65 = 139.5 credits = $0.1395 of cost
 ```
 
-**Voice** - 5 minutes at $0.10/min: `5 x 100 = 500 credits = $0.50` (100 credits/min).
-**Images** - 3 at $0.04: `3 x 40 = 120 credits = $0.12`.
+## The sale price
 
-A cache hit is the difference between `12,000 x 0.07 = 840` and `12,000 x 0.27 = 3,240`
-milli on that call: the four buckets exist so a cached agent loop is not billed as if every
-token were fresh.
+One number, one place: `CREDIT_PRICE_USD` (Settings -> Usage & credits, default **0.05**).
+It applies to every credit - model calls, voice, images, every client, every plan. There
+is no per-plan markup; volume deals are a billing decision made outside the meter.
 
-## Where the numbers come from
-
-* `rates.rate_for(provider, model, kind)` tries the returned model name, the part after a
-  `provider/` gateway prefix, then the name with a trailing `-YYYYMMDD` stripped.
-* No row -> `credits_milli` is NULL, nothing is charged, and the call appears in
-  `rates.missing_rates()` / *Unpriced models*. A guessed price would be worse than a gap.
-* `python -m usage calibrate` makes one tiny live call per provider and prints the raw
-  split, which is the fastest way to fill the card the first time.
-* Editing a rate never rewrites history: every event snapshots the credits it cost.
-
-## Pricing
-
-Because 1 credit is exactly $0.001 of provider spend:
+| | |
+|---|---|
+| Sale price | **$0.05 / credit** |
+| Our cost of that credit | $0.001 |
+| 200 credits | **$10.00** |
+| $10 of our cost (10,000 credits) | **$500.00** |
+| Gross profit on $10 of cost | $490.00 |
+| Gross margin | **98%** |
 
 ```
 cost_of_goods      = credits_used x $0.001
-revenue_per_credit = plan_price / included_credits
-gross_margin       = 1 - 0.001 / revenue_per_credit
-price_for_margin m = cost_of_goods / (1 - m)
+revenue            = credits_sold x CREDIT_PRICE_USD
+markup_percent     = (price / 0.001 - 1) x 100
+margin_percent     = (price - 0.001) / price x 100
 ```
 
-| Sell price per credit | Margin | A 50,000-credit plan sells for |
+Markup and margin are not the same number: 4,900% markup is 98% margin.
+
+### What the current price bills
+
+| Thing | Credits (cost) | Billed at $0.05 |
 |---|---|---|
-| $0.0015 | 33.3% | $75 |
-| $0.0020 | 50.0% | $100 |
-| $0.0030 | 66.7% | $150 |
-| $0.0040 | 75.0% | $200 |
+| 1M-token call (1M fresh @ $0.27, 200k cached, 150k out) | 449 | **$22.45** |
+| Typical 30-call writing job ($0.14 of cost) | 139.5 | **$6.98** |
+| 5-minute voice session ($0.50 of cost) | 500 | **$25.00** |
+| 3 images ($0.12 of cost) | 120 | **$6.00** |
+| One credit | 1 | **$0.05** |
 
-Utilization moves the margin more than list price does. A 50,000-credit plan at $99 costs
-$50 if fully used (49.5% margin) and $20 at 40% use (79.8%). Break-even at 40% use is $20:
-never price below `0.001 x expected_used_credits`.
+### Plans
 
-A defensible starting structure (an example, not a recommendation from the code):
+Allowances are in credits, so a plan is priced as `allowance x $0.05`:
 
-| Plan | Credits/mo | Price | $/credit | Cost at full use | Margin at full use |
-|---|---|---|---|---|---|
-| Starter | 20,000 | $49 | $0.00245 | $20 | 59.2% |
-| Growth | 75,000 | $149 | $0.00199 | $75 | 49.7% |
-| Scale | 250,000 | $399 | $0.00160 | $250 | 37.3% |
+| Credits per month | Price | Our cost at full use |
+|---|---|---|
+| 200 | $10 | $0.20 |
+| 2,000 | $100 | $2.00 |
+| 10,000 | $500 | $10.00 |
 
-Top-ups: 10,000 credits for $25 is $0.0025/credit (60% margin). Pick a minimum, and say
-whether credits expire - the balance does not expire by itself.
+`USAGE_LOW_WATER` is in credits too: at $0.05, the default 1,000 credits is $50 of
+balance. Set it as a share of the smallest plan (20 credits for the 200-credit plan).
 
-`USAGE_LOW_WATER` drives both the banner and the sidebar's red state. Set it to roughly
-10% of the smallest allowance (2,000 on the Starter plan above) so the gauge warns before
-`hard` enforcement starts refusing work.
+### What the client sees
+
+Credits only. The client Usage page shows balance, plan, allowance, spend by model and
+recent calls, all in credits; it never states a dollar figure. `GET /api/usage` for a
+non-owner omits `credit_usd`, `markup_percent` and `margin_percent` entirely, so the price
+is not in the browser either. The operator (including while acting as a client) sees the
+price, the markup and the margin on Platform -> Usage, plus a *Value* column (balance x
+price) and the rate card in provider cost.
+
+### Changing the price
+
+* It affects every credit immediately, but **no stored number changes**: credits are cost
+  units and `credits_milli` is untouched.
+* Dollar values shown for past months are computed at the current price, because the
+  price is not snapshotted per event. If you ever need historical dollar values, that is
+  a new column, not a re-read of old rows.
+* Reconciliation is unaffected: it compares provider invoices to credits at cost.
 
 ### Two rules that keep the meter trustworthy
 
-1. **Keep the rate card at cost.** If you multiply it to bake in margin, the invoice
-   reconciliation compares your marked-up number to the provider's bill and every
-   "variance" becomes your markup. Price the plan or the top-up instead.
+1. **Never edit the rate card to reflect the sale price.** Keep it at provider cost; the
+   price is the one setting above. A marked-up rate card makes every reconciliation
+   variance equal to the markup.
 2. **Close the leaks before launch.** *Unpriced models* must be empty, and voice needs a
-   `per_unit` row keyed to `voice.model()`, `kind=voice`. Until then those calls are free.
+   `per_unit` row keyed to `voice.model()` with `kind=voice`. Until then those calls are
+   free, at any price.
 
 ## Before you publish prices
 
@@ -168,11 +183,11 @@ whether credits expire - the balance does not expire by itself.
       Platform -> Usage -> Rate card).
 - [ ] Confirm no *Unpriced models* remain after a day of real work.
 - [ ] Add the voice row: `provider=gemini`,
-      `model=$(python -c "import voice; print(voice.model())")`, `kind=voice`,
-      `per_unit` = $/min.
-- [ ] Set the plan allowances and `USAGE_LOW_WATER` in Settings -> Usage & credits.
-- [ ] Decide the sell price per credit, then the plan price from the table above.
-- [ ] Grant a test client credits and watch Workspace -> Usage and the sidebar bar.
+      `model=$(python -c "import voice; print(voice.model())")`, `kind=voice`, `per_unit`.
+- [ ] Set `CREDIT_PRICE_USD` and the plan allowances in Settings -> Usage & credits.
+- [ ] Set `USAGE_LOW_WATER` in credits, on the new scale.
+- [ ] Grant a test client credits and check the sidebar bar, Workspace -> Usage and the
+      operator's Value column.
 - [ ] Run one real month, then `python -m usage reconcile <provider> YYYY-MM <billed>`.
 - [ ] Only then set `USAGE_ENFORCE=hard`.
 
@@ -181,7 +196,9 @@ whether credits expire - the balance does not expire by itself.
 | What | Where |
 |---|---|
 | Units, rate lookup, model arithmetic | `rates.py` (`MILLI_PER_USD`, `rate_for`, `price_model`, `price_unit`) |
-| Events, ledger, balance, grants | `usage.py` (`record_model`, `_charge`, `grant`, `added_this_month`) |
+| Credits, ledger, balance, grants | `usage.py` (`record_model`, `_charge`, `grant`, `added_this_month`) |
+| Sale price, markup, margin | `usage.credit_price`, `credit_markup_percent`, `credit_margin_percent`; `CREDIT_PRICE_USD` |
+| Operator-only fields | `app._org_usage(..., pricing=...)` |
 | Token normalisation | `usage.normalise_openai`, `usage.normalise_anthropic` |
 | Rates in the console | Platform -> Usage -> Rate card; `GET / POST /api/usage/rates` |
 | Allowances and enforcement | Settings -> Usage & credits; `USAGE_PLAN_*`, `USAGE_LOW_WATER`, `USAGE_ENFORCE` |

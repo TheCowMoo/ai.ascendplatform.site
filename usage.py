@@ -369,6 +369,33 @@ PLAN_KEYS = {"trial": "USAGE_PLAN_TRIAL", "standard": "USAGE_PLAN_STANDARD",
              "pro": "USAGE_PLAN_PRO", "enterprise": "USAGE_PLAN_ENTERPRISE"}
 
 
+# What one credit sells for. A credit is a cost unit ($0.001 at the rate card), and the
+# sale price is a business decision kept in one setting so no screen can quote a
+# different number. Clients see credits only; price and margin are operator-only.
+CREDIT_PRICE_DEFAULT = 0.05
+
+
+def credit_price():
+    """Dollars per credit, from Settings, or the default when unset or invalid."""
+    raw = str(_setting("CREDIT_PRICE_USD", "") or "").strip()
+    try:
+        price = float(raw) if raw else CREDIT_PRICE_DEFAULT
+    except (TypeError, ValueError):
+        price = CREDIT_PRICE_DEFAULT
+    return price if price > 0 else CREDIT_PRICE_DEFAULT
+
+
+def credit_markup_percent():
+    """Percent on top of the $0.001 cost: $0.05 a credit is a 4,900% markup."""
+    return round((credit_price() * rates.CREDITS_PER_USD - 1) * 100, 1)
+
+
+def credit_margin_percent():
+    """Share of the sale price that is profit: $0.05 on a $0.001 cost is 98%."""
+    price = credit_price()
+    return round((price - 1.0 / rates.CREDITS_PER_USD) / price * 100, 1)
+
+
 def plan_allowance(plan):
     """Credits a plan includes per month, from the Usage settings group."""
     key = PLAN_KEYS.get(str(plan or "standard").strip().lower(),

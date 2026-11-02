@@ -442,6 +442,28 @@ def test_voice_is_billed_when_it_closes():
     print("a session nobody closed is settled by the sweep")
 
 
+def test_the_credit_sale_price():
+    """One price for every credit: $0.05 sells a $0.001 cost at a 98% margin."""
+    original = usage._setting
+    try:
+        usage._setting = lambda key, default="": ""
+        check("with nothing set the price is $0.05", usage.credit_price(), 0.05)
+        check("that is a 4,900% markup", usage.credit_markup_percent(), 4900.0)
+        check("and a 98% margin", usage.credit_margin_percent(), 98.0)
+
+        usage._setting = lambda key, default="": "0.02"
+        check("the setting is read", usage.credit_price(), 0.02)
+        check("and the margin follows it", usage.credit_margin_percent(), 95.0)
+
+        usage._setting = lambda key, default="": "not a price"
+        check("a broken value falls back", usage.credit_price(), 0.05)
+        usage._setting = lambda key, default="": "0"
+        check("a zero price falls back", usage.credit_price(), 0.05)
+    finally:
+        usage._setting = original
+    print("one sale price, one margin, and a safe fallback")
+
+
 def test_what_was_added_this_month():
     """The sidebar gauge's tank: grants and top-ups, not spend, not corrections."""
     _rates()
@@ -507,6 +529,7 @@ def main():
         test_anthropic_capture_keeps_cache_fields()
         test_the_metered_client_records_and_falls_back()
         test_voice_is_billed_when_it_closes()
+        test_the_credit_sale_price()
         test_what_was_added_this_month()
         test_reconciliation_compares_the_meter_to_the_invoice()
     finally:

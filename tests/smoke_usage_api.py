@@ -220,6 +220,27 @@ def test_invoices_are_reconciled_by_the_operator(alpha):
     print("invoices are reconciled by the operator, and clients never see them")
 
 
+def test_the_price_is_the_operators_only(alpha):
+    """A client's payload carries credits; the price and margin are the operator's."""
+    owner = _owner()
+    client = _login(alpha)
+    original = usage.credit_price
+    usage.credit_price = lambda: 0.05
+    try:
+        mine = client.get("/api/usage").get_json()
+        one = owner.get("/api/orgs/%d/usage" % alpha["id"]).get_json()
+        platform = owner.get("/api/usage?days=7").get_json()
+    finally:
+        usage.credit_price = original
+    check("a client is not told the price", "credit_usd" in mine, False)
+    check("nor the margin", "margin_percent" in mine, False)
+    check("the operator sees the price for one client", one.get("credit_usd"), 0.05)
+    check("and its margin", one.get("margin_percent"), 98.0)
+    check("the platform overview carries the price", platform.get("credit_usd"), 0.05)
+    check("and the markup", platform.get("markup_percent"), 4900.0)
+    print("the credit price is measured for the operator and hidden from clients")
+
+
 def test_the_console_is_wired():
     """Static: the endpoints can be perfect and the screens still never load."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -242,6 +263,9 @@ def test_the_console_is_wired():
     check("invoices are checked from the platform page",
           "'/api/usage/reconciliation'" in admin_js, True)
     check("the bar falls back to the month's top-ups", "Number(d.added" in admin_js, True)
+    check("the client page never shows a dollar price",
+          "1 credit = $0.001" not in admin_js, True)
+    check("the platform page states the sale price", "d.credit_usd" in admin_js, True)
     voice_js = read("admin", "voice.js")
     check("the browser hands the voice token back when it stops",
           "'/api/voice/usage'" in voice_js and "data.session_id" in voice_js, True)
@@ -267,6 +291,7 @@ def main():
         test_the_monthly_grant_is_idempotent(alpha)
         test_a_voice_session_is_settled_by_its_owner(alpha, beta)
         test_invoices_are_reconciled_by_the_operator(alpha)
+        test_the_price_is_the_operators_only(alpha)
         test_the_console_is_wired()
     finally:
         cleanup()

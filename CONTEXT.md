@@ -486,6 +486,15 @@ cheap call never rounds to zero. Rates are dollars per 1M tokens / per minute / 
 image, because that is what the provider dashboard shows. With tokens and dollars both
 per million, `milli = tokens x dollars_per_1M`.
 
+**The sale price.** A credit is a cost unit; what it sells for is `CREDIT_PRICE_USD`
+(Settings -> Usage & credits, default **$0.05**), the only place credits become money.
+`usage.credit_price()` / `credit_markup_percent()` / `credit_margin_percent()` feed
+`_org_usage(..., pricing=...)`, and those fields are added **only for the operator** - a
+client's `/api/usage` carries no `credit_usd`, no markup and no margin, and the client
+Usage page shows credits only. The charge never depends on the price: `credits_milli` is
+cost, so reconciliation against provider invoices stays exact. At $0.05 a credit is a
+4,900% markup / 98% margin; `docs/credits-and-pricing.md` has the arithmetic.
+
 **Which tokens.** Providers disagree, so `usage.normalise_openai` / `normalise_anthropic`
 produce four buckets - `input_uncached`, `input_cached`, `cache_write`, `output` -
 plus `reasoning` (recorded, already inside output for OpenAI). Anthropic's

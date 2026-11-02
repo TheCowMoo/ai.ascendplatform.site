@@ -245,6 +245,10 @@ SPEC = [
             _f("USAGE_PLAN_ENTERPRISE", "Enterprise: credits per month", kind="int",
                default="0", help="0 means no automatic grant; add credits by hand."),
             _f("USAGE_LOW_WATER", "Warn below (credits)", kind="int", default="1000"),
+            _f("CREDIT_PRICE_USD", "Credit sale price (USD)", kind="text", default="0.05",
+               help="What one credit sells for. A credit costs $0.001 at the rate card, "
+                    "so 0.05 is a 4,900% markup (98% margin). Clients only ever see "
+                    "credits; the price and the margin are shown to the operator."),
         ],
     },
     {
