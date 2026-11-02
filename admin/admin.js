@@ -4383,6 +4383,33 @@
     return container;
   }
 
+  // What the Studio is editing, remembered per user and acting client. The view own
+  // variable dies with the route; this survives a tab switch, a reload and a closed
+  // voice, and it is what the voice reads when it delegates a spoken edit.
+  function studioDraftKey() {
+    var org = (state.user && state.user.org && state.user.org.id) || 'op';
+    return 'studio:draft:' + org + ':' + ((state.user && state.user.id) || 0);
+  }
+
+  function readStudioDraft() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(studioDraftKey()) || 'null');
+      var id = raw && parseInt(raw.id, 10);
+      return id > 0 ? { kind: 'deliverable', id: id } : null;
+    } catch (e) { return null; }
+  }
+
+  function writeStudioDraft(item) {
+    try {
+      if (item && item.id) {
+        localStorage.setItem(studioDraftKey(),
+          JSON.stringify({ kind: 'deliverable', id: item.id }));
+      } else {
+        localStorage.removeItem(studioDraftKey());
+      }
+    } catch (e) { /* private mode: the chat session still remembers it */ }
+  }
+
   // ---------- Studio: chats on the left, the conversation, the artifact ----------
   // The workspace's main tool: one conversation per job, the page it is changing beside
   // it, and the draft named on every turn. The old Assistant page was the same manager
@@ -4803,8 +4830,11 @@
     // ----- the artifact on the canvas -----
     function artifactRef() {
       // The only thing the browser is allowed to name: kind and id. The server loads
-      // the title and the content, and checks the draft belongs to this client.
-      return activeArtifact ? { kind: 'deliverable', id: activeArtifact.id } : null;
+      // the title and the content, and checks the draft belongs to this client. The
+      // stored draft is the fallback so a voice opened before the canvas painted still
+      // names the page this user was editing.
+      if (activeArtifact) return { kind: 'deliverable', id: activeArtifact.id };
+      return readStudioDraft();
     }
 
     function renderChip() {
@@ -4853,6 +4883,9 @@
       opts = opts || {};
       var changed = (item && item.id) !== (activeArtifact && activeArtifact.id);
       activeArtifact = item || null;
+      // Remember it outside the view: the route can be torn down at any moment, and a
+      // reload or a tab switch must land back on this page.
+      if (changed) writeStudioDraft(activeArtifact);
       renderChip();
       renderPreview(activeArtifact, opts);
       if (activeArtifact && !opts.keepHash) {
@@ -5289,6 +5322,18 @@
       layout.setAttribute('data-pane', 'canvas');
       markMobileTab('Live');
       watchJob(Number(id));
+    } else {
+      // No deep link: put back the draft this user was editing, so a reload or a trip to
+      // another tab lands on the same page instead of an empty canvas. A draft deleted
+      // since is a cleanup, not a toast.
+      var remembered = readStudioDraft();
+      if (remembered) {
+        api('GET', '/api/deliverables/' + remembered.id).then(function (d) {
+          if (!d.deliverable) throw new Error('gone');
+          setArtifact(d.deliverable, { restore: true });
+          setTab('preview');
+        }).catch(function () { writeStudioDraft(null); });
+      }
     }
 
     return container;

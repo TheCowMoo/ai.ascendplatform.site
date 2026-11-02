@@ -234,6 +234,16 @@ def check_js():
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("credit bar harness OK")
 
+    # The remembered draft is invisible until a voice edits the wrong page.
+    harness = os.path.join(ROOT, "tests", "studio_draft.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the studio draft harness failed:
+%s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("studio draft harness OK")
+
 
 def check_suites():
     failures = []

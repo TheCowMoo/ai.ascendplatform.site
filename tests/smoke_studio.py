@@ -471,6 +471,12 @@ def test_the_studio_page_is_wired():
           "if (activeArtifact && anyRunning()) refreshArtifact();" in admin_js, True)
     check("the rail becomes a strip before the panes squeeze",
           "grid-template-areas: \"rail rail\"" in css, True)
+    check("the draft is remembered outside the view",
+          "studio:draft:" in admin_js and "writeStudioDraft(activeArtifact)" in admin_js,
+          True)
+    check("the voice falls back to the remembered draft",
+          "return readStudioDraft();" in admin_js, True)
+    check("a reload restores it", "var remembered = readStudioDraft();" in admin_js, True)
     print("the Studio tab, the canvas and the docked voice are wired together")
 
 
