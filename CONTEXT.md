@@ -444,6 +444,23 @@ page that was already open records it as it is created. While a job runs, `pollO
 re-reads the open draft (`refreshArtifact`), so an in-place save flashes on the canvas
 before the job finishes; `?job_id=` covers the same ground for a draft the run created.
 
+**The draft survives the view.** `setArtifact` also writes
+`localStorage["studio:draft:<org>:<user>"]` (`readStudioDraft` / `writeStudioDraft`), and
+mount order is URL hash -> stored draft -> the chat's `deliverable_id` -> nothing. The
+voice's `getContext` falls back to that store, so closing the overlay, reloading or
+returning from another tab still names the page instead of drafting a sibling; **+ New**
+clears it.
+
+**Kept across app tabs.** The Studio owns the voice socket and the job pollers, so
+`render()` no longer destroys it when another app tab opens: the `.app-shell` node is
+*moved* into a hidden `#studio-kept` holder (listeners, closures and the voice panel
+intact), its cleanups are parked on `studioKept.cleanups`, and a `.studio-strip` in the
+corner shows the voice phase and the last message with **Talk** and **Open**. Returning to
+`#/app/studio` puts the same node back (`restoreStudio`) and rewrites the URL to the
+remembered draft; a deeper Studio link (a specific draft or job) and the Platform console
+discard the kept session (`discardStudio` runs its cleanups, which stops the voice). The
+Ask orb hides while a Studio is open or kept, so there is one door, not two.
+
 **In-page artifact switches use `history.replaceState`, never `location.hash`.** A
 `hashchange` calls `render()`, which rebuilds the shell and would destroy the thread and
 the docked voice host mid-sentence. Mobile collapses the two panes to Chat/Live/Preview

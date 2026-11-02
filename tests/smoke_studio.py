@@ -477,6 +477,15 @@ def test_the_studio_page_is_wired():
     check("the voice falls back to the remembered draft",
           "return readStudioDraft();" in admin_js, True)
     check("a reload restores it", "var remembered = readStudioDraft();" in admin_js, True)
+    # Kept across tabs: the node is moved, not rebuilt, and a strip is the door back.
+    check("the Studio survives a tab switch",
+          "function keepStudio(" in admin_js and "function restoreStudio(" in admin_js, True)
+    check("the kept node has a hidden holder", "studio-kept" in admin_js, True)
+    check("a strip brings it back",
+          "studio-strip" in admin_js and ".studio-strip" in css, True)
+    check("the strip shows the voice state", "phase-' + phase" in admin_js, True)
+    check("the orb yields to the kept Studio",
+          "studioKept.node && hash.indexOf" in admin_js, True)
     print("the Studio tab, the canvas and the docked voice are wired together")
 
 

@@ -239,8 +239,7 @@ def check_js():
     if os.path.exists(harness):
         result = subprocess.run(["node", harness], capture_output=True, text=True)
         if result.returncode != 0:
-            raise AssertionError("the studio draft harness failed:
-%s"
+            raise AssertionError("the studio draft harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("studio draft harness OK")
 

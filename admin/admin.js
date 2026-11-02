@@ -7563,6 +7563,9 @@
           toast(chosen ? 'Now acting as ' + pick.options[pick.selectedIndex].text
                        : 'Showing all clients', true);
           creditCache.at = 0;   // the sidebar bar must follow the new tenant at once
+          // The kept Studio was built for the old tenant: its thread and canvas are
+          // another client's work now, so it must not come back on the next visit.
+          discardStudio();
           render();     // re-render the current route against the new tenant
         }).catch(function (e) { toast(e.message, false); });
       };
@@ -7718,12 +7721,148 @@
     say.onkeydown = function (ev) { if (ev.key === 'Enter') send.onclick(); };
   }
 
+  // ---------- The Studio, kept alive across app tabs ----------
+  // The Studio owns the voice and the job pollers, so a tab switch must not end the
+  // call. Its node is moved into a hidden holder - never cloned - so every listener and
+  // closure survives, and a strip in the corner is the compact door back.
+  var studioKept = { node: null, cleanups: [], pending: '' };
+  var lastRoute = '';
+  var studioStripEl = null;
+  var syncOrbAfterRender = null;
+
+  function keepStudio(app) {
+    var shell = app.querySelector('.app-shell');
+    if (!shell) { runCleanups(); app.innerHTML = ''; return; }
+    var holder = document.getElementById('studio-kept');
+    if (!holder) {
+      holder = el('div', 'studio-kept');
+      holder.id = 'studio-kept';
+      holder.hidden = true;
+      document.body.appendChild(holder);
+    }
+    holder.appendChild(shell);
+    studioKept.node = shell;
+    studioKept.cleanups = cleanups;
+    studioKept.pending = '';
+    cleanups = [];
+    app.innerHTML = '';
+    showStudioStrip();
+  }
+
+  function restoreStudio(app) {
+    runCleanups();                    // the tab being left
+    app.innerHTML = '';
+    app.appendChild(studioKept.node);
+    cleanups = studioKept.cleanups;
+    var pending = studioKept.pending;
+    studioKept = { node: null, cleanups: [], pending: '' };
+    lastRoute = 'app/studio';
+    hideStudioStrip();
+    // Keep the URL on the draft so a reload lands on the same page, not an empty canvas.
+    var draft = readStudioDraft();
+    if (draft) {
+      try { history.replaceState(null, '', '#/app/studio/deliverable/' + draft.id); }
+      catch (e) { /* a blocked history call is not fatal */ }
+    }
+    if (pending === 'talk') {
+      try { app.querySelector('.studio-voice-row .btn').click(); }
+      catch (e) { /* no button: the user can press Talk */ }
+    }
+  }
+
+  function discardStudio() {
+    if (!studioKept.node) return;
+    var saved = cleanups;
+    cleanups = studioKept.cleanups;
+    runCleanups();
+    cleanups = saved;
+    if (studioKept.node.parentNode) studioKept.node.parentNode.removeChild(studioKept.node);
+    studioKept = { node: null, cleanups: [], pending: '' };
+    hideStudioStrip();
+  }
+
+  function ensureStudioStrip() {
+    if (studioStripEl) return studioStripEl;
+    var strip = el('div', 'studio-strip');
+    strip.id = 'studio-strip';
+    strip.hidden = true;
+    var dot = el('span', 'studio-strip-dot');
+    var state = el('span', 'studio-strip-state', 'Studio');
+    var last = el('span', 'studio-strip-last');
+    var talk = el('button', 'btn btn-ghost btn-sm', 'Talk');
+    var open = el('button', 'btn btn-ghost btn-sm', 'Open');
+    talk.type = 'button';
+    open.type = 'button';
+    talk.onclick = function () {
+      if (!studioKept.node) return;
+      // Already talking? The panel is still docked in the kept view, so restoring the
+      // Studio is enough; pressing the view own Talk would raise the full-screen overlay
+      // instead of keeping the call in its pane.
+      var running = window.AscendVoice && window.AscendVoice.running &&
+        window.AscendVoice.running();
+      studioKept.pending = running ? '' : 'talk';
+      location.hash = '#/app/studio';
+    };
+    open.onclick = function () { location.hash = '#/app/studio'; };
+    strip.appendChild(dot);
+    strip.appendChild(state);
+    strip.appendChild(last);
+    strip.appendChild(talk);
+    strip.appendChild(open);
+    document.body.appendChild(strip);
+    studioStripEl = strip;
+    setInterval(refreshStudioStrip, 2000);
+    return strip;
+  }
+
+  function refreshStudioStrip() {
+    var strip = studioStripEl;
+    if (!strip || strip.hidden) return;
+    var phase = (window.AscendVoice && window.AscendVoice.phase)
+      ? window.AscendVoice.phase() : 'idle';
+    var states = { connecting: 'Connecting', listening: 'Listening',
+                   thinking: 'Thinking', speaking: 'Speaking', error: 'Voice error' };
+    strip.querySelector('.studio-strip-state').textContent = states[phase] || 'Studio';
+    strip.className = 'studio-strip phase-' + phase;
+    var thread = studioKept.node && studioKept.node.querySelector('.studio-thread');
+    var rows = thread ? thread.querySelectorAll('.asst-body') : [];
+    var latest = rows.length ? rows[rows.length - 1] : null;
+    strip.querySelector('.studio-strip-last').textContent =
+      latest ? String(latest.textContent || '').slice(0, 90) : '';
+  }
+
+  function showStudioStrip() {
+    var strip = ensureStudioStrip();
+    strip.hidden = false;
+    refreshStudioStrip();
+    if (syncOrbAfterRender) syncOrbAfterRender();
+  }
+
+  function hideStudioStrip() {
+    if (studioStripEl) studioStripEl.hidden = true;
+    if (syncOrbAfterRender) syncOrbAfterRender();
+  }
+
   // ---------- Router ----------
   function render() {
     var app = document.getElementById('app');
-    runCleanups();
-    app.innerHTML = '';
     var parts = (location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
+    var previous = lastRoute;
+    var studioRoot = parts[0] === 'app' && parts[1] === 'studio' && parts.length === 2;
+    var studioDeep = parts[0] === 'app' && parts[1] === 'studio' && parts.length > 2;
+
+    // A deeper Studio link asks for another page, and the operator's console is another
+    // app: both end the kept session. Ordinary app tabs keep it in the background.
+    if (studioKept.node && (studioDeep || parts[0] !== 'app')) discardStudio();
+    if (studioRoot && studioKept.node) { restoreStudio(app); return; }
+
+    lastRoute = parts.join('/');
+    if (previous === 'app/studio' && parts[0] === 'app' && parts[1] !== 'studio') {
+      keepStudio(app);
+    } else {
+      runCleanups();
+      app.innerHTML = '';
+    }
 
     // An invitation link has to work before anyone is signed in, so this is handled
     // ahead of the auth gate and rendered without the app shell.
@@ -7935,10 +8074,15 @@
     // The Studio is the full version of this sheet; a second floating door over its
     // own composer is just clutter. Every other screen keeps the quick entry point.
     function syncOrbVisibility() {
-      var onStudio = (location.hash || '').indexOf('#/app/studio') === 0;
-      orb.style.display = onStudio ? 'none' : '';
-      if (onStudio) closeAll();
+      var hash = location.hash || '';
+      var onStudio = hash.indexOf('#/app/studio') === 0;
+      // A kept Studio already has a door (the strip), so a second floating one would
+      // only cover the page it is meant to sit beside.
+      var kept = !!studioKept.node && hash.indexOf('#/app/') === 0;
+      orb.style.display = (onStudio || kept) ? 'none' : '';
+      if (onStudio || kept) closeAll();
     }
+    syncOrbAfterRender = syncOrbVisibility;
     window.addEventListener('hashchange', syncOrbVisibility);
     syncOrbVisibility();
   }

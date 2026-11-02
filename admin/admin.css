@@ -1427,6 +1427,36 @@ select {
   100% { background: transparent; }
 }
 .studio-mobile-tabs { display: none; }
+/* The Studio, hidden but alive while another tab is open. The node is moved into the
+   holder, never rebuilt, so the voice panel keeps its socket and microphone; the strip
+   is the door back. */
+.studio-kept[hidden] { display: none; }
+.studio-strip {
+  position: fixed; right: 18px; bottom: 18px; z-index: 70;
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(560px, calc(100vw - 36px));
+  padding: 8px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+  box-shadow: var(--shadow-2);
+}
+.studio-strip[hidden] { display: none; }
+.studio-strip-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--ink-400);
+}
+.studio-strip.phase-listening .studio-strip-dot,
+.studio-strip.phase-speaking .studio-strip-dot { background: var(--voice-speaking, #0f766e); }
+.studio-strip.phase-thinking .studio-strip-dot { background: var(--accent-600); }
+.studio-strip.phase-error .studio-strip-dot { background: var(--danger-600); }
+.studio-strip-state { font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
+.studio-strip-last {
+  font-size: var(--fs-micro); color: var(--ink-400);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px;
+}
+@media (max-width: 700px) {
+  .studio-strip { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
+  .studio-strip-last { display: none; }
+}
 /* The rail becomes a strip before the panes get too narrow to read: 200px of chat list
    beside a 320px conversation would leave the canvas unusable. */
 @media (max-width: 1180px) {
