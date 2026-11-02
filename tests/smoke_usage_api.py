@@ -242,6 +242,14 @@ def test_the_console_is_wired():
     voice_js = read("admin", "voice.js")
     check("the browser hands the voice token back when it stops",
           "'/api/voice/usage'" in voice_js and "data.session_id" in voice_js, True)
+    # The bar under the username: a number always, a track only when there is an
+    # allowance to measure against, and a red fill at the low-water mark.
+    check("the sidebar has a credit bar",
+          ".side-credit-track" in admin_js and ".side-credit-track" in css, True)
+    check("it reads the client's own meter",
+          "api('GET', '/api/usage')" in admin_js, True)
+    check("a low balance turns it red", ".side-credit.low" in css, True)
+    check("switching client refetches it", "creditCache.at = 0" in admin_js, True)
     check("the nav icon exists", 'id="i-credits"' in page, True)
     check("the balance is the page's one number", ".usage-balance" in css, True)
     print("the usage screens are wired to the endpoints")

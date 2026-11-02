@@ -533,6 +533,17 @@ API: `GET /api/usage` (own meter; the operator with no client picked gets every 
 `GET|POST /api/usage/rates`, `DELETE /api/usage/rates/<id>`. Credits and rates are
 `owner_required`; a client cannot read another client's usage.
 
+**The sidebar bar.** `creditMeter` (under the username, in the sidebar foot) shows the
+acting client's balance against its monthly allowance - `1,240 / 5,000 credits` - with a
+4 px track that shrinks as credits are spent and turns red at `LOW_WATER`. With no
+allowance it shows the number alone, and with no ledger row (or the operator on *All
+clients*, where one balance does not exist) it hides. It reads `GET /api/usage`, caches
+for 15 seconds so tab clicks do not each fire a request, and clears that cache when
+`POST /api/session/org` switches client. Clicking it opens the Usage tab.
+`tests/credit_bar.mjs` runs in preflight: it reads the real `creditMeter` out of
+`admin.js`, evaluates it with fake `api`/DOM, and pins the width, the allowance fallback,
+the low state, the cache, the clamps and the three hidden cases.
+
 **Voice accuracy (phase 3).** The reservation is no longer charged at mint. `POST
 /api/voice/session` inserts a `voice_sessions` row (token, org, user, reserved seconds,
 provider, model) and returns its id; nothing is billed yet. When the user stops,

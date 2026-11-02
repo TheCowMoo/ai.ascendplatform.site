@@ -420,6 +420,18 @@ input[type=color] {
 .side-user-role { font-size: var(--fs-micro); color: #8fa0b6; }
 .side-foot .btn-ghost { background: rgba(255, 255, 255, .04); border-color: rgba(255, 255, 255, .1); color: #cbd5e1; box-shadow: none; }
 .side-foot .btn-ghost:hover { background: rgba(255, 255, 255, .09); border-color: rgba(255, 255, 255, .16); color: #fff; }
+/* The credit bar under the username. A number first; the track is only drawn when there
+   is a monthly allowance to measure the balance against, so it never implies a budget
+   that does not exist. Red at the low-water mark (the server decides `low`). */
+.side-credit { display: block; text-decoration: none; color: inherit; border-radius: 6px; }
+.side-credit[hidden] { display: none; }
+.side-credit-label { display: block; font-size: var(--fs-micro); color: #8fa0b6; }
+.side-credit-track { height: 4px; margin-top: 5px; border-radius: 999px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+.side-credit-track.hidden { display: none; }
+.side-credit-fill { height: 100%; width: 0; border-radius: inherit; background: var(--accent-600); transition: width var(--dur) var(--ease); }
+.side-credit.low .side-credit-fill { background: var(--danger-600); }
+.side-credit.low .side-credit-label { color: #fca5a5; }
+.side-credit:hover .side-credit-label { color: #fff; }
 .main { display: flex; flex-direction: column; min-width: 0; }
 .content { flex: 1; min-width: 0; }
 .topbar { display: none; }

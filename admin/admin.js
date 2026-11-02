@@ -191,6 +191,55 @@
   }
 
   // ---------- Shell: sidebar + topbar ----------
+  // The bar under the username asks /api/usage on every render; a 15-second cache keeps
+  // clicking through tabs from firing a request each time. The acting client can change
+  // inside one render (workspaceSwitcher), so that path clears the cache explicitly.
+  var creditCache = { at: 0, data: null };
+
+  function creditMeter(node) {
+    function paint(d) {
+      var balance = d && d.balance;
+      // No ledger row, or the operator on "All clients": there is no one balance to draw.
+      if (balance === null || balance === undefined) { node.hidden = true; return; }
+      var allowance = Number(d.allowance || 0);
+      var low = !!d.low || Number(balance) < 0;
+      var value = node.querySelector('.side-credit-value');
+      var track = node.querySelector('.side-credit-track');
+      var fill = node.querySelector('.side-credit-fill');
+      node.hidden = false;
+      node.classList.toggle('low', low);
+      if (allowance > 0) {
+        value.textContent = fmtCredits(balance) + ' / ' + fmtCredits(allowance) +
+          ' credits';
+        track.classList.remove('hidden');
+        // Top-ups can put the balance above the allowance; the track is a meter, not a debt.
+        fill.style.width = Math.max(0, Math.min(100, (balance / allowance) * 100)) + '%';
+        track.setAttribute('aria-valuemax', String(allowance));
+        track.setAttribute('aria-valuenow', String(Math.max(0, Number(balance))));
+      } else {
+        // No allowance: the number is the whole story, so no empty track implying one.
+        value.textContent = fmtCredits(balance) + ' credits';
+        track.classList.add('hidden');
+        track.removeAttribute('aria-valuemax');
+        track.removeAttribute('aria-valuenow');
+      }
+      node.title = fmtCredits(balance) + ' credits' +
+        (allowance > 0 ? ' remaining of ' + fmtCredits(allowance) + ' a month' : '') +
+        ' · plan ' + (d.plan || 'standard');
+    }
+    var now = Date.now();
+    if (creditCache.data && now - creditCache.at < 15000) {
+      paint(creditCache.data);
+      return;
+    }
+    api('GET', '/api/usage').then(function (d) {
+      creditCache = { at: Date.now(), data: d };
+      paint(d);
+    }).catch(function () {
+      node.hidden = true;       // a broken meter must not break the shell
+    });
+  }
+
   function sidebar(parts) {
     var area = parts[0] === 'platform' ? 'platform' : 'app';
     var tab = parts[1] || '';
@@ -250,6 +299,18 @@
       '<div><div class="side-user-name">' + esc(state.user.name) + '</div>' +
       '<div class="side-user-role">' + who2 + '</div></div>';
     foot.appendChild(who);
+    // The client's own credits, under the name: a number, and a track only when there
+    // is a monthly allowance to measure it against. Clicking opens the Usage tab.
+    var credit = el('a', 'side-credit');
+    credit.href = area === 'platform' ? '#/platform/usage' : '#/app/usage';
+    credit.hidden = true;
+    credit.innerHTML = '<div class="side-credit-label">' +
+      '<span class="side-credit-value">…</span></div>' +
+      '<div class="side-credit-track hidden" role="progressbar" ' +
+      'aria-label="Credits remaining" aria-valuemin="0">' +
+      '<div class="side-credit-fill"></div></div>';
+    foot.appendChild(credit);
+    creditMeter(credit);
     var logout = el('button', 'btn btn-ghost btn-sm', 'Log out');
     logout.onclick = function () {
       api('POST', '/api/auth/logout').then(function () { location.reload(); });
@@ -7743,6 +7804,7 @@
         api('POST', '/api/session/org', { org_id: chosen }).then(function () {
           toast(chosen ? 'Now acting as ' + pick.options[pick.selectedIndex].text
                        : 'Showing all clients', true);
+          creditCache.at = 0;   // the sidebar bar must follow the new tenant at once
           render();     // re-render the current route against the new tenant
         }).catch(function (e) { toast(e.message, false); });
       };
