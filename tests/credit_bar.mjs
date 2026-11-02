@@ -107,6 +107,18 @@ await tick();
 assert.equal(node.classList.contains('low'), true, 'low water is red');
 assert.equal(node.children['.side-credit-fill'].style.width, '0.06%');
 
+// ---------- No allowance, but a top-up this month: it is the tank ----------
+node = makeNode();
+creditMeter = load(() => Promise.resolve({ balance: 1240, allowance: 0, added: 5000 }));
+creditMeter(node);
+await tick();
+assert.equal(node.hidden, false);
+assert.equal(node.children['.side-credit-fill'].style.width, '24.8%',
+             'the month additions are the denominator');
+assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), false,
+             'a top-up is a gauge even without a plan allowance');
+assert.equal(node.children['.side-credit-track'].attrs['aria-valuemax'], '5000');
+
 // ---------- No allowance: the number is the whole story ----------
 node = makeNode();
 creditMeter = load(() => Promise.resolve({ balance: 12, allowance: 0, low: false }));

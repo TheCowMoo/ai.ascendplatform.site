@@ -534,6 +534,9 @@ python -m usage show [org_id]             # balance + spend by kind/provider/mod
 python -m usage grant <org_id> <credits> [note]
 ```
 
+The full arithmetic - units, the four token buckets, voice and images, rounding, and a
+pricing worksheet with margin formulas - is in `docs/credits-and-pricing.md`.
+
 `USAGE_ENFORCE` is `shadow` (default) | `warn` | `hard`. A client with **no balance row**
 is not on the credit system and is never blocked; `hard` only refuses at zero for a
 client that has a ledger. An unpriced model records `credits_milli NULL` and appears in
@@ -568,9 +571,10 @@ API: `GET /api/usage` (own meter; the operator with no client picked gets every 
 
 **The sidebar bar.** `creditMeter` (under the username, in the sidebar foot) shows the
 acting client's balance against its monthly allowance - `1,240 / 5,000 credits` - with a
-4 px track that shrinks as credits are spent and turns red at `LOW_WATER`. With no
-allowance it shows the number alone, and with no ledger row (or the operator on *All
-clients*, where one balance does not exist) it hides. It reads `GET /api/usage`, caches
+4 px track that shrinks as credits are spent and turns red at `LOW_WATER`. With no plan
+allowance the tank is what was added this month (grants and top-ups), so a one-off top-up
+still gets a gauge; only a client with no ledger row (or the operator on *All clients*,
+where one balance does not exist) hides. It reads `GET /api/usage`, caches
 for 15 seconds so tab clicks do not each fire a request, and clears that cache when
 `POST /api/session/org` switches client. Clicking it opens the Usage tab.
 `tests/credit_bar.mjs` runs in preflight: it reads the real `creditMeter` out of

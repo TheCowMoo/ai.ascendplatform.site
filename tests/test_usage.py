@@ -442,6 +442,24 @@ def test_voice_is_billed_when_it_closes():
     print("a session nobody closed is settled by the sweep")
 
 
+def test_what_was_added_this_month():
+    """The sidebar gauge's tank: grants and top-ups, not spend, not corrections."""
+    _rates()
+    org = _org()
+    usage.grant(org["id"], 25, note="top-up")
+    usage.adjust(org["id"], -5, note="correction")
+    usage.record_model(PROVIDER, MODEL, MODEL, "agent",
+                       {"input_uncached": 1000000, "output": 0}, org_id=org["id"])
+    check("grants and top-ups are the tank",
+          usage.added_this_month(org["id"]), 25.0)
+    check("another month adds nothing",
+          usage.added_this_month(org["id"], "1999-01"), 0.0)
+    check("a spend is not an addition",
+          usage.added_this_month(org["id"]), 25.0)
+    check("no client means nothing added", usage.added_this_month(None), 0.0)
+    print("the month's additions are measurable for the credit gauge")
+
+
 def test_reconciliation_compares_the_meter_to_the_invoice():
     _rates()
     org = _org()
@@ -489,6 +507,7 @@ def main():
         test_anthropic_capture_keeps_cache_fields()
         test_the_metered_client_records_and_falls_back()
         test_voice_is_billed_when_it_closes()
+        test_what_was_added_this_month()
         test_reconciliation_compares_the_meter_to_the_invoice()
     finally:
         cleanup()

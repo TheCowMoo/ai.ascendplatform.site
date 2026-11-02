@@ -204,29 +204,32 @@
       // No ledger row, or the operator on "All clients": there is no one balance to draw.
       if (balance === null || balance === undefined) { node.hidden = true; return; }
       var allowance = Number(d.allowance || 0);
+      // With no plan allowance, the tank is what was actually added this month (the
+      // monthly grant, or a one-off top-up), so the gauge still means something.
+      var tank = allowance > 0 ? allowance : Number(d.added || 0);
       var low = !!d.low || Number(balance) < 0;
       var value = node.querySelector('.side-credit-value');
       var track = node.querySelector('.side-credit-track');
       var fill = node.querySelector('.side-credit-fill');
       node.hidden = false;
       node.classList.toggle('low', low);
-      if (allowance > 0) {
-        value.textContent = fmtCredits(balance) + ' / ' + fmtCredits(allowance) +
-          ' credits';
+      if (tank > 0) {
+        value.textContent = fmtCredits(balance) + ' / ' + fmtCredits(tank) + ' credits';
         track.classList.remove('hidden');
-        // Top-ups can put the balance above the allowance; the track is a meter, not a debt.
-        fill.style.width = Math.max(0, Math.min(100, (balance / allowance) * 100)) + '%';
-        track.setAttribute('aria-valuemax', String(allowance));
+        // A top-up can put the balance above the tank; it is a meter, not a debt.
+        fill.style.width = Math.max(0, Math.min(100, (balance / tank) * 100)) + '%';
+        track.setAttribute('aria-valuemax', String(tank));
         track.setAttribute('aria-valuenow', String(Math.max(0, Number(balance))));
       } else {
-        // No allowance: the number is the whole story, so no empty track implying one.
+        // Nothing was ever added: the number is the whole story, so no empty track.
         value.textContent = fmtCredits(balance) + ' credits';
         track.classList.add('hidden');
         track.removeAttribute('aria-valuemax');
         track.removeAttribute('aria-valuenow');
       }
       node.title = fmtCredits(balance) + ' credits' +
-        (allowance > 0 ? ' remaining of ' + fmtCredits(allowance) + ' a month' : '') +
+        (tank > 0 ? ' remaining of ' + fmtCredits(tank) +
+          (allowance > 0 ? ' a month' : ' added this month') : '') +
         ' · plan ' + (d.plan || 'standard');
     }
     var now = Date.now();

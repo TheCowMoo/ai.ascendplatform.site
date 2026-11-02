@@ -93,12 +93,14 @@ def test_a_client_sees_only_its_own_meter(alpha, beta):
     check("the operator sees the balance", owner_usage["balance"], 25.0)
     check("and the reconcile agrees", owner_usage["reconcile"]["ok"], True)
     check("the row carries the plan allowance", owner_usage["allowance"] >= 0, True)
+    check("and what was added this month", owner_usage["added"], 25.0)
 
     a = _login(alpha)
     mine = a.get("/api/usage").get_json()
     check("the client reads its own usage", mine["org_id"], alpha["id"])
     check("with its balance", mine["balance"], 25.0)
     check("and its own ledger", mine["ledger"][0]["delta_milli"], 25000)
+    check("and the month's top-up, for the gauge", mine["added"], 25.0)
     check("no other client appears", mine["org_id"] == beta["id"], False)
 
     negative = owner.post("/api/orgs/%d/credits" % alpha["id"],
@@ -239,6 +241,7 @@ def test_the_console_is_wired():
     check("the rate card is edited there", "'/api/usage/rates'" in admin_js, True)
     check("invoices are checked from the platform page",
           "'/api/usage/reconciliation'" in admin_js, True)
+    check("the bar falls back to the month's top-ups", "Number(d.added" in admin_js, True)
     voice_js = read("admin", "voice.js")
     check("the browser hands the voice token back when it stops",
           "'/api/voice/usage'" in voice_js and "data.session_id" in voice_js, True)
