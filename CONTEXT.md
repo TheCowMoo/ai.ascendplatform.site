@@ -370,14 +370,15 @@ server-built history; `tests/test_markup_calls.py` asserts the Manager answer ev
 old-browser import is per browser; a failed manager job leaves the user turn but no
 assistant row; the floating sheet is not session-backed.
 
-## Studio — the artifact canvas (2026-11-01)
+## Studio — the workspace's main tool (2026-11-01, merged with the Assistant 2026-11-02)
 
-A workspace tab (`#/app/studio`) with the conversation on the left and the **artifact**
-on the right. It is not a second Assistant: the same manager, the same sessions and the
-same job transcript, with the draft the user is looking at named on every turn. Entry
-points: `Open in Studio` in a job's header, in the preview modal, on Pages rows and on
-every Library/Blogs/Funnels/Emails row. Deep links are
-`#/app/studio/deliverable/<id>` and `#/app/studio/job/<id>`.
+The front door of the workspace (`#/app/studio`, and `AREAS.app.home`): chat sessions on
+the left, the conversation in the middle, the **artifact** on the right. It is not a
+second Assistant - the old Assistant page became this one, because the same manager with a
+canvas is strictly more useful than the same manager without one. Entry points: `Open in
+Studio` in a job's header, in the preview modal, on Pages rows and on every
+Library/Blogs/Funnels/Emails row. Deep links are `#/app/studio/deliverable/<id>` and
+`#/app/studio/job/<id>`.
 
 **The artifact protocol.** The browser sends only `{"kind": "deliverable", "id": 42}` -
 never a title or a content blob. `app._studio_artifact()` normalises it with
@@ -418,14 +419,30 @@ canvas watches every job id it is given plus every `Manager/child_job` link, pol
 `/api/jobs/<id>/events?after=`, scans outputs when a `save_deliverable` result appears and
 again on completion, and re-reads the open draft by id.
 
-**The page** (`viewStudio` in `admin.js`, `.studio-*` in `admin.css`): left pane has the
-"Working on: Deliverable #42 · title" chip and a recent-drafts picker, the thread (same
-`bubble`/`thinking`/question-card shapes as the Assistant), the composer and Talk. Right
-pane has **Live job** (events, question card, approvals for the watched ids) and
-**Preview** (sandboxed iframe, desktop/mobile width, refresh, Open full) with automatic
-switching: Live when a job starts (unless it asked a question), Preview when one saves.
-The Studio keeps its own assistant session in `studio:session:<org>:<user>`; typed turns
-send `artifact`, voice turns are persisted through `/api/assistant/sessions/<id>/messages`.
+**The page** (`viewStudio` in `admin.js`, `.studio-*` in `admin.css`): three panes. The
+left **rail** is the chat list (`GET /api/assistant/sessions`, newest first, "+ New"),
+reusing the `.asst-*` classes the old Assistant page had - below 1180px it becomes a
+horizontal strip above the panes. The middle pane has the "Working on: Deliverable #42 ·
+title" chip and a recent-drafts picker, the thread (same
+`bubble`/`thinking`/question-card shapes), the composer and Talk. The right pane has
+**Live job** (events, question card, approvals for the watched ids) and **Preview**
+(sandboxed iframe, desktop/mobile width, refresh, Open full) with automatic switching:
+Live when a job starts (unless it asked a question), Preview when one saves.
+
+**One tool.** The Assistant tab is gone: the Studio is `AREAS.app.home`, `#/app/assistant`
+redirects to `#/app/studio` (an old bookmark, the tour, the sheet's "Full screen" link),
+and the floating orb hides on the Studio because the Studio has its own composer and Talk.
+A chat is created on its first message and remembered in `studio:session:<org>:<user>`;
+**+ New** clears the thread *and the canvas* - a new chat is a new piece of work - while
+the previous draft stays in the Library. Opening a chat restores its `deliverable_id`
+(a deleted draft clears the canvas). Switching chats or starting one is blocked while the
+team is working, so a running job cannot be orphaned mid-answer.
+
+**The canvas follows the chat.** `setArtifact` posts the draft to
+`POST /api/assistant/sessions/<id>/draft` whenever it changes, and a session created for a
+page that was already open records it as it is created. While a job runs, `pollOnce` also
+re-reads the open draft (`refreshArtifact`), so an in-place save flashes on the canvas
+before the job finishes; `?job_id=` covers the same ground for a draft the run created.
 
 **In-page artifact switches use `history.replaceState`, never `location.hash`.** A
 `hashchange` calls `render()`, which rebuilds the shell and would destroy the thread and

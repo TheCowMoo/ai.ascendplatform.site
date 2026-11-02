@@ -1343,13 +1343,20 @@ select {
 }
 
 /* ---------- Studio ----------
-   Two panes: the conversation on the left, the artifact on the right. The layout is a
-   grid so the canvas keeps its width when the transcript is long, and the mobile rule
-   turns the same markup into one pane at a time rather than a second screen. */
+   Three panes: the chats, the conversation, the artifact. The layout is a grid so the
+   canvas keeps its width when the transcript is long. Below 1180px the rail turns into a
+   horizontal strip above the two panes, and below 900px the chat and canvas become one
+   pane at a time rather than a second screen. */
 .studio-layout {
-  display: grid; grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+  display: grid;
+  grid-template-columns: minmax(170px, 200px) minmax(320px, 400px) minmax(0, 1fr);
+  grid-template-areas: "rail chat canvas";
   gap: var(--s-4); align-items: start;
 }
+.studio-rail { grid-area: rail; max-height: 74vh; min-width: 0; }
+.studio-rail .asst-session-list { max-height: calc(74vh - 64px); }
+.studio-chat { grid-area: chat; }
+.studio-canvas { grid-area: canvas; }
 .studio-chat, .studio-canvas {
   min-width: 0; display: flex; flex-direction: column; gap: 10px;
   padding: var(--s-3); background: var(--surface);
@@ -1420,8 +1427,29 @@ select {
   100% { background: transparent; }
 }
 .studio-mobile-tabs { display: none; }
+/* The rail becomes a strip before the panes get too narrow to read: 200px of chat list
+   beside a 320px conversation would leave the canvas unusable. */
+@media (max-width: 1180px) {
+  .studio-layout {
+    grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+    grid-template-areas: "rail rail" "chat canvas";
+  }
+  .studio-rail {
+    position: static; display: flex; flex-direction: row; align-items: center;
+    gap: 10px; overflow-x: auto; padding: 8px 10px; max-height: none;
+  }
+  .studio-rail .asst-rail-head { margin: 0; flex: 0 0 auto; }
+  .studio-rail .asst-session-list {
+    flex-direction: row; max-height: none; overflow: visible;
+  }
+  .studio-rail .asst-session { width: auto; max-width: 220px; }
+  .studio-rail .asst-rail-empty { margin: 0; white-space: nowrap; }
+}
 @media (max-width: 900px) {
-  .studio-layout { grid-template-columns: 1fr; }
+  .studio-layout {
+    grid-template-columns: 1fr;
+    grid-template-areas: "rail" "chat" "canvas";
+  }
   .studio-mobile-tabs { display: flex; gap: 4px; }
   .studio-layout[data-pane="chat"] .studio-canvas,
   .studio-layout[data-pane="canvas"] .studio-chat { display: none; }

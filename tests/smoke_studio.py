@@ -449,9 +449,28 @@ def test_the_studio_page_is_wired():
     check("in-page switches do not re-render the shell",
           "history.replaceState(null, '', '#/app/studio/deliverable/'" in admin_js, True)
     check("the nav icon exists", 'id="i-studio"' in page, True)
-    check("the two panes are styled", ".studio-layout" in css and ".studio-canvas" in css, True)
+    check("the panes are styled", ".studio-layout" in css and ".studio-canvas" in css, True)
     check("the docked panel is styled", ".voice-docked" in css, True)
     check("the voice reads the canvas when it delegates", "getContext" in voice_js, True)
+
+    # The merge: one tool, with the chats inside it.
+    check("the Studio is the workspace landing", "home: '#/app/studio'" in admin_js, True)
+    check("the Assistant tab is gone", "{ id: 'assistant'" in admin_js, False)
+    check("an old Assistant link lands in the Studio",
+          "location.replace('#/app/studio')" in admin_js, True)
+    check("the Studio has a chat rail",
+          "studio-rail" in admin_js and ".studio-rail" in css, True)
+    check("a chat can be started from the Studio",
+          "function startNewChat" in admin_js and
+          "newChat.onclick = startNewChat" in admin_js, True)
+    check("a new chat blanks the canvas", "clearArtifact();" in admin_js, True)
+    check("opening a chat restores its draft",
+          "found.deliverable_id" in admin_js, True)
+    check("the canvas remembers its chat's draft", "/draft'" in admin_js, True)
+    check("the open draft is re-read while a run is live",
+          "if (activeArtifact && anyRunning()) refreshArtifact();" in admin_js, True)
+    check("the rail becomes a strip before the panes squeeze",
+          "grid-template-areas: \"rail rail\"" in css, True)
     print("the Studio tab, the canvas and the docked voice are wired together")
 
 

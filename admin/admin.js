@@ -22,11 +22,13 @@
   var AREAS = {
     app: {
       label: 'Workspace',
-      home: '#/app/',
+      home: '#/app/studio',
       nav: [
-        { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
-        { id: 'assistant', label: 'Assistant', icon: 'chat', hash: '#/app/assistant' },
+        // The Studio is the workspace's front door: one conversation per job, with the
+        // page it is changing beside it. The old Assistant tab was the same manager
+        // without a canvas, so the two became one screen.
         { id: 'studio', label: 'Studio', icon: 'studio', hash: '#/app/studio' },
+        { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
         { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/app/usage' },
         { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
         { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
@@ -976,6 +978,22 @@
     if (!s) return '';
     var d = new Date(s.replace(' ', 'T') + 'Z');
     return isNaN(d.getTime()) ? s : d.toLocaleString();
+  }
+
+  // Short, human time for a chat row: "just now", "3h ago", "Yesterday", "4d ago".
+  function shortTime(value) {
+    if (!value) return '';
+    var d = new Date(String(value).replace(' ', 'T') + 'Z');
+    if (isNaN(d.getTime())) return String(value).slice(0, 10);
+    var minutes = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return minutes + 'm ago';
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    var days = Math.floor(hours / 24);
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return days + 'd ago';
+    return String(value).slice(0, 10);
   }
 
   function viewConversations(botId) {
@@ -4362,467 +4380,38 @@
     return container;
   }
 
-  // ---------- Assistant: a conversation, not a one-shot command ----------
-  // Same endpoint and the same job underneath as the floating widget, but the thread
-  // persists, so answering a question is typing in the same box rather than a new errand.
-  function viewAssistant() {
-    var container = el('div', 'container');
-    var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Assistant</h2><p class="muted">Describe what you want. It ' +
-      'asks when the brief is thin, drafts when it is not, and keeps the thread.</p></div>';
-    container.appendChild(head);
-
-    var layout = el('div', 'asst-layout');
-    var rail = el('aside', 'asst-rail');
-    var railHead = el('div', 'asst-rail-head');
-    railHead.appendChild(el('h3', 'asst-rail-title', 'Chats'));
-    var newChat = el('button', 'btn btn-primary btn-sm', '+ New');
-    railHead.appendChild(newChat);
-    rail.appendChild(railHead);
-    var sessionList = el('div', 'asst-session-list');
-    rail.appendChild(sessionList);
-    var importHost = el('div', 'asst-import-host');
-    rail.appendChild(importHost);
-    layout.appendChild(rail);
-
-    var main = el('div', 'asst-main');
-    var thread = el('div', 'asst-thread');
-    main.appendChild(thread);
-
-    var box = el('textarea', 'prompt-box');
-    box.placeholder = 'Build me an automation that…';
-    var send = el('button', 'btn btn-primary', 'Send');
-    var composer = el('div', 'asst-composer');
-    composer.appendChild(box);
-    composer.appendChild(send);
-    main.appendChild(composer);
-
-    // Voice is offered only when the server says it can be: no key, or minutes spent, means
-    // no microphone rather than a button that fails when pressed.
-    var mic = el('button', 'btn btn-ghost', 'Talk');
-    mic.style.display = 'none';
-    var voiceNote = el('p', 'asst-hint');
-    voiceNote.setAttribute('role', 'status');
-    main.appendChild(mic);
-    main.appendChild(voiceNote);
-    layout.appendChild(main);
-    container.appendChild(layout);
-
-    var activeSession = null;
-    var sessions = [];
-    var busy = false;
-    var voiceSession = null;
-    var voiceCreate = null;
-    function setBusy(value) {
-      busy = value;
-      send.disabled = value;
-      newChat.disabled = value;
-    }
-
-    api('GET', '/api/voice/status').then(function (s) {
-      if (!s.available) {
-        voiceNote.textContent = s.reason;
-        return;
-      }
-      mic.style.display = '';
-      voiceNote.textContent = 'Voice: ' + s.voice + ' · ' +
-        s.remaining_minutes + ' min left today';
-      mic.onclick = function () {
-        // One voice screen, opened here. The page keeps its thread; the overlay owns the
-        // microphone, the orb and the live transcript.
-        if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
-        if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
-        window.AscendVoice.open({
-          page: 'assistant',
-          source: 'assistant',
-          onState: function (phase, label) { voiceNote.textContent = 'Voice: ' + label; },
-          onTurn: function (turn) {
-            bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
-            persistVoiceTurn(turn.role === 'user' ? 'user' : 'assistant', turn.text);
-          },
-          onJob: function (jobId) {
-            voiceNote.textContent = 'The team is working - job #' + jobId;
-          }
-        });
-      };
-    }).catch(function () { /* no voice is not an error worth a toast */ });
-
-    function oldThreadKey() {
-      var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
-      return 'chat:' + orgKey + ':' + ((state.user && state.user.id) || 0);
-    }
-    function readOldThread() {
-      try {
-        var data = JSON.parse(localStorage.getItem(oldThreadKey()) || 'null');
-        if (!data || !Array.isArray(data.messages)) return [];
-        return data.messages.filter(function (message) {
-          return message && (message.role === 'user' || message.role === 'assistant') &&
-            typeof message.content === 'string' && message.content.trim();
-        });
-      } catch (e) { return []; }
-    }
-    function shortTime(value) {
-      if (!value) return '';
-      var stamp = Date.parse(String(value).replace(' ', 'T') + 'Z');
-      if (isNaN(stamp)) return String(value).slice(0, 10);
-      var minutes = Math.max(0, Math.floor((Date.now() - stamp) / 60000));
-      if (minutes < 1) return 'just now';
-      if (minutes < 60) return minutes + 'm ago';
-      var hours = Math.floor(minutes / 60);
-      if (hours < 24) return hours + 'h ago';
-      var days = Math.floor(hours / 24);
-      if (days === 1) return 'Yesterday';
-      if (days < 7) return days + 'd ago';
-      return String(value).slice(0, 10);
-    }
-    function renderSessions() {
-      sessionList.innerHTML = '';
-      if (!sessions.length) {
-        sessionList.appendChild(el('p', 'asst-rail-empty',
-          'No chats yet. Ask something to start one.'));
-        return;
-      }
-      sessions.forEach(function (session) {
-        var button = el('button', 'asst-session' +
-          (activeSession && activeSession.id === session.id ? ' active' : ''));
-        button.type = 'button';
-        button.appendChild(el('span', 'asst-session-title',
-          session.title || 'New chat'));
-        var meta = shortTime(session.updated_at);
-        if (session.message_count) {
-          meta += ' · ' + session.message_count + ' message' +
-            (session.message_count === 1 ? '' : 's');
-        }
-        button.appendChild(el('span', 'asst-session-time', meta));
-        button.onclick = function () { openSession(session.id); };
-        sessionList.appendChild(button);
-      });
-    }
-    function loadSessions(selectId) {
-      return api('GET', '/api/assistant/sessions').then(function (d) {
-        sessions = d.sessions || [];
-        if (selectId) {
-          var found = sessions.filter(function (s) { return s.id === selectId; })[0];
-          if (found) activeSession = found;
-        } else if (activeSession) {
-          var still = sessions.filter(function (s) {
-            return s.id === activeSession.id;
-          })[0];
-          activeSession = still || null;
-        }
-        renderSessions();
-        return sessions;
-      }).catch(function () {
-        sessionList.innerHTML = '';
-        sessionList.appendChild(el('p', 'asst-rail-empty', 'Could not load chats.'));
-        return [];
-      });
-    }
-    function openSession(id) {
-      if (busy) return;
-      api('GET', '/api/assistant/sessions/' + id).then(function (d) {
-        activeSession = d.session || null;
-        voiceSession = null;
-        renderMessages(d.messages || []);
-        renderSessions();
-        box.focus();
-      }).catch(function (e) { toast(e.message, false); });
-    }
-    function startNewChat() {
-      if (busy) return;
-      activeSession = null;
-      voiceSession = null;
-      thread.innerHTML = '';
-      welcome();
-      renderSessions();
-      box.focus();
-    }
-    newChat.onclick = startNewChat;
-
-    function maybeShowImport() {
-      var old = readOldThread();
-      if (!old.length) return;
-      var dismissKey = oldThreadKey() + ':import-dismissed';
-      try {
-        if (localStorage.getItem(dismissKey)) return;
-      } catch (e) { return; }
-      importHost.innerHTML = '';
-      var card = el('div', 'asst-import');
-      card.appendChild(el('p', null,
-        'A previous Assistant thread is saved in this browser. Import it into this client?'));
-      var row = el('div', 'row-actions');
-      var yes = el('button', 'btn btn-primary btn-sm', 'Import');
-      var no = el('button', 'btn btn-ghost btn-sm', 'Not now');
-      yes.onclick = function () {
-        yes.disabled = true;
-        api('POST', '/api/assistant/sessions/import', { messages: old })
-          .then(function (d) {
-            try { localStorage.removeItem(oldThreadKey()); } catch (e) { /* private mode */ }
-            importHost.innerHTML = '';
-            toast('Previous thread imported', true);
-            return loadSessions(d.session && d.session.id).then(function () {
-              if (d.session) openSession(d.session.id);
-            });
-          }).catch(function (e) {
-            yes.disabled = false;
-            card.appendChild(el('p', 'form-error', e.message));
-          });
-      };
-      no.onclick = function () {
-        try { localStorage.setItem(dismissKey, '1'); } catch (e) { /* private mode */ }
-        importHost.innerHTML = '';
-      };
-      row.appendChild(yes);
-      row.appendChild(no);
-      card.appendChild(row);
-      importHost.appendChild(card);
-    }
-
-    function sessionForVoice() {
-      if (activeSession) return Promise.resolve(activeSession.id);
-      if (voiceCreate) return voiceCreate;
-      voiceCreate = api('POST', '/api/assistant/sessions', {}).then(function (d) {
-        var created = (d && d.session) || {};
-        if (!created.id) throw new Error('The chat could not be created.');
-        voiceSession = created.id;
-        activeSession = created;
-        renderSessions();
-        return created.id;
-      }).finally(function () { voiceCreate = null; });
-      return voiceCreate;
-    }
-
-    function persistVoiceTurn(role, text) {
-      var content = String(text || '').trim();
-      if (!content) return;
-      sessionForVoice().then(function (id) {
-        return api('POST', '/api/assistant/sessions/' + id + '/messages', {
-          role: role,
-          content: content
-        }).then(function () {
-          return loadSessions(id);
-        });
-      }).catch(function () { /* the turn is still visible on screen */ });
-    }
-
-
-    // One shape for every message: a body, and - on the assistant's side - the two actions
-    // people actually want, kept out of the way until the pointer is over the message.
-    function bubble(who, text) {
-      var wrap = el('div', 'asst-msg ' + who);
-      wrap.appendChild(el('div', 'asst-body', text));
-      if (who === 'them') {
-        var actions = el('div', 'asst-actions');
-        var copy = el('button', null, 'Copy');
-        copy.onclick = function () {
-          navigator.clipboard.writeText(String(text)).then(function () {
-            copy.textContent = 'Copied';
-            setTimeout(function () { copy.textContent = 'Copy'; }, 1200);
-          }).catch(function () { toast('Copy failed', false); });
-        };
-        actions.appendChild(copy);
-        wrap.appendChild(actions);
-      }
-      thread.appendChild(wrap);
-      thread.scrollTop = thread.scrollHeight;
-      return wrap;
-    }
-    // A first screen that teaches the product: four prompts, each one a different tool.
-    function welcome() {
-      var card = el('div', 'asst-welcome');
-      card.appendChild(el('h3', null, 'What should we build?'));
-      card.appendChild(el('p', 'fine-print', 'The team has its own tools - it can write a ' +
-        'template, build a form, draft an automation, add a site. It asks when the brief is ' +
-        'thin, and nothing outward is sent without your approval.'));
-      var chips = el('div', 'asst-suggest');
-      ['Email sequence for my newsletter',
-       'A quiz that scores answers and tags people',
-       'Write and schedule a blog post',
-       'Point a new domain at this server'].forEach(function (text) {
-        var chip = el('button', 'asst-chip', text);
-        chip.onclick = function () {
-          if (card.parentNode) card.parentNode.removeChild(card);
-          box.value = text;
-          send.click();
-        };
-        chips.appendChild(chip);
-      });
-      card.appendChild(chips);
-      thread.appendChild(card);
-    }
-
-    function renderMessages(messages) {
-      thread.innerHTML = '';
-      if (!messages.length) { welcome(); return; }
-      messages.forEach(function (message) {
-        bubble(message.role === 'user' ? 'me' : 'them', message.content);
-      });
-      thread.scrollTop = thread.scrollHeight;
-    }
-
-    loadSessions().then(function (rows) {
-      if (rows.length) openSession(rows[0].id);
-      else welcome();
-      maybeShowImport();
-    });
-
-    box.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        send.click();
-      }
-    });
-    box.addEventListener('input', function () {
-      box.style.height = 'auto';
-      box.style.height = Math.min(160, box.scrollHeight || 48) + 'px';
-    });
-    main.appendChild(el('p', 'asst-hint', 'Enter sends, Shift+Enter adds a line. ' +
-      'Nothing is published, sent or charged without your approval.'));
-
-    function questionCard(questions) {
-      var card = el('div', 'panel-card');
-      card.appendChild(el('strong', null, 'The team needs a little more'));
-      var inputs = questions.map(function (question) {
-        card.appendChild(el('p', 'fine-print', String(question)));
-        var input = el('input');
-        card.appendChild(input);
-        return input;
-      });
-      var reply = el('button', 'btn btn-primary btn-sm', 'Send answers');
-      reply.onclick = function () {
-        var parts = inputs.map(function (input, index) {
-          var text = (input.value || '').trim();
-          return text ? questions[index] + ' ' + text : '';
-        }).filter(function (part) { return part; });
-        if (!parts.length) {
-          toast('Answer at least one question', false);
-          return;
-        }
-        card.parentNode.removeChild(card);
-        box.value = parts.join(' ');
-        send.click();
-      };
-      card.appendChild(reply);
-      thread.appendChild(card);
-      thread.scrollTop = thread.scrollHeight;
-    }
-
-    // The thinking state is driven by the job's own events, so the animation describes real
-    // work instead of spinning for a fixed two seconds and pretending.
-    function thinking() {
-      var box = el('div', 'asst-msg them think');
-      var dots = el('span', 'think-dots');
-      dots.appendChild(el('span'));
-      dots.appendChild(el('span'));
-      dots.appendChild(el('span'));
-      box.appendChild(dots);
-      var phase = el('span', 'think-phase', 'Thinking');
-      box.appendChild(phase);
-      var steps = el('div', 'think-steps');
-      box.appendChild(steps);
-      thread.appendChild(box);
-      thread.scrollTop = thread.scrollHeight;
-      function scroll() { thread.scrollTop = thread.scrollHeight; }
-      return {
-        phase: function (text) { phase.textContent = text; scroll(); },
-        step: function (text, state) {
-          steps.appendChild(el('div', state === 'done' ? 'done' : 'running',
-                              (state === 'done' ? '✓ ' : '● ') + String(text).slice(0, 60)));
-          scroll();
-        },
-        done: function () { if (box.parentNode) box.parentNode.removeChild(box); },
-        node: box
-      };
-    }
-
-    send.onclick = function () {
-      var text = (box.value || '').trim();
-      if (!text) {
-        toast('Say what you want first', false);
-        return;
-      }
-      if (busy) return;
-      box.value = '';
-      var hello = thread.querySelector('.asst-welcome');
-      if (hello && hello.parentNode) hello.parentNode.removeChild(hello);
-      bubble('me', text);
-      setBusy(true);
-      var wait = thinking();
-      var seen = {};
-      var payload = { message: text, automation_id: 0 };
-      if (activeSession) payload.session_id = activeSession.id;
-      else payload.create_session = true;
-      api('POST', '/api/manager/chat', payload).then(function (d) {
-        if (d.session_id) {
-          if (!activeSession || activeSession.id !== d.session_id) {
-            activeSession = { id: d.session_id, title: text };
-            renderSessions();
-          }
-          loadSessions(d.session_id);
-        }
-        wait.phase('Reading your setup…');
-        // Poll the transcript while it works: each tool the manager runs becomes a ticked
-        // step, so the wait shows what is happening rather than three dots.
-        var poll = setInterval(function () {
-          api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
-            (r.events || []).forEach(function (ev) {
-              if (ev.source !== 'Manager' || ev.type !== 'tool') return;
-              if (seen[ev.content + ':' + ev.id]) return;
-              seen[ev.content + ':' + ev.id] = true;
-              wait.step(String(ev.content).replace(/_/g, ' '), 'done');
-              wait.phase('Working…');
-            });
-          }).catch(function () { /* a poll that fails is not an error the user needs */ });
-        }, 1200);
-        watchJob(d.job_id, el('span', 'activity running'), function () {
-          clearInterval(poll);
-          api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
-            wait.done();
-            var said = (r.events || []).filter(function (ev) {
-              return ev.source === 'Manager' && ev.type === 'message';
-            }).pop();
-            var result = (r.job && r.job.result) || '';
-            var answer = said ? said.content
-              : (result || ('The assistant could not answer: ' +
-                (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
-            bubble('them', answer);
-            if (d.session_id) loadSessions(d.session_id);
-            var asked = (r.events || []).filter(function (ev) {
-              return ev.source === 'Manager' && ev.type === 'question';
-            }).pop();
-            if (asked) {
-              var questions = [];
-              try { questions = JSON.parse(asked.content || '[]'); } catch (e) { questions = []; }
-              if (questions.length) questionCard(questions);
-            }
-            setBusy(false);
-          }).catch(function () { wait.done(); setBusy(false); });
-        });
-      }).catch(function (e) {
-        wait.done();
-        bubble('them', e.message);
-        setBusy(false);
-      });
-    };
-    return container;
-  }
-  // ---------- Studio: a conversation on the left, the artifact on the right ----------
-  // Not a second Assistant: the same manager, the same sessions and the same job
-  // transcript, with the draft the user is looking at named on every turn. The canvas
-  // shows the run while it works, and the generated page once it saves.
+  // ---------- Studio: chats on the left, the conversation, the artifact ----------
+  // The workspace's main tool: one conversation per job, the page it is changing beside
+  // it, and the draft named on every turn. The old Assistant page was the same manager
+  // without a canvas, so its session rail lives here now.
   function viewStudio(kind, id) {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Studio</h2><p class="muted">Talk or type on the left. ' +
-      'The draft you are changing stays on the right - live while the team works, and ' +
-      'as a page once it saves.</p></div>';
+    head.innerHTML = '<div><h2>Studio</h2><p class="muted">Every job is a conversation. ' +
+      'The chat on the left is the thread; the page it changes stays on the right - live ' +
+      'while the team works, and as a preview once it saves.</p></div>';
     container.appendChild(head);
 
     var layout = el('div', 'studio-layout');
     layout.setAttribute('data-pane', 'chat');
     container.appendChild(layout);
 
-    // ----- left: the conversation, the same thread voice and typing share -----
+    // ----- far left: the chats, one per job, newest first -----
+    // A new chat is created on its first message, so a blank row never sits there
+    // pretending to be work.
+    var rail = el('aside', 'asst-rail studio-rail');
+    var railHead = el('div', 'asst-rail-head');
+    railHead.appendChild(el('h3', 'asst-rail-title', 'Chats'));
+    var newChat = el('button', 'btn btn-primary btn-sm', '+ New');
+    newChat.type = 'button';
+    newChat.title = 'Start a new conversation, with a blank canvas';
+    railHead.appendChild(newChat);
+    rail.appendChild(railHead);
+    var sessionList = el('div', 'asst-session-list');
+    rail.appendChild(sessionList);
+    layout.appendChild(rail);
+
+    // ----- middle: the conversation, the same thread voice and typing share -----
     var chat = el('section', 'studio-chat');
     var chatHead = el('div', 'studio-chat-head');
     var chip = el('button', 'studio-chip empty', 'Working on: nothing yet');
@@ -4953,6 +4542,7 @@
     // ----- state -----
     var activeArtifact = null;
     var renderedContent = null;
+    var sessions = [];             // this user's chats for the acting client, newest first
     var watched = {};              // job id -> {after, done, status, seen}
     var typedJobs = {};            // jobs started by a typed turn: their answer belongs in the thread
     var pendingWait = null;        // the thinking bubble for the current typed turn
@@ -5086,12 +4676,108 @@
       } catch (e) { /* private mode: the thread still works for this visit */ }
     }
 
+    function renderSessions() {
+      sessionList.innerHTML = '';
+      if (!sessions.length) {
+        sessionList.appendChild(el('p', 'asst-rail-empty',
+          'No chats yet. Ask for something to start one.'));
+        return;
+      }
+      sessions.forEach(function (item) {
+        var button = el('button', 'asst-session' + (item.id === sessionId ? ' active' : ''));
+        button.type = 'button';
+        button.appendChild(el('span', 'asst-session-title', item.title || 'New chat'));
+        var meta = shortTime(item.updated_at);
+        if (item.message_count) {
+          meta += ' \u00b7 ' + item.message_count + ' message' +
+            (item.message_count === 1 ? '' : 's');
+        }
+        button.appendChild(el('span', 'asst-session-time', meta));
+        button.onclick = function () { openSession(item.id); };
+        sessionList.appendChild(button);
+      });
+    }
+
+    function loadSessions() {
+      return api('GET', '/api/assistant/sessions').then(function (d) {
+        sessions = d.sessions || [];
+        renderSessions();
+        return sessions;
+      }).catch(function () { return sessions; });
+    }
+
+    // The canvas belongs to the chat: opening one restores its draft, and leaving one
+    // clears a page that belonged to the thread we left behind.
+    function rememberDraft() {
+      if (!sessionId || !activeArtifact) return;
+      api('POST', '/api/assistant/sessions/' + sessionId + '/draft',
+          { deliverable_id: activeArtifact.id })
+        .catch(function () { /* the next turn names it again anyway */ });
+    }
+
+    function clearArtifact() {
+      setArtifact(null, { keepHash: true });
+      try { history.replaceState(null, '', '#/app/studio'); } catch (e) { /* blocked */ }
+    }
+
+    function openSession(target, opts) {
+      opts = opts || {};
+      if (busy) { toast('Let the team finish first', false); return; }
+      api('GET', '/api/assistant/sessions/' + target).then(function (d) {
+        var found = (d && d.session) || {};
+        saveSessionId(found.id || target);
+        renderMessages(d.messages || []);
+        renderSessions();
+        if (!opts.keepCanvas) {
+          if (found.deliverable_id) {
+            api('GET', '/api/deliverables/' + found.deliverable_id).then(function (r) {
+              if (r.deliverable) {
+                setArtifact(r.deliverable, { keepHash: true, restore: true });
+                setTab('preview');
+              } else {
+                clearArtifact();   // the draft was deleted since
+              }
+            }).catch(function () { clearArtifact(); });
+          } else {
+            clearArtifact();
+          }
+        }
+        if (!opts.keepPane) {
+          layout.setAttribute('data-pane', 'chat');
+          markMobileTab('Chat');
+        }
+      }).catch(function (e) {
+        if (opts.quiet) {          // the remembered chat was deleted since last visit
+          saveSessionId(null);
+          welcome();
+          return;
+        }
+        toast(e.message, false);
+      });
+    }
+
+    function startNewChat() {
+      if (busy) { toast('Let the team finish first', false); return; }
+      // A new chat starts a new piece of work: no thread, and a blank canvas. The old
+      // draft is untouched and still in the Library - it simply stops being the target.
+      saveSessionId(null);
+      loadSessions();
+      renderMessages([]);
+      clearArtifact();
+      layout.setAttribute('data-pane', 'chat');
+      markMobileTab('Chat');
+      try { box.focus(); } catch (e) { /* not focusable yet */ }
+    }
+
     function ensureSession() {
       if (sessionId) return Promise.resolve(sessionId);
       if (sessionPending) return sessionPending;
       sessionPending = api('POST', '/api/assistant/sessions', {}).then(function (d) {
         var created = (d && d.session) || {};
-        if (created.id) saveSessionId(created.id);
+        if (created.id) {
+          saveSessionId(created.id);
+          rememberDraft();       // a draft opened before the chat existed
+        }
         return sessionId;
       }).catch(function () { return null; }).then(function (value) {
         sessionPending = null;
@@ -5107,7 +4793,8 @@
         if (!studioSession) return null;
         return api('POST', '/api/assistant/sessions/' + studioSession + '/messages',
                    { role: role, content: content });
-      }).catch(function () { /* the turn is already on screen; a lost save is not a toast */ });
+      }).then(function () { loadSessions(); })
+        .catch(function () { /* the turn is on screen; a lost save is not a toast */ });
     }
 
     // ----- the artifact on the canvas -----
@@ -5161,6 +4848,7 @@
 
     function setArtifact(item, opts) {
       opts = opts || {};
+      var changed = (item && item.id) !== (activeArtifact && activeArtifact.id);
       activeArtifact = item || null;
       renderChip();
       renderPreview(activeArtifact, opts);
@@ -5171,6 +4859,8 @@
           history.replaceState(null, '', '#/app/studio/deliverable/' + activeArtifact.id);
         } catch (e) { /* a blocked history call must not break the canvas */ }
       }
+      // The chat is about whatever the canvas shows, so reopening it restores this page.
+      if (activeArtifact && changed && !opts.restore) rememberDraft();
       if (opts.announce && activeArtifact) {
         toast('Draft #' + activeArtifact.id + ' is on the canvas', true);
       }
@@ -5182,7 +4872,7 @@
         var fresh = d.deliverable;
         if (!fresh) return;
         var changed = (fresh.content || '') !== (activeArtifact.content || '');
-        setArtifact(fresh, { flash: changed });
+        setArtifact(fresh, { flash: changed, restore: true });
       }).catch(function () { /* deleted or unreachable: leave what is on screen */ });
     }
 
@@ -5275,6 +4965,9 @@
         renderWatched();
         if (!anyRunning()) stopPolling();
         refreshBusy();
+        // A save can land mid-run: re-read the open draft so an in-place edit shows up
+        // while the team is still working, not only when the job finishes.
+        if (activeArtifact && anyRunning()) refreshArtifact();
       }).catch(function () { polling = false; });
       if (ticks % 2 === 0) refreshApprovals();
     }
@@ -5439,6 +5132,7 @@
         typedJobs[d.job_id] = true;
         if (pendingWait) pendingWait.phase('Reading the draft\u2026');
         watchJob(d.job_id);
+        loadSessions();          // a first turn titles the chat and puts it in the rail
         sending = false;
         refreshBusy();
       }).catch(function (e) {
@@ -5477,6 +5171,7 @@
 
     chip.onclick = pickArtifact;
     pick.onclick = pickArtifact;
+    newChat.onclick = startNewChat;
     liveTab.onclick = function () { setTab('live'); };
     previewTab.onclick = function () { setTab('preview'); };
     widthToggle.onclick = function () {
@@ -5564,18 +5259,17 @@
     renderChip();
     renderPreview(null);
     renderWatched();
+    renderSessions();
     setTab('live');
     updateComposerState();
+    loadSessions();
 
+    // A deep link to a draft or a job owns the canvas; restoring the last chat must not
+    // pull a different page over it.
+    var deepLinked = (kind === 'deliverable' && id) || (kind === 'job' && id);
     if (sessionId) {
-      api('GET', '/api/assistant/sessions/' + sessionId).then(function (d) {
-        var restored = d.session || {};
-        if (restored.id) saveSessionId(restored.id);
-        renderMessages(d.messages || []);
-      }).catch(function () {
-        saveSessionId(null);
-        welcome();
-      });
+      openSession(sessionId, { keepCanvas: !!deepLinked, keepPane: !!deepLinked,
+                               quiet: true });
     } else {
       welcome();
     }
@@ -5583,7 +5277,7 @@
     if (kind === 'deliverable' && id) {
       api('GET', '/api/deliverables/' + encodeURIComponent(id)).then(function (d) {
         if (!d.deliverable) throw new Error('That draft was not found.');
-        setArtifact(d.deliverable, { keepHash: true });
+        setArtifact(d.deliverable, { keepHash: true, restore: true });
         setTab('preview');
         layout.setAttribute('data-pane', 'canvas');
         markMobileTab('Preview');
@@ -7993,6 +7687,13 @@
       location.replace(AREAS.app.home);
       return;
     }
+    // The Assistant tab became the Studio. An old bookmark, the tour or a chat link
+    // still points here, and rendering a second, canvas-less thread would be a worse
+    // version of the same screen.
+    if (parts[0] === 'app' && parts[1] === 'assistant') {
+      location.replace('#/app/studio');
+      return;
+    }
 
     var area = parts[0];
     var tab = parts[1] || '';
@@ -8030,7 +7731,6 @@
     else if (tab === 'forms' && rest[0]) view = viewFormBuilder(rest[0]);
     else if (tab === 'forms') view = viewForms();
     else if (tab === 'media') view = viewMedia();
-    else if (tab === 'assistant') view = viewAssistant();
     else if (tab === 'studio') view = viewStudio(rest[0] || '', rest[1] || '');
     else if (tab === 'usage') view = viewUsage();
     else if (tab === 'analytics') view = viewAnalytics();
@@ -8049,7 +7749,7 @@
 
   // ---------- The always-there assistant ----------
   // A floating entry point on every screen, because an assistant you have to navigate to is an
-  // assistant nobody uses. Same endpoint as the Assistant page: it is a second door, not a
+  // assistant nobody uses. Same endpoint as the Studio: it is a second door, not a
   // second brain.
   function assistOrb() {
     var orb = el('button', 'assist-orb', '✦');
@@ -8069,7 +7769,7 @@
       var head = el('div', 'assist-head');
       head.appendChild(el('strong', null, 'Ask the AI'));
       var toPage = el('button', 'btn btn-ghost btn-sm', 'Full screen');
-      toPage.onclick = function () { closeAll(); location.hash = '#/app/assistant'; };
+      toPage.onclick = function () { closeAll(); location.hash = '#/app/studio'; };
       var close = el('button', 'btn btn-ghost btn-sm', '×');
       close.onclick = closeAll;
       head.appendChild(toPage);
@@ -8168,12 +7868,12 @@
 
     orb.onclick = open;
 
-    // The Assistant page is the full version of this sheet; a second floating door over its
+    // The Studio is the full version of this sheet; a second floating door over its
     // own composer is just clutter. Every other screen keeps the quick entry point.
     function syncOrbVisibility() {
-      var onAssistant = (location.hash || '').indexOf('#/app/assistant') === 0;
-      orb.style.display = onAssistant ? 'none' : '';
-      if (onAssistant) closeAll();
+      var onStudio = (location.hash || '').indexOf('#/app/studio') === 0;
+      orb.style.display = onStudio ? 'none' : '';
+      if (onStudio) closeAll();
     }
     window.addEventListener('hashchange', syncOrbVisibility);
     syncOrbVisibility();
@@ -8184,9 +7884,9 @@
   // describing the interface. Remembered in localStorage, which is per device: a
   // users.tour_done column is the upgrade, and this is the honest version until then.
   var TOUR = [
-    { hash: '#/app/assistant', title: 'Ask, and it builds',
-      text: 'Type or talk in plain English. It asks when the brief is thin, and does the work ' +
-            'when it is not - templates, automations, a quiz, a whole site.' },
+    { hash: '#/app/studio', title: 'Ask, and it builds',
+      text: 'Every job is a chat: type or talk in plain English, and the page it is changing ' +
+            'stays on the canvas beside it. New starts a fresh page; the chats are on the left.' },
     { hash: '#/app/sites', title: 'Websites',
       text: 'Each client gets a site here. Publish a page, and the domain points at this server.' },
     { hash: '#/app/automations', title: 'Automations',
@@ -8265,7 +7965,7 @@
     state.user = d.user;
     navVeil();
     // The Ask sheet is the single floating entry point. Its header links to the full
-    // Assistant page, so the old manager panel is no longer booted alongside it.
+    // Studio, so the old manager panel is no longer booted alongside it.
     assistOrb();
     startTour(false);
     render();

@@ -492,11 +492,11 @@ def test_the_browser_half_is_wired():
 
     # One voice screen, opened from the sheet (and the two other doors).
     check("the sheet opens the overlay", "source: 'sheet'" in admin_js, True)
-    check("the assistant page opens it too", "source: 'assistant'" in admin_js, True)
+    check("the Studio opens it too", "source: 'studio'" in admin_js, True)
     check("the tour opens it too", "source: 'tour'" in admin_js, True)
     check("all three use one entry point", admin_js.count("AscendVoice.open(") >= 3, True)
     check("the old inline hooks are gone", "onHeard" not in admin_js, True)
-    check("the assistant only offers the mic when allowed",
+    check("the Studio only offers the mic when allowed",
           "'/api/voice/status'" in admin_js, True)
     check("the page loads the client", "/admin/voice.js" in page, True)
 
