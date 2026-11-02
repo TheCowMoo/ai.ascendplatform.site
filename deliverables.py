@@ -265,6 +265,14 @@ def update_deliverable(deliverable_id, data):
             values.append(int(data["site_id"]) if data["site_id"] not in (None, "") else None)
         except (TypeError, ValueError):
             values.append(None)
+    # The latest writer, so a run that *edited* a draft is discoverable by ?job_id= just
+    # like the run that created it. The Studio's canvas depends on that.
+    if "job_id" in data:
+        sets.append("job_id = ?")
+        try:
+            values.append(int(data["job_id"]) if data["job_id"] not in (None, "") else None)
+        except (TypeError, ValueError):
+            values.append(None)
     values.append(deliverable_id)
     with get_connection() as conn:
         conn.execute(

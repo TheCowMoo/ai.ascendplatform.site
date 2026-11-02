@@ -166,6 +166,9 @@ assistant_sessions = Table(
     Column("org_id", Integer),              # NULL = the operator with no client selected
     Column("user_id", Integer, nullable=False),
     Column("title", Text, nullable=False, server_default=_literal("")),
+    # The draft this conversation is working on, so reopening the chat brings its page
+    # back onto the Studio canvas.
+    Column("deliverable_id", Integer),
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
@@ -223,6 +226,10 @@ jobs = Table(
     Column("team_mode", Text, nullable=False, server_default=_literal("selector")),
     Column("requester_id", Integer),
     Column("org_id", Integer),
+    # The draft this run is meant to change. Bound when the job is created (a Studio
+    # turn names one) and inherited by delegated child jobs, so save_deliverable can
+    # default to it instead of trusting the model to repeat the id.
+    Column("deliverable_id", Integer),
     Column("status", Text, nullable=False, server_default=_literal("queued")),
     Column("result", Text, nullable=False, server_default=_literal("")),
     Column("error", Text, nullable=False, server_default=_literal("")),
@@ -1183,6 +1190,8 @@ _ADDITIVE_COLUMNS = (
     ("bots", "org_id", "org_id INTEGER"),
     ("sites", "org_id", "org_id INTEGER"),
     ("jobs", "org_id", "org_id INTEGER"),
+    ("jobs", "deliverable_id", "deliverable_id INTEGER"),
+    ("assistant_sessions", "deliverable_id", "deliverable_id INTEGER"),
     ("business_profiles", "org_id", "org_id INTEGER"),
 )
 

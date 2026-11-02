@@ -102,6 +102,20 @@ def _placeholders(content):
     return list(dict.fromkeys(found))
 
 
+def _job_target(job_id):
+    """The draft this job was bound to when it started, or 0."""
+    if not job_id:
+        return 0
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT deliverable_id FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+    try:
+        return int(row["deliverable_id"] or 0) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _draft_from_this_job(job_id, org_id, kind, title):
     """This job's earlier draft with the same kind and title, if there is one."""
     if not job_id:
@@ -156,10 +170,21 @@ def _build_save_deliverable(emit, job_id=None):
                  % (deliverables_service.TABS.get(requested, "Library"),
                     requested, model_kind or "unspecified"))
         kind = requested or model_kind
-        # A refinement names an existing draft; anything else is a new one.
-        target = deliverables_service.get_deliverable(int(deliverable_id)) if deliverable_id else None
+        # The draft this run must edit: the id the model named, else the one the job was
+        # bound to when it started. Studio turns bind the job, so a delegated child that
+        # forgets the argument still updates the page instead of saving a sibling.
+        try:
+            wanted = int(deliverable_id or 0)
+        except (TypeError, ValueError):
+            wanted = 0
+        bound = _job_target(job_id)
+        target = deliverables_service.get_deliverable(wanted) if wanted else None
         if target and org_id is not None and target.get("org_id") not in (None, org_id):
             target = None  # never write into another client's draft
+        if target is None and bound and bound != wanted:
+            target = deliverables_service.get_deliverable(bound)
+            if target and target.get("org_id") not in (None, org_id):
+                target = None
         # The team often saves before the images are chosen, then again once they are.
         # Updating this job's own draft keeps one row instead of a duplicate per pass.
         existing = target or _draft_from_this_job(job_id, org_id, kind, title)
@@ -168,6 +193,9 @@ def _build_save_deliverable(emit, job_id=None):
                 item = deliverables_service.update_deliverable(
                     existing["id"],
                     {"kind": kind, "content": content,
+                     # Recording the writer is what lets the canvas find an *edited*
+                     # draft with ?job_id=, not only a newly created one.
+                     "job_id": job_id,
                      "summary": summary or existing.get("summary") or ""},
                 )
                 verb = "Updated"

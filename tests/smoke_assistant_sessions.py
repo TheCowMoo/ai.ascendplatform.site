@@ -143,9 +143,10 @@ def test_api_and_manager():
     captured = {}
 
     def fake_create(title, prompt, requester=None, team_mode="selector",
-                    task_name="echo", org_id=None):
+                    task_name="echo", org_id=None, deliverable_id=None):
         captured["prompt"] = prompt
         captured["org"] = org_id
+        captured["deliverable_id"] = deliverable_id
         return 424242
 
     jobs.create_job = fake_create
@@ -167,6 +168,8 @@ def test_api_and_manager():
                 "AND content = 'Continue here'", (session["id"],)).fetchone()
         check("the user turn is linked to its job", row["job_id"], 424242)
         check("the job was submitted", captured.get("submitted"), 424242)
+        check("a plain chat turn is bound to no draft",
+              captured.get("deliverable_id"), None)
 
         fresh = client.post("/api/manager/chat", json={
             "message": "Fresh start", "create_session": True})

@@ -29,6 +29,20 @@ def _context(job_id):
     return row["org_id"], row["requester_id"]
 
 
+def _job_target(job_id):
+    """The draft the job row is bound to, or 0 when it is a plain brief."""
+    if not job_id:
+        return 0
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT deliverable_id FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+    try:
+        return int(row["deliverable_id"] or 0) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_list_sites(emit, job_id=None):
     async def list_sites() -> str:
         """List this client's websites with status and URL."""
@@ -98,6 +112,9 @@ def _build_start_job(emit, job_id=None):
             target_id = int(deliverable_id or 0)
         except (TypeError, ValueError):
             target_id = 0
+        # The model is asked to pass the id, but a delegated edit must not depend on it:
+        # when none is given, the child inherits the draft its parent job was bound to.
+        target_id = target_id or _job_target(job_id)
         if target_id:
             # The child job's save_deliverable call must land on the same row. Ownership
             # is still checked there against the child job's own org, never this text.
@@ -113,6 +130,7 @@ def _build_start_job(emit, job_id=None):
             team_mode="selector",
             task_name="agent_team",
             org_id=org_id,
+            deliverable_id=target_id or None,
         )
         jobs.submit(new_id)      # a created job that is never submitted queues forever
         title_text = title.strip() or prompt.strip()[:60]

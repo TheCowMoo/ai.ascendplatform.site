@@ -50,14 +50,33 @@ def _org_clause(alias, org_id):
     return alias + "org_id = ?", [org_id]
 
 
-def create_session(user_id, org_id=None, title=""):
+def create_session(user_id, org_id=None, title="", deliverable_id=None):
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO assistant_sessions (org_id, user_id, title) VALUES (?, ?, ?)",
-            (org_id, user_id, _title(title)),
+            "INSERT INTO assistant_sessions (org_id, user_id, title, deliverable_id) "
+            "VALUES (?, ?, ?, ?)",
+            (org_id, user_id, _title(title), deliverable_id or None),
         )
         session_id = cur.lastrowid
     return get_session(session_id, user_id, org_id)
+
+
+def set_deliverable(session_id, deliverable_id):
+    """Remember the draft this conversation is about; ``None`` clears it.
+
+    Ownership is the caller's job - the route has already loaded the session and the
+    draft through the tenant's own scope by the time this runs.
+    """
+    try:
+        target = int(deliverable_id) if deliverable_id else None
+    except (TypeError, ValueError):
+        target = None
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE assistant_sessions SET deliverable_id = ? WHERE id = ?",
+            (target, session_id),
+        )
+    return target
 
 
 def get_session(session_id, user_id, org_id=None):

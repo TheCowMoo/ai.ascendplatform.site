@@ -2556,7 +2556,8 @@ def voice_tool():
         )
         job_id = jobs.create_job(
             "Voice follow-up", prompt, session.get("user_id"), "selector", "chat",
-            org_id=previous.get("org_id"))
+            org_id=previous.get("org_id"),
+            deliverable_id=previous.get("deliverable_id"))
         jobs.submit(job_id)
         session["voice_job_id"] = job_id
         if turn:
@@ -2576,7 +2577,8 @@ def voice_tool():
             studio_service.deliverable_block(artifact_item, content_limit=2600),
             instruction_text)
     job_id = jobs.create_job("Voice request", voice_prompt, session.get("user_id"),
-                             "selector", "chat", org_id=current_org())
+                             "selector", "chat", org_id=current_org(),
+                             deliverable_id=(artifact_item["id"] if artifact_item else None))
     jobs.submit(job_id)
     session["voice_job_id"] = job_id
     if turn:
@@ -3619,6 +3621,29 @@ def add_assistant_message(session_id):
     return jsonify({"message": message}), 201
 
 
+@app.route("/api/assistant/sessions/<int:session_id>/draft", methods=["POST"])
+@login_required
+def set_assistant_session_draft(session_id):
+    """Remember which draft this chat is about, so reopening it restores the canvas.
+
+    The browser sends only an id (or null); the draft is loaded through this request's
+    own tenant scope, and the chat must belong to this user and acting client.
+    """
+    if not assistant_service.get_session(
+            session_id, session.get("user_id"), current_org()):
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    raw = data.get("deliverable_id")
+    if raw in (None, "", 0, "0"):
+        assistant_service.set_deliverable(session_id, None)
+        return jsonify({"session_id": session_id, "deliverable_id": None})
+    item, error = _studio_artifact({"kind": "deliverable", "id": raw})
+    if error:
+        return error
+    assistant_service.set_deliverable(session_id, item["id"])
+    return jsonify({"session_id": session_id, "deliverable_id": item["id"]})
+
+
 @app.route("/api/manager/chat", methods=["POST"])
 @login_required
 def manager_chat():
@@ -3666,7 +3691,8 @@ def manager_chat():
     elif data.get("create_session"):
         try:
             assistant_session = assistant_service.create_session(
-                session.get("user_id"), current_org())
+                session.get("user_id"), current_org(),
+                deliverable_id=(artifact_item["id"] if artifact_item else None))
         except assistant_service.AssistantSessionError as exc:
             return jsonify({"error": str(exc)}), 400
         lines = []
@@ -3697,9 +3723,16 @@ def manager_chat():
     # never be the part that gets cut.
     if artifact_item:
         prompt = "%s\n\n%s" % (studio_service.deliverable_block(artifact_item), prompt)
+    # Which draft this run edits: the one on the canvas, else the one this chat already
+    # remembered. Bound to the job row so a child job the Manager delegates still edits
+    # that draft even if the model does not repeat the id - trusting the prompt alone is
+    # how a "make it warmer" turn used to save a second draft beside the first.
+    target_id = artifact_item["id"] if artifact_item else None
+    if target_id is None and assistant_session:
+        target_id = assistant_session.get("deliverable_id") or None
     job_id = jobs.create_job(
         "Manager chat", prompt, session.get("user_id"), "selector", "chat",
-        org_id=current_org(),
+        org_id=current_org(), deliverable_id=target_id,
     )
     if assistant_session:
         try:
@@ -3708,10 +3741,14 @@ def manager_chat():
         except assistant_service.AssistantSessionError as exc:
             jobs.cancel_job(job_id)
             return jsonify({"error": str(exc)}), 400
+        if artifact_item:
+            # The chat is now about this page, so reopening it restores the canvas.
+            assistant_service.set_deliverable(assistant_session["id"], artifact_item["id"])
     jobs.submit(job_id)
     return jsonify({
         "job_id": job_id,
         "session_id": assistant_session["id"] if assistant_session else None,
+        "deliverable_id": target_id,
     }), 201
 
 

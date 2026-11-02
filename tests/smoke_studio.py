@@ -89,12 +89,14 @@ def _draft(org_id, title, content, job_id=None):
 def _stub_prompt(captured):
     """Capture the prompt the route builds, without running a job or calling a model."""
     def fake_create(title, prompt, requester=None, team_mode="selector",
-                    task_name="echo", org_id=None, requester_id=None):
+                    task_name="echo", org_id=None, requester_id=None,
+                    deliverable_id=None):
         captured["title"] = title
         captured["prompt"] = prompt
         captured["org"] = org_id
         captured["task"] = task_name
         captured["requester"] = requester if requester is not None else requester_id
+        captured["deliverable_id"] = deliverable_id
         return 424242
 
     return fake_create
@@ -108,7 +110,7 @@ def _with_stubs(body):
     jobs.submit = lambda job_id: captured.setdefault("submitted", job_id)
     llm.configured_providers = lambda: ["deepseek"]
     try:
-        body(captured)
+        return body(captured)
     finally:
         jobs.create_job, jobs.submit = original_create, original_submit
         llm.configured_providers = original_providers
@@ -319,6 +321,105 @@ def test_start_job_hands_over_the_draft_id():
         conn.execute("DELETE FROM jobs WHERE id = ?", (parent,))
 
 
+def test_a_bound_job_edits_without_being_told():
+    """The Studio binds the run to the draft; the model need not repeat the id.
+
+    This is the duplicate-draft path: the prompt asks the model to pass deliverable_id,
+    but an agent that forgets used to save a sibling with the same title.
+    """
+    org = _org("Studio Bound Save")
+    draft = _draft(org["id"], "Landing %s" % TOKEN, "<p>first</p>")
+    job_id = jobs.create_job("Studio edit", "make it warmer", None, "selector", "chat",
+                             org_id=org["id"], deliverable_id=draft["id"])
+    tool = tool_registry.resolve(["save_deliverable"], job_id=job_id)[0]
+    reply = asyncio.run(tool.run_json(
+        {"kind": "website", "title": "A model title", "content": "<p>second</p>"}, DRY))
+    rows = deliverables.list_deliverables("website", org["id"])
+    check("the bound draft was updated, not duplicated", len(rows), 1)
+    check("and it is the same row", rows[0]["id"], draft["id"])
+    check("with the new content", "<p>second</p>" in rows[0]["content"], True)
+    check("the reply says updated", reply.startswith("Updated"), True)
+    check("the title is the user's, not the model's", rows[0]["title"],
+          "Landing %s" % TOKEN)
+    check("the writing job is recorded on the row", rows[0]["job_id"], job_id)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    print("a job bound to a draft edits it even when the model passes no id")
+
+
+def test_a_delegated_job_inherits_the_bound_draft():
+    org = _org("Studio Inherit")
+    draft = _draft(org["id"], "Inherit %s" % TOKEN, "<p>x</p>")
+    parent = jobs.create_job("Studio parent", "[Studio context ...]", None, "selector",
+                             "chat", org_id=org["id"], deliverable_id=draft["id"])
+    tool = tool_registry.resolve(["start_job"], job_id=parent)[0]
+    captured = {}
+    original_create, original_submit = jobs.create_job, jobs.submit
+    jobs.create_job = _stub_prompt(captured)
+    jobs.submit = lambda job_id: captured.setdefault("submitted", job_id)
+    try:
+        asyncio.run(tool.run_json({"prompt": "shorten the headline"}, DRY))
+    finally:
+        jobs.create_job, jobs.submit = original_create, original_submit
+    check("the child inherits the parent's draft",
+          captured.get("deliverable_id"), draft["id"])
+    check("and its prompt names it too",
+          ("deliverable_id=%d" % draft["id"]) in (captured.get("prompt") or ""), True)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM job_events WHERE job_id = ?", (parent,))
+        conn.execute("DELETE FROM jobs WHERE id = ?", (parent,))
+    print("a delegated edit inherits the draft its parent job was bound to")
+
+
+def test_an_edit_is_discoverable_by_its_job():
+    """The canvas finds a draft by ?job_id=; an update must count as that job's output."""
+    org = _org("Studio Edit By Job")
+    client = _login(org)
+    draft = _draft(org["id"], "Edited %s" % TOKEN, "<p>old</p>")
+    job_id = jobs.create_job("Studio edit", "warmer", None, "selector", "chat",
+                             org_id=org["id"], deliverable_id=draft["id"])
+    tool = tool_registry.resolve(["save_deliverable"], job_id=job_id)[0]
+    asyncio.run(tool.run_json(
+        {"kind": "website", "title": "x", "content": "<p>new</p>"}, DRY))
+    listed = client.get("/api/deliverables?job_id=%d" % job_id).get_json()["deliverables"]
+    check("the edited draft is found by the job that wrote it",
+          [row["id"] for row in listed], [draft["id"]])
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    print("an in-place edit is discoverable by job id, so the preview can follow it")
+
+
+def test_a_chat_remembers_the_draft():
+    """A Studio session that edited #42 reopens on #42, and cannot name another client's."""
+    org = _org("Studio Chat Draft")
+    client = _login(org)
+    mine = _draft(org["id"], "Remember %s" % TOKEN, "<p>page</p>")
+    other = _org("Studio Chat Other")
+    theirs = _draft(other["id"], "Theirs %s" % TOKEN, "<p>theirs</p>")
+    resp = _with_stubs(lambda held: client.post("/api/manager/chat", json={
+        "message": "make it warmer", "create_session": True,
+        "artifact": {"kind": "deliverable", "id": mine["id"]},
+    }))
+    body = resp.get_json()
+    check("the turn is accepted", resp.status_code, 201)
+    check("the job is bound to the draft", body.get("deliverable_id"), mine["id"])
+    session = client.get("/api/assistant/sessions/%d" % body["session_id"]).get_json()
+    check("the chat remembers the draft", session["session"]["deliverable_id"], mine["id"])
+
+    switched = client.post("/api/assistant/sessions/%d/draft" % body["session_id"],
+                           json={"deliverable_id": mine["id"]})
+    check("the canvas can be re-pointed at an owned draft", switched.status_code, 200)
+    stolen = client.post("/api/assistant/sessions/%d/draft" % body["session_id"],
+                         json={"deliverable_id": theirs["id"]})
+    check("another client's draft is a 404", stolen.status_code, 404)
+    cleared = client.post("/api/assistant/sessions/%d/draft" % body["session_id"],
+                          json={"deliverable_id": None})
+    check("null clears the canvas memory", cleared.get_json()["deliverable_id"], None)
+    print("a chat remembers which draft it is about, inside its own client")
+
+
 def test_the_studio_page_is_wired():
     """Static: the server can be perfect and the canvas still never open.
 
@@ -385,6 +486,10 @@ def main():
         test_the_voice_delegation_carries_the_draft()
         test_outputs_can_be_found_by_job()
         test_start_job_hands_over_the_draft_id()
+        test_a_bound_job_edits_without_being_told()
+        test_a_delegated_job_inherits_the_bound_draft()
+        test_an_edit_is_discoverable_by_its_job()
+        test_a_chat_remembers_the_draft()
         test_the_studio_page_is_wired()
     finally:
         cleanup()

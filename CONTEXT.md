@@ -398,12 +398,25 @@ characters. `manager.py`'s SYSTEM has the matching rule (edit that draft with
 `deliverable_id`, never a duplicate), and `start_job(prompt, title, deliverable_id=)` puts
 the id in the child prompt so delegated work edits the open page too.
 
+**The target is bound to the job.** A prompt instruction is advice, not a guarantee:
+`save_deliverable(deliverable_id=...)` only lands on that row if the model repeats the id,
+and a delegated child used to save a sibling when it didn't. `jobs.deliverable_id`
+(migration `0023_studio_targets`) is set by `POST /api/manager/chat` from the validated
+artifact (else the chat's remembered draft) and by `/api/voice/tool`; `start_job` inherits
+the parent's when the model passes none, and the child job carries it; and
+`tools/deliverable.save_deliverable` falls back to it when the argument is missing. A
+foreign id is still refused - it falls back to the bound draft, never to a sibling.
+`assistant_sessions.deliverable_id` records which page a chat is about, written by the
+same route and by `POST /api/assistant/sessions/<id>/draft` (validated through
+`_studio_artifact`), so reopening the chat can put the draft back on the canvas.
+
 **Finding what a run wrote.** `GET /api/deliverables?job_id=N` (scoped by `list_scope()`)
-reuses the deliverables list rather than a new outputs endpoint. The canvas watches every
-job id it is given plus every `Manager/child_job` link, polls
+reuses the deliverables list rather than a new outputs endpoint. `update_deliverable` now
+records the writing `job_id` too, so an *edited* draft is found by the same query - that
+is what lets the canvas follow an in-place refinement, not only a newly created page. The
+canvas watches every job id it is given plus every `Manager/child_job` link, polls
 `/api/jobs/<id>/events?after=`, scans outputs when a `save_deliverable` result appears and
-again on completion, and re-reads the open draft by id (a refinement keeps the original
-`job_id`, so only the id lookup finds it).
+again on completion, and re-reads the open draft by id.
 
 **The page** (`viewStudio` in `admin.js`, `.studio-*` in `admin.css`): left pane has the
 "Working on: Deliverable #42 · title" chip and a recent-drafts picker, the thread (same
@@ -429,10 +442,13 @@ turn or any watched job runs, Talk is disabled.
 
 **Guards.** `tests/smoke_studio.py` (in preflight) pins tenant rejection with no job
 created, the prompt's id/title/content and its refusal of browser-supplied content, the
-voice block fitting the follow-up cap, `?job_id=` scoping, `start_job`'s id hand-off, and
-the static wiring across all four client files. `tests/voice_ui.mjs` mounts the docked
-panel and proves the artifact rides the delegated call. `tests/smoke_deliverables.py`
-proves a foreign `deliverable_id` leaves that draft untouched.
+voice block fitting the follow-up cap, `?job_id=` scoping, `start_job`'s id hand-off, a
+job bound to a draft editing it **without** the model passing an id, a delegated child
+inheriting the parent's target, an in-place edit being found by `?job_id=`, and a chat
+remembering its draft (including refusing another client's), plus the static wiring across
+all four client files. `tests/voice_ui.mjs` mounts the docked panel and proves the artifact
+rides the delegated call. `tests/smoke_deliverables.py` proves a foreign `deliverable_id`
+leaves that draft untouched.
 
 **Limits.** Generated drafts and live jobs only; `write_site_content`, forms and
 automations are not on this canvas yet. The preview refreshes when a save lands or a job
