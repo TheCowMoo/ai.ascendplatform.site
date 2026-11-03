@@ -462,6 +462,11 @@ business_profiles = Table(
     Column("policies", Text, nullable=False, server_default=_literal("")),
     Column("faq", Text, nullable=False, server_default=_literal("[]")),
     Column("extra_notes", Text, nullable=False, server_default=_literal("")),
+    # How to work for this client: short rules the Manager learns from the conversation
+    # (one per line) and the block a written piece ends with. Not facts about the business
+    # - those are the columns above - but instructions the team must follow every turn.
+    Column("preferences", Text, nullable=False, server_default=_literal("")),
+    Column("signature", Text, nullable=False, server_default=_literal("")),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
@@ -1193,6 +1198,8 @@ _ADDITIVE_COLUMNS = (
     ("jobs", "deliverable_id", "deliverable_id INTEGER"),
     ("assistant_sessions", "deliverable_id", "deliverable_id INTEGER"),
     ("business_profiles", "org_id", "org_id INTEGER"),
+    ("business_profiles", "preferences", "preferences TEXT NOT NULL DEFAULT ''"),
+    ("business_profiles", "signature", "signature TEXT NOT NULL DEFAULT ''"),
 )
 
 

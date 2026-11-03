@@ -20,7 +20,7 @@ TEXT_FIELDS = (
     "name", "tagline", "description", "industry", "website", "logo_url",
     "brand_color", "brand_font", "tone_of_voice", "target_audience",
     "pricing_notes", "support_email", "support_phone", "address",
-    "business_hours", "policies", "extra_notes",
+    "business_hours", "policies", "extra_notes", "preferences", "signature",
 )
 
 # Columns stored as JSON.
@@ -32,7 +32,7 @@ DEFAULTS = {
     "tone_of_voice": "", "target_audience": "", "services": "[]",
     "pricing_notes": "", "support_email": "", "support_phone": "", "address": "",
     "business_hours": "", "social": "{}", "policies": "", "faq": "[]",
-    "extra_notes": "",
+    "extra_notes": "", "preferences": "", "signature": "",
 }
 
 
@@ -131,6 +131,19 @@ def _json_dict(raw):
     return value if isinstance(value, dict) else {}
 
 
+def _preference_lines(text):
+    """The rules in a preferences block, one per non-empty line."""
+    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def normalise_preference(text):
+    """One rule, flattened to a single short line ('' when there is nothing usable)."""
+    line = " ".join(str(text or "").split()).strip()
+    while line[:1] in ("-", "*", "\u2022"):
+        line = line[1:].strip()
+    return line[:300]
+
+
 def build_knowledge(profile):
     """Render a profile as the deterministic KB text handed to the AI.
 
@@ -195,6 +208,18 @@ def build_knowledge(profile):
             section(title)
             out.append(value)
 
+    # Instructions, not facts: the rules this client has set for how work is done. They
+    # sit with the voice because that is what they modify.
+    preferences = _preference_lines(profile.get("preferences"))
+    if preferences:
+        section("How to work with this client")
+        out.extend(preferences)
+
+    signature = (profile.get("signature") or "").strip()
+    if signature:
+        section("Signature")
+        out.append(signature)
+
     contact = (
         ("Support email", profile.get("support_email")),
         ("Support phone", profile.get("support_phone")),
@@ -236,6 +261,108 @@ def build_knowledge(profile):
         out.append(extra)
 
     return "\n".join(out).strip()
+
+
+# The block is prepended to every manager and agent turn, so it is capped. Rules come
+# before the long-form facts: a cap truncates the tail, and a rule that gets cut is a rule
+# the team will break.
+BRIEF_LIMIT = 3000
+MAX_PREFERENCES = 60
+MAX_PREFERENCE_CHARS = 4000
+
+
+def build_brief(profile, limit=BRIEF_LIMIT):
+    """The compact "who this client is and how to work for them" block.
+
+    Deliberately not ``build_knowledge``: no FAQ, no sample text. This goes in front of
+    every turn the Manager and each agent see, so it has to stay small and stable.
+    """
+    profile = profile or {}
+    if not profile:
+        return ""
+
+    out = ["[Client context - apply this to everything you produce for this client]"]
+
+    def add(label, value, cap=0):
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return
+        if cap and len(text) > cap:
+            text = text[:cap].rstrip() + "\u2026"
+        out.append("%s: %s" % (label, text))
+
+    add("Business", profile.get("name"))
+    add("Tagline", profile.get("tagline"))
+    add("Industry", profile.get("industry"))
+    add("Website", profile.get("website"))
+    add("About", profile.get("description"), 600)
+    add("Audience", profile.get("target_audience"), 400)
+    add("Tone of voice", profile.get("tone_of_voice"), 400)
+
+    preferences = _preference_lines(profile.get("preferences"))
+    if preferences:
+        out.append("Rules this client has set (follow them every time):")
+        out.extend(preferences[:40])
+
+    signature = (profile.get("signature") or "").strip()
+    if signature:
+        out.append("Sign written work as:\n" + signature[:400])
+
+    offerings = []
+    for item in _json_list(profile.get("services")):
+        if isinstance(item, dict):
+            name = (item.get("name") or "").strip()
+            price = (item.get("price") or "").strip()
+            if name or price:
+                offerings.append("- " + name + ((" (%s)" % price) if price else ""))
+        elif isinstance(item, str) and item.strip():
+            offerings.append("- " + item.strip())
+    if offerings:
+        out.append("Offerings:")
+        out.extend(offerings[:20])
+
+    add("Pricing", profile.get("pricing_notes"), 400)
+    add("Policies", profile.get("policies"), 600)
+    add("Support email", profile.get("support_email"))
+    add("Support phone", profile.get("support_phone"))
+
+    return "\n".join(out).strip()[:limit].rstrip()
+
+
+def brief_for_org(org_id, limit=BRIEF_LIMIT):
+    """The brief for one client, or "" - never creates a profile just to read one."""
+    try:
+        return build_brief(get_profile(org_id), limit=limit)
+    except Exception:
+        return ""
+
+
+def add_preference(org_id, text):
+    """Append one lasting rule to this client's preferences.
+
+    Returns ``(saved, message)``. Dedupe is case- and bullet-insensitive, and the list is
+    capped from the front so the newest rule always survives - an unbounded block would
+    eventually push the brief itself out of the prompt.
+    """
+    line = normalise_preference(text)
+    if org_id is None or not line:
+        return False, ("This chat is not attached to a client, so there is nothing to "
+                       "save this preference to.")
+    profile = ensure_profile(org_id)
+    if profile is None:
+        return False, ("This chat is not attached to a client, so there is nothing to "
+                       "save this preference to.")
+    lines = _preference_lines(profile.get("preferences"))
+    existing = {normalise_preference(item).lower() for item in lines}
+    if line.lower() in existing:
+        return False, "Already saved for this client: %s" % line
+    lines.append("- " + line)
+    lines = lines[-MAX_PREFERENCES:]
+    value = "\n".join(lines)
+    if len(value) > MAX_PREFERENCE_CHARS:
+        value = value[-MAX_PREFERENCE_CHARS:].split("\n", 1)[-1]
+    update_profile(org_id, {"preferences": value})
+    return True, "Saved for this client: %s" % line
 
 
 def sample_knowledge_text():

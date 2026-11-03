@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../admin/admin.js', import.meta.url), 'utf8');
-const start = source.indexOf('  function studioDraftKey() {');
+const start = source.indexOf('  function studioOrgKey() {');
 const end = source.indexOf('  // ---------- Studio: chats on the left', start);
 assert.ok(start > 0 && end > start, 'the draft store is in admin.js');
 const code = source.slice(start, end);
@@ -70,6 +70,21 @@ assert.equal(store.read().id, 42, 'and it cannot overwrite the first one');
 
 const operator = load({ user: { id: 1, org: null } }, storage);
 assert.equal(operator.key(), 'studio:draft:op:1', 'the operator with no client uses op');
+
+// The operator works for many clients from one login. Scoping by the login rather than the
+// acting client put every client in one slot, so changing workspace wiped the place.
+const acting = load({ user: { id: 1, org: null, acting_org: 5 } }, storage);
+assert.equal(acting.key(), 'studio:draft:5:1', 'the operator is scoped to the acting client');
+acting.write({ id: 77 });
+assert.equal(load({ user: { id: 1, org: null, acting_org: 5 } }, storage).read().id, 77,
+  'the same client finds it again');
+assert.equal(load({ user: { id: 1, org: null, acting_org: 6 } }, storage).read(), null,
+  'another client cannot see it');
+assert.equal(operator.read(), null, 'the all-clients view is its own slot');
+
+const clientWithActing = load({ user: { id: 3, org: { id: 8 }, acting_org: 9 } }, storage);
+assert.equal(clientWithActing.key(), 'studio:draft:9:3',
+  'acting_org wins when the server sends one');
 
 const broken = {
   getItem() { throw new Error('denied'); },

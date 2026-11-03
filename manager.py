@@ -31,6 +31,12 @@ SYSTEM = (
     "draft unless the user explicitly asks for a different page. If you hand the edit to "
     "the team with start_job, pass deliverable_id too, or the team will save a duplicate "
     "and leave the page the user is looking at unchanged.\n"
+    "Learn this client's preferences as you go. When the user states a lasting rule about "
+    "how work should be done - tone, length, structure, wording, a sign-off, something to "
+    "always or never include - call remember_preference once per rule, in your own words, "
+    "without asking and without waiting for them to say remember. Do not save one-off "
+    "requests for the current draft, and do not repeat a rule already in the client "
+    "context. If they correct the same thing twice, save the correction.\n"
     "Ask before you guess, but only when it matters. If the brief is vague - under about a "
     "dozen words, or missing what the thing is for - call ask_user with at most three "
     "short questions whose answers would change the output: for an email, who it goes to "
@@ -52,13 +58,14 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
-           "create_form", "list_forms")
+           "create_form", "list_forms", "remember_preference")
 
 
 import json
 import re
 
 import jobs
+import profile as profile_mod
 
 # Where a model's tool-call markup starts. DeepSeek writes "<||DSML||invoke name=...>"; the
 # bars turn up as ASCII pipes or fullwidth ones depending on the tokenizer, so match both,
@@ -132,6 +139,18 @@ def _strip_markup(text):
 
 
 
+def system_for(org_id=None):
+    """The Manager's instructions plus this client's brief.
+
+    Every entry point - the Studio, the Assistant page, the floating sheet and voice -
+    runs a ``chat`` job, so this is the one place a client's tone and learned rules reach
+    all of them. ``profile.brief_for_org`` never creates a profile just to read one, and
+    returns "" when there is nothing to say.
+    """
+    brief = profile_mod.brief_for_org(org_id) if org_id is not None else ""
+    return SYSTEM + ("\n\n" + brief if brief else "")
+
+
 def _provider_for(job):
     """Which provider answers this turn.
 
@@ -170,7 +189,7 @@ async def chat_task(job, emit):
     agent = AssistantAgent(
         name="Manager",
         model_client=llm.get_model_client(provider, usage_label="manager"),
-        system_message=SYSTEM,
+        system_message=system_for(job.get("org_id")),
         tools=tools,
         # Without this AutoGen returns the tool's result and stops, so a turn that needed
         # two calls (capabilities, then a draft) ended in silence - the job "finished" with

@@ -43,6 +43,23 @@ def _job_target(job_id):
         return 0
 
 
+def _build_remember_preference(emit, job_id=None):
+    async def remember_preference(preference: str) -> str:
+        """Save a lasting rule about how this client's work should be done."""
+        import profile as profile_mod
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return ("This chat is not attached to a client, so there is nowhere to save a "
+                    "preference. Ask the user to pick one in the workspace switcher.")
+        saved, message = profile_mod.add_preference(org_id, preference)
+        if emit:
+            emit("Preference", "system", message)
+        return message
+
+    return remember_preference
+
+
 def _build_list_sites(emit, job_id=None):
     async def list_sites() -> str:
         """List this client's websites with status and URL."""
@@ -596,3 +613,8 @@ register("start_job",
          "Hand work to the agent team - writing, reviewing a site, building a page. "
          "Returns the new job id.",
          _build_start_job)
+register("remember_preference",
+         "Save a lasting rule about how this client's work should be done - tone, length, "
+         "structure, wording, a sign-off, something to always or never include. Call this "
+         "the moment the user states one; do not wait to be asked to remember it.",
+         _build_remember_preference)

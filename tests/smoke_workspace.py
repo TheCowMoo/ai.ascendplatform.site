@@ -152,9 +152,14 @@ def test_a_fresh_login_starts_at_all_clients(alpha):
     owner = login("admin@example.com", "admin123")
     owner.post("/api/session/org", json={"org_id": alpha["id"]})
     assert owner.get("/api/session/org").get_json()["acting_org"] == alpha["id"]
+    # The Studio keys its remembered chat and draft by this value, so /me has to carry it -
+    # otherwise the operator's one login shares a slot across every client.
+    me = owner.get("/api/auth/me").get_json()["user"]
+    assert me["acting_org"] == alpha["id"], me
     owner.post("/api/auth/logout")
     again = login("admin@example.com", "admin123")
     assert again.get("/api/session/org").get_json()["acting_org"] is None
+    assert again.get("/api/auth/me").get_json()["user"]["acting_org"] is None
     print("re-login clears the acting client")
 
 

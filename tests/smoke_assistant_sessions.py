@@ -61,6 +61,12 @@ def test_service_roundtrip():
     listed = sessions.list_sessions(1, org["id"])
     check("the session is in the list",
           any(row["id"] == session["id"] for row in listed), True)
+    # The Studio falls back to the first row when the remembered id is gone, so "newest
+    # activity first, ties by id" is part of the contract, not an implementation detail.
+    newer = sessions.create_session(1, org["id"], "Newer")
+    sessions.add_message(newer["id"], "user", "A later question")
+    listed = sessions.list_sessions(1, org["id"])
+    check("the newest chat is first", listed[0]["id"], newer["id"])
     data = sessions.get_session_with_messages(session["id"], 1, org["id"])
     check("the transcript is chronological",
           [m["content"] for m in data["messages"]],

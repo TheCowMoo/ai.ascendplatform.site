@@ -14,6 +14,7 @@ import os
 from db import IntegrityError, get_connection, now_str, seed_lock
 import jobs
 import llm
+import profile as profile_mod
 import tools as tool_registry
 
 TEXT_FIELDS = ("name", "role", "provider", "model", "system_prompt")
@@ -389,13 +390,20 @@ MEDIA_RULE = (
 )
 
 
-def system_message_for(row):
-    """An agent's instructions, plus the rules that come with the tools it holds."""
+def system_message_for(row, client_brief=""):
+    """An agent's instructions, plus the rules that come with the tools it holds.
+
+    ``client_brief`` is the client's tone and learned preferences. Every participant gets
+    it, because a Copywriter writing an email and a Reviewer judging it must agree about
+    what "on brand" means for this client.
+    """
     message = row.get("system_prompt") or row.get("role") or "You are a helpful assistant."
     if "save_deliverable" in (row.get("tools") or []):
         message += CONTENT_RULE
     if "import_photo_to_media" in (row.get("tools") or []):
         message += MEDIA_RULE
+    if client_brief:
+        message += "\n\n" + client_brief
     return message
 
 
@@ -472,6 +480,12 @@ async def build_team(job, emit, factory):
     if not roster:
         raise ValueError("No enabled agents. Add or enable agents in the Agents tab first.")
 
+    # The client's brief is identical for every participant, so it is read once. 1500
+    # characters each is a deliberate ceiling: eight agents already carry their own
+    # prompts, and a full knowledge base in every one costs tokens without adding fidelity.
+    client_brief = (profile_mod.brief_for_org(job.get("org_id"), limit=1500)
+                    if job.get("org_id") is not None else "")
+
     max_messages = int(os.environ.get("AGENT_MAX_MESSAGES", "20"))
     participants = []
     taken = set()
@@ -500,7 +514,7 @@ async def build_team(job, emit, factory):
         options = {
             "name": participant_name,
             "model_client": model_client,
-            "system_message": system_message_for(row),
+            "system_message": system_message_for(row, client_brief),
         }
         if tools:
             options["tools"] = tools

@@ -582,6 +582,10 @@ def me():
     payload = as_dict(row)
     payload["is_owner"] = is_owner_role(row["role"])
     payload["org"] = orgs_service.get_org(row["org_id"]) if row["org_id"] else None
+    # The client the operator is acting as. The Studio keys its remembered chat and draft
+    # by this, not by the operator's own login: one login works across every client, and a
+    # single shared slot made switching workspaces look like the Studio forgot everything.
+    payload["acting_org"] = session.get("acting_org_id")
     return jsonify({"user": payload})
 
 

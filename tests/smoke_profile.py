@@ -40,6 +40,8 @@ def main():
         "faq": [{"q": "Do you offer support?", "a": "Yes, Monday to Friday, 9-5."}],
         "social": {"facebook": "https://facebook.com/nc", "instagram": "https://instagram.com/nc"},
         "support_email": "hello@nathanael.dev",
+        "preferences": "Keep emails under 150 words.\nNever use exclamation marks.",
+        "signature": "Nathanael\nFounder, Nathanael Consulting",
     }
     resp = client.put("/api/profile", json=payload)
     assert resp.status_code == 200, resp.get_data(as_text=True)
@@ -47,6 +49,7 @@ def main():
     assert prof["name"] == payload["name"], prof["name"]
     assert len(prof["services"]) == 2, prof["services"]
     assert prof["social"]["facebook"].endswith("/nc")
+    assert "150 words" in prof["preferences"], prof["preferences"]
     print("updated profile ok | brand_color:", prof["brand_color"])
 
     resp = client.get("/api/profile/knowledge")
@@ -60,10 +63,34 @@ def main():
         "FAQ",
         "Do you offer support?",
         "hello@nathanael.dev",
+        "HOW TO WORK WITH THIS CLIENT",
+        "Keep emails under 150 words.",
+        "SIGNATURE",
     ):
         assert needle in knowledge, "missing from KB: %s" % needle
     print("--- knowledge preview ---")
     print("\n".join(knowledge.splitlines()[:14]))
+
+    # The compact block every agent turn receives: same rules, no FAQ, capped.
+    import profile as profile_mod  # noqa: E402
+
+    brief = profile_mod.build_brief(prof)
+    for needle in ("[Client context", "Keep emails under 150 words.",
+                   "Sign written work as", "Never use exclamation marks."):
+        assert needle in brief, "missing from the agent brief: %s" % needle
+    assert len(brief) <= profile_mod.BRIEF_LIMIT, len(brief)
+    print("agent brief chars:", len(brief))
+
+    # Learning is deduplicated, so saying the same rule twice does not grow the prompt.
+    saved, message = profile_mod.add_preference(prof["org_id"],
+                                                "Keep emails under 150 words.")
+    assert saved is False and "Already saved" in message, message
+    saved, message = profile_mod.add_preference(prof["org_id"],
+                                                "Never open with 'I hope this email finds you well'.")
+    assert saved is True, message
+    print("preference learning:", message)
+    learned = client.get("/api/profile").get_json()["profile"]["preferences"]
+    assert "I hope this email finds you well" in learned, learned
 
     # A NEW bot (no brand colour) inherits the profile's branding.
     resp = client.post("/api/bots", json={"name": "Inheriting Bot"})

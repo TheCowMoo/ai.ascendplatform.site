@@ -477,6 +477,19 @@ def test_the_studio_page_is_wired():
     check("the voice falls back to the remembered draft",
           "return readStudioDraft();" in admin_js, True)
     check("a reload restores it", "var remembered = readStudioDraft();" in admin_js, True)
+    # The operator works for many clients from one login. Keying the chat and draft by the
+    # login rather than the acting client put every workspace in one slot.
+    check("the memory is scoped to the acting client",
+          "function studioOrgKey()" in admin_js and "var orgKey = studioOrgKey();" in admin_js,
+          True)
+    check("switching workspace updates that scope",
+          "state.user.acting_org = chosen" in admin_js, True)
+    check("a chat with no draft does not clear the canvas on mount",
+          "keepCanvasIfEmpty: true" in admin_js, True)
+    check("a remembered chat that is gone falls back to the newest",
+          "var newest = (list || [])[0];" in admin_js, True)
+    check("opening a draft links it to the chat",
+          "if (activeArtifact && changed) rememberDraft();" in admin_js, True)
     # Kept across tabs: the node is moved, not rebuilt, and a strip is the door back.
     check("the Studio survives a tab switch",
           "function keepStudio(" in admin_js and "function restoreStudio(" in admin_js, True)

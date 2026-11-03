@@ -165,6 +165,18 @@ Publishing writes through `provisioner`, snapshots the previous HTML into
 `site_versions`, and records an approved approval row carrying the operator's name —
 the click *is* the decision.
 
+**How the AI works for a client.** `business_profiles.preferences` holds short rules, one per
+line, and `signature` the block a written piece ends with - instructions, not business facts.
+Every `chat` turn builds its system prompt through `manager.system_for(org)` and every roster
+agent gets the same brief appended in `agents.build_team` (1500 characters per agent, 3000 for
+the Manager), so tone and rules reach the Studio, the Assistant page, the floating sheet, voice
+and the team - the Business Profile used to reach only the chatbot. `build_knowledge` carries
+the rules too, so bots follow them. The Manager learns them itself: `remember_preference`
+(granted tool, no approval - it writes the client's own profile) appends one deduplicated line
+and emits `Preference: Saved ...` into the transcript, and the system prompt tells it to call
+that when a lasting rule is stated, without waiting for "remember". The same block is editable
+on the Business Profile screen, so a wrong rule is one deletion away.
+
 **An invitation.** Owner invites → user row with an unusable random password → SHA-256
 token stored, plaintext returned once → GHL upserts the contact and sends → `#/accept/
 <token>` sets the password and starts the session. Resend rotates the token and kills
@@ -505,12 +517,16 @@ page that was already open records it as it is created. While a job runs, `pollO
 re-reads the open draft (`refreshArtifact`), so an in-place save flashes on the canvas
 before the job finishes; `?job_id=` covers the same ground for a draft the run created.
 
-**The draft survives the view.** `setArtifact` also writes
-`localStorage["studio:draft:<org>:<user>"]` (`readStudioDraft` / `writeStudioDraft`), and
-mount order is URL hash -> stored draft -> the chat's `deliverable_id` -> nothing. The
-voice's `getContext` falls back to that store, so closing the overlay, reloading or
-returning from another tab still names the page instead of drafting a sibling; **+ New**
-clears it.
+**The Studio lands where it was.** Both the open draft and the current chat are remembered
+per user *and acting client* (`studioOrgKey`), so one operator login keeps a separate slot
+for every client instead of sharing one and wiping it on a workspace switch. Mount order is:
+deep link -> the chat's own `deliverable_id` ->
+`localStorage["studio:draft:<client>:<user>"]` -> the newest chat for this client -> nothing.
+`openSession` resolves only after the canvas decision, a chat that names no page no longer
+clears a draft that is being restored, and a remembered chat that has since been deleted
+falls back to the newest one rather than a blank thread. `setArtifact` links the draft to
+the chat even on a restore, so opening a page from Library and reloading keeps both. The
+voice's `getContext` falls back to the draft store; **+ New** clears it.
 
 **Kept across app tabs.** The Studio owns the voice socket and the job pollers, so
 `render()` no longer destroys it when another app tab opens: the `.app-shell` node is

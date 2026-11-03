@@ -1552,6 +1552,22 @@
     }));
     container.appendChild(voice);
 
+    // Preferences are instructions, not facts: the Manager appends a line when it learns a
+    // lasting rule, and every agent turn reads them. Editable like any other field - a rule
+    // the AI wrote is not privileged, and a line deleted here stops being applied.
+    var preferences = section('How the AI works for this client',
+      'Rules the team follows on every turn. It adds a line here when it learns a lasting ' +
+      'preference - edit or delete anything.');
+    preferences.appendChild(field('Preferences and rules', 'preferences', {
+      multiline: true,
+      placeholder: 'Keep emails under 150 words.\nNever use exclamation marks.\n' +
+                   'Sign off as Nathanael.'
+    }));
+    preferences.appendChild(field('Signature', 'signature', {
+      multiline: true, placeholder: 'Nathanael\nFounder, Acme Ltd\nacme.com'
+    }));
+    container.appendChild(preferences);
+
     // Offerings
     var offerings = section('Offerings & pricing');
     var servicesWrap = el('div');
@@ -4496,12 +4512,19 @@
     return container;
   }
 
-  // What the Studio is editing, remembered per user and acting client. The view own
-  // variable dies with the route; this survives a tab switch, a reload and a closed
-  // voice, and it is what the voice reads when it delegates a spoken edit.
+  // What the Studio is editing, and which chat it is continuing, remembered per user and
+  // acting client. The operator works across clients from one login, so `user.org` is the
+  // wrong scope: every client shared one key, and switching workspaces looked like the
+  // Studio had forgotten the thread and the page.
+  function studioOrgKey() {
+    var user = (state && state.user) || {};
+    if (user.acting_org) return String(user.acting_org);
+    if (user.org && user.org.id) return String(user.org.id);
+    return 'op';
+  }
+
   function studioDraftKey() {
-    var org = (state.user && state.user.org && state.user.org.id) || 'op';
-    return 'studio:draft:' + org + ':' + ((state.user && state.user.id) || 0);
+    return 'studio:draft:' + studioOrgKey() + ':' + ((state.user && state.user.id) || 0);
   }
 
   function readStudioDraft() {
@@ -4699,7 +4722,7 @@
     var typedAnswer = false;       // the user chose to answer that question by typing
     var previewMobile = false;
     var sessionPending = null;
-    var orgKey = (state.user && state.user.org && state.user.org.id) || 'op';
+    var orgKey = studioOrgKey();
     var sessionKey = 'studio:session:' + orgKey + ':' + ((state.user && state.user.id) || 0);
     var sessionId = (function () {
       try { return parseInt(localStorage.getItem(sessionKey), 10) || null; } catch (e) { return null; }
@@ -4863,39 +4886,45 @@
       try { history.replaceState(null, '', '#/app/studio'); } catch (e) { /* blocked */ }
     }
 
+    // Returns a promise that settles *after* the canvas decision, so the mount can ask
+    // "did the chat name a page?" instead of racing a parallel request for the stored
+    // draft. That race is why a refresh could show the page and then blank it.
     function openSession(target, opts) {
       opts = opts || {};
-      if (busy) { toast('Let the team finish first', false); return; }
-      api('GET', '/api/assistant/sessions/' + target).then(function (d) {
+      if (busy) { toast('Let the team finish first', false); return Promise.resolve(null); }
+      return api('GET', '/api/assistant/sessions/' + target).then(function (d) {
         var found = (d && d.session) || {};
         saveSessionId(found.id || target);
         renderMessages(d.messages || []);
         renderSessions();
-        if (!opts.keepCanvas) {
-          if (found.deliverable_id) {
-            api('GET', '/api/deliverables/' + found.deliverable_id).then(function (r) {
-              if (r.deliverable) {
-                setArtifact(r.deliverable, { keepHash: true, restore: true });
-                setTab('preview');
-              } else {
-                clearArtifact();   // the draft was deleted since
-              }
-            }).catch(function () { clearArtifact(); });
-          } else {
-            clearArtifact();
-          }
-        }
         if (!opts.keepPane) {
           layout.setAttribute('data-pane', 'chat');
           markMobileTab('Chat');
         }
+        if (opts.keepCanvas) return found;
+        if (found.deliverable_id) {
+          return api('GET', '/api/deliverables/' + found.deliverable_id).then(function (r) {
+            if (r.deliverable) {
+              setArtifact(r.deliverable, { keepHash: true, restore: true });
+              setTab('preview');
+            } else {
+              clearArtifact();   // the draft was deleted since
+            }
+            return found;
+          }).catch(function () { clearArtifact(); return found; });
+        }
+        // A chat that never named a page is not a reason to throw away the page on
+        // screen: on a refresh the mount may be about to restore the last draft.
+        if (!opts.keepCanvasIfEmpty) clearArtifact();
+        return found;
       }).catch(function (e) {
         if (opts.quiet) {          // the remembered chat was deleted since last visit
           saveSessionId(null);
           welcome();
-          return;
+          return null;
         }
         toast(e.message, false);
+        return null;
       });
     }
 
@@ -5009,7 +5038,9 @@
         } catch (e) { /* a blocked history call must not break the canvas */ }
       }
       // The chat is about whatever the canvas shows, so reopening it restores this page.
-      if (activeArtifact && changed && !opts.restore) rememberDraft();
+      // This runs on a restore too: opening a draft from Library and then reloading used to
+      // lose the link, because only a *change* was ever recorded on the session.
+      if (activeArtifact && changed) rememberDraft();
       if (opts.announce && activeArtifact) {
         toast('Draft #' + activeArtifact.id + ' is on the canvas', true);
       }
@@ -5412,16 +5443,34 @@
     renderSessions();
     setTab('live');
     updateComposerState();
-    loadSessions();
+    var sessionsReady = loadSessions();
 
     // A deep link to a draft or a job owns the canvas; restoring the last chat must not
     // pull a different page over it.
     var deepLinked = (kind === 'deliverable' && id) || (kind === 'job' && id);
-    if (sessionId) {
-      openSession(sessionId, { keepCanvas: !!deepLinked, keepPane: !!deepLinked,
-                               quiet: true });
-    } else {
+
+    function restoreStoredDraft() {
+      var remembered = readStudioDraft();
+      if (!remembered) return Promise.resolve(false);
+      return api('GET', '/api/deliverables/' + remembered.id).then(function (d) {
+        if (!d.deliverable) throw new Error('gone');
+        setArtifact(d.deliverable, { restore: true });
+        setTab('preview');
+        return true;
+      }).catch(function () { writeStudioDraft(null); return false; });
+    }
+
+    // Order: deep link -> the chat's own draft -> this browser's last draft -> the newest
+    // chat for this client. The last two are what make a refresh land where it was: a chat
+    // that named no page no longer clears the canvas, and a stored chat that has since
+    // gone falls back to the client's most recent one instead of a blank thread.
+    function openChatForMount() {
+      if (sessionId) {
+        return openSession(sessionId, { keepCanvas: !!deepLinked, keepPane: true,
+                                        quiet: true, keepCanvasIfEmpty: true });
+      }
       welcome();
+      return Promise.resolve(null);
     }
 
     if (kind === 'deliverable' && id) {
@@ -5436,19 +5485,20 @@
       layout.setAttribute('data-pane', 'canvas');
       markMobileTab('Live');
       watchJob(Number(id));
-    } else {
-      // No deep link: put back the draft this user was editing, so a reload or a trip to
-      // another tab lands on the same page instead of an empty canvas. A draft deleted
-      // since is a cleanup, not a toast.
-      var remembered = readStudioDraft();
-      if (remembered) {
-        api('GET', '/api/deliverables/' + remembered.id).then(function (d) {
-          if (!d.deliverable) throw new Error('gone');
-          setArtifact(d.deliverable, { restore: true });
-          setTab('preview');
-        }).catch(function () { writeStudioDraft(null); });
-      }
     }
+
+    openChatForMount().then(function (opened) {
+      if (opened) return null;
+      return sessionsReady.then(function (list) {
+        var newest = (list || [])[0];
+        if (!newest || String(newest.id) === String(sessionId)) return null;
+        return openSession(newest.id, { keepCanvas: !!deepLinked, keepPane: true,
+                                        quiet: true, keepCanvasIfEmpty: true });
+      });
+    }).then(function () {
+      if (deepLinked || activeArtifact) return null;
+      return restoreStoredDraft();
+    });
 
     return container;
   }
@@ -7747,6 +7797,9 @@
       pick.onchange = function () {
         var chosen = pick.value === '0' ? null : pick.value;
         api('POST', '/api/session/org', { org_id: chosen }).then(function () {
+          // The remembered chat and draft are keyed by the acting client now. Update the
+          // user object in place so the next mount reads the right slot without a reload.
+          if (state.user) state.user.acting_org = chosen ? Number(chosen) : null;
           toast(chosen ? 'Now acting as ' + pick.options[pick.selectedIndex].text
                        : 'Showing all clients', true);
           creditCache.at = 0;   // the sidebar bar must follow the new tenant at once

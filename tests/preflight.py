@@ -37,6 +37,8 @@ FAST_SUITES = (
     "test_provision_approval",
     "test_caddy_reload",
     "smoke_provisioner",
+    "smoke_profile",
+    "test_client_brief",
     "smoke_voice",
     "smoke_automations",
     "smoke_analytics",
