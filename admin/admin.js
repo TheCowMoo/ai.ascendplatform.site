@@ -24,29 +24,37 @@
       label: 'Workspace',
       home: '#/app/studio',
       nav: [
-        // The Studio is the workspace's front door: one conversation per job, with the
-        // page it is changing beside it. The old Assistant tab was the same manager
-        // without a canvas, so the two became one screen.
+        // Seven rows instead of twenty. Items that belong together live under one
+        // heading; every child keeps its old hash, so deep links, dashboard tiles, the
+        // tour and the Studio links all land where they did.
         { id: 'studio', label: 'Studio', icon: 'studio', hash: '#/app/studio' },
-        { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hash: '#/app/dashboard' },
-        { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/app/usage' },
-        { id: 'analytics', label: 'Analytics', icon: 'trend', hash: '#/app/analytics' },
-        { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
-        { id: 'sites', label: 'Websites', icon: 'globe', hash: '#/app/sites' },
-        { id: 'domains', label: 'Domains', icon: 'server', hash: '#/app/domains' },
-        { id: 'contacts', label: 'Contacts', icon: 'user', hash: '#/app/contacts' },
-        { id: 'forms', label: 'Forms', icon: 'form', hash: '#/app/forms' },
+        { id: 'overview', label: 'Overview', icon: 'dashboard', children: [
+          { id: 'dashboard', label: 'Dashboard', hash: '#/app/dashboard' },
+          { id: 'analytics', label: 'Analytics', hash: '#/app/analytics' },
+          { id: 'usage', label: 'Usage', hash: '#/app/usage' },
+          { id: 'jobs', label: 'Jobs', hash: '#/app/jobs' }
+        ] },
+        { id: 'sites-group', label: 'Sites', icon: 'globe', children: [
+          { id: 'sites', label: 'Websites', hash: '#/app/sites' },
+          { id: 'domains', label: 'Domains', hash: '#/app/domains' },
+          { id: 'funnels', label: 'Funnels', hash: '#/app/funnels' },
+          { id: 'blogs', label: 'Blogs', hash: '#/app/blogs' },
+          { id: 'emails', label: 'Emails', hash: '#/app/emails' },
+          { id: 'library', label: 'Library', hash: '#/app/library' }
+        ] },
         { id: 'media', label: 'Media', icon: 'image', hash: '#/app/media' },
-        { id: 'blogs', label: 'Blogs', icon: 'pen', hash: '#/app/blogs' },
-        { id: 'funnels', label: 'Funnels', icon: 'funnel', hash: '#/app/funnels' },
-        { id: 'emails', label: 'Emails', icon: 'mail', hash: '#/app/emails' },
-        { id: 'library', label: 'Library', icon: 'library', hash: '#/app/library' },
-        { id: 'bots', label: 'Chatbots', icon: 'bot', hash: '#/app/bots' },
-        { id: 'conversations', label: 'Conversations', icon: 'chat', hash: '#/app/conversations' },
-        { id: 'profile', label: 'Business Profile', icon: 'building', hash: '#/app/profile' },
-        { id: 'jobs', label: 'Jobs', icon: 'cog', hash: '#/app/jobs' },
-        { id: 'team', label: 'Team', icon: 'user', hash: '#/app/team', adminOnly: true },
-        { id: 'settings', label: 'Settings', icon: 'sliders', hash: '#/app/settings', adminOnly: true }
+        { id: 'customers', label: 'Customers', icon: 'user', children: [
+          { id: 'contacts', label: 'Contacts', hash: '#/app/contacts' },
+          { id: 'forms', label: 'Forms', hash: '#/app/forms' },
+          { id: 'conversations', label: 'Conversations', hash: '#/app/conversations' },
+          { id: 'bots', label: 'Chatbots', hash: '#/app/bots' }
+        ] },
+        { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
+        { id: 'account', label: 'Account', icon: 'sliders', children: [
+          { id: 'profile', label: 'Business Profile', hash: '#/app/profile' },
+          { id: 'team', label: 'Team', hash: '#/app/team', adminOnly: true },
+          { id: 'settings', label: 'Settings', hash: '#/app/settings', adminOnly: true }
+        ] }
       ]
     },
     platform: {
@@ -64,14 +72,61 @@
     }
   };
 
-  // Flat view of both areas, so the "coming soon" helper keeps working.
-  var NAV = AREAS.app.nav.concat(AREAS.platform.nav);
-
-  function currentNavId(parts) {
-    var first = parts[1] || '';
-    if (first === 'bot') return 'bots';
-    return first || 'dashboard';
+  // Flattened leaves from one nav: a child is a first-class tab even though it is drawn
+  // under a heading, so isSoonTab / viewSoon keep finding it.
+  function flattenNav(nav) {
+    var leaves = [];
+    (nav || []).forEach(function (item) {
+      if (item.children && item.children.length) {
+        item.children.forEach(function (child) { leaves.push(child); });
+      } else if (item.hash) {
+        leaves.push(item);
+      }
+    });
+    return leaves;
   }
+
+  function groupFor(nav, tab) {
+    for (var i = 0; i < (nav || []).length; i += 1) {
+      var item = nav[i];
+      if (!item.children) continue;
+      for (var j = 0; j < item.children.length; j += 1) {
+        if (item.children[j].id === tab) return item;
+      }
+    }
+    return null;
+  }
+
+  function visibleChildren(item) {
+    return (item.children || []).filter(function (child) {
+      return !(child.adminOnly && !canAdmin(state.user));
+    });
+  }
+
+  // Which groups are open is per user and per browser: someone who works in Emails
+  // should not have to open Sites on every visit.
+  function navOpenKey() {
+    return 'nav:open:' + ((state.user && state.user.id) || 0);
+  }
+
+  function readOpenGroups() {
+    try {
+      var ids = JSON.parse(localStorage.getItem(navOpenKey()) || '[]');
+      return Object.prototype.toString.call(ids) === '[object Array]' ? ids : [];
+    } catch (e) { return []; }
+  }
+
+  function writeOpenGroup(id, open) {
+    var ids = readOpenGroups();
+    var index = ids.indexOf(id);
+    if (open && index === -1) ids.push(id);
+    if (!open && index !== -1) ids.splice(index, 1);
+    try { localStorage.setItem(navOpenKey(), JSON.stringify(ids)); }
+    catch (e) { /* private mode: it still opens for this visit */ }
+  }
+
+  // Flat view of both areas, so the "coming soon" helper keeps working.
+  var NAV = flattenNav(AREAS.app.nav).concat(flattenNav(AREAS.platform.nav));
 
   // Platform operator, or a client's own admin - the two levels that may manage
   // people and settings. Everything else is a member.
@@ -270,16 +325,58 @@
     aside.appendChild(el('div', 'side-heading', AREAS[area].label));
 
     var nav = el('nav', 'side-nav');
-    AREAS[area].nav.forEach(function (item) {
-      if (item.adminOnly && !canAdmin(state.user)) return;
-      var link = el('a', 'side-item' + (item.id === tab ? ' active' : ''));
+    var openGroups = readOpenGroups();
+    var activeGroup = groupFor(AREAS[area].nav, tab);
+
+    function navLeaf(item, child) {
+      var link = el('a', 'side-item' + (child ? ' side-child' : '') +
+        (item.id === tab ? ' active' : ''));
       link.href = item.hash;
       if (item.id === tab) link.setAttribute('aria-current', 'page');
-      link.innerHTML = '<span class="side-icon">' + icon(item.icon) + '</span>' +
+      link.innerHTML = (child ? '' : '<span class="side-icon">' + icon(item.icon) + '</span>') +
         '<span class="side-label">' + esc(item.label) + '</span>' +
         (item.ready === false ? '<span class="side-soon">Soon</span>' : '');
       link.onclick = function () { document.body.classList.remove('nav-open'); };
-      nav.appendChild(link);
+      return link;
+    }
+
+    AREAS[area].nav.forEach(function (item) {
+      if (item.adminOnly && !canAdmin(state.user)) return;
+      if (!item.children || !item.children.length) {
+        nav.appendChild(navLeaf(item, false));
+        return;
+      }
+      var children = visibleChildren(item);
+      if (!children.length) return;          // a member with only admin children
+      var active = !!(activeGroup && activeGroup.id === item.id);
+      var open = active || openGroups.indexOf(item.id) !== -1;
+      if (active && openGroups.indexOf(item.id) === -1) {
+        // Remember it: a group you were just in should not snap shut when you move on.
+        openGroups.push(item.id);
+        writeOpenGroup(item.id, true);
+      }
+      var sub = el('div', 'side-sub');
+      sub.id = 'side-sub-' + item.id;
+      sub.hidden = !open;
+      var group = el('button', 'side-group' + (open ? ' open' : '') +
+        (active ? ' has-active' : ''));
+      group.type = 'button';
+      group.setAttribute('aria-expanded', open ? 'true' : 'false');
+      group.setAttribute('aria-controls', sub.id);
+      group.innerHTML = '<span class="side-icon">' + icon(item.icon) + '</span>' +
+        '<span class="side-label">' + esc(item.label) + '</span>' +
+        (active ? '<span class="side-dot" aria-hidden="true"></span>' : '') +
+        '<span class="side-chevron" aria-hidden="true">›</span>';
+      group.onclick = function () {
+        var next = !group.classList.contains('open');
+        group.classList.toggle('open', next);
+        group.setAttribute('aria-expanded', next ? 'true' : 'false');
+        sub.hidden = !next;
+        writeOpenGroup(item.id, next);
+      };
+      children.forEach(function (child) { sub.appendChild(navLeaf(child, true)); });
+      nav.appendChild(group);
+      nav.appendChild(sub);
     });
     aside.appendChild(nav);
 

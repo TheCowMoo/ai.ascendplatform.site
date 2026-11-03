@@ -370,6 +370,23 @@ server-built history; `tests/test_markup_calls.py` asserts the Manager answer ev
 old-browser import is per browser; a failed manager job leaves the user turn but no
 assistant row; the floating sheet is not session-backed.
 
+## Console navigation (grouped, 2026-11-03)
+
+`AREAS.*.nav` in `admin.js` is the whole sidebar. The workspace is seven rows, not twenty:
+**Studio** (leaf), **Overview** (Dashboard, Analytics, Usage, Jobs), **Sites** (Websites,
+Domains, Funnels, Blogs, Emails, Library), **Media** (leaf), **Customers** (Contacts,
+Forms, Conversations, Chatbots), **Automations** (leaf), **Account** (Business Profile,
+Team, Settings - the last two admin-only). Every child keeps its old hash, so deep links,
+dashboard tiles, the tour and Studio links are unchanged.
+
+A group is a `<button class="side-group">` that expands its children in place. The group
+holding the current tab is open on every render and carries a dot; other groups remember
+open/closed per user in `localStorage["nav:open:<user>"]`. `flattenNav(nav)` feeds the flat
+`NAV` that `isSoonTab` / `viewSoon` read, so a child is a first-class tab;
+`tests/nav_groups.mjs` (in preflight) pins seven rows, twenty leaves, unique ids and
+hashes, and the exact Sites/Customers/Account children. The Platform console stays flat
+(seven rows).
+
 ## Studio — the workspace's main tool (2026-11-01, merged with the Assistant 2026-11-02)
 
 The front door of the workspace (`#/app/studio`, and `AREAS.app.home`): chat sessions on

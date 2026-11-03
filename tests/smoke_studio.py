@@ -486,6 +486,11 @@ def test_the_studio_page_is_wired():
     check("the strip shows the voice state", "phase-' + phase" in admin_js, True)
     check("the orb yields to the kept Studio",
           "studioKept.node && hash.indexOf" in admin_js, True)
+    check("the sidebar is grouped", "id: 'sites-group'" in admin_js, True)
+    check("a group opens in place",
+          "side-group" in admin_js and ".side-group" in css, True)
+    check("children are first-class leaves", "function flattenNav(" in admin_js, True)
+    check("open groups are remembered", "nav:open:" in admin_js, True)
     print("the Studio tab, the canvas and the docked voice are wired together")
 
 

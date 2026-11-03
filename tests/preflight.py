@@ -243,6 +243,15 @@ def check_js():
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("studio draft harness OK")
 
+    # The grouped nav is data: a dropped child or a duplicate hash is a dead page.
+    harness = os.path.join(ROOT, "tests", "nav_groups.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the nav groups harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("nav groups harness OK")
+
 
 def check_suites():
     failures = []
