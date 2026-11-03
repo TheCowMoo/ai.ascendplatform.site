@@ -30,6 +30,7 @@ FAST_SUITES = (
     "smoke_forms",
     "smoke_media",
     "smoke_stock_media",
+    "test_artifact_paths",
     "smoke_assistant_sessions",
     "test_dns_records",
     "smoke_voice",

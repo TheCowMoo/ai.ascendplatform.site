@@ -8,6 +8,7 @@ is generated: the intended model, prompt and path are returned instead.
 """
 
 import os
+import secrets
 
 import actions
 import settings
@@ -33,7 +34,11 @@ def _safe_name(filename):
     name = os.path.basename(filename or "image.png").replace("..", "_").strip() or "image.png"
     if not name.lower().endswith(ALLOWED_SUFFIXES):
         name += ".png"
-    return name
+    # The artifact route is public (a published page embeds <img src> with no session),
+    # so the name is the access control: a sequential job id plus "image.png" would be
+    # one guess away from another client's image. The token makes the path unguessable
+    # while the extension stays, so the browser still renders it.
+    return "%s-%s" % (secrets.token_hex(8), name)
 
 
 def save_inline_image(response, path):

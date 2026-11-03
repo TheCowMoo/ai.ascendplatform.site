@@ -24,6 +24,7 @@ are returned with every result so the content can credit them.
 
 import json
 import os
+import secrets
 import tempfile
 import urllib.error
 import urllib.parse
@@ -211,6 +212,9 @@ def download(url, path, limit=None):
 
 def _destination(job_id, filename):
     name = safe_filename(filename, "photo.jpg", IMAGE_SUFFIXES)
+    # Same reasoning as media._safe_name: the artifact route is public and the job id is
+    # sequential, so the file name carries the unguessability.
+    name = "%s-%s" % (secrets.token_hex(8), name)
     return os.path.join(ARTIFACTS_DIR, "images", "job-%s" % (job_id or "manual"), name)
 
 

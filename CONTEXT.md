@@ -402,6 +402,10 @@ and recent calls for a client (`app._hide_provider_names`), and the Usage table 
 a Model column when the payload has one. The manager's "not configured" 503 is
 role-aware; the Platform screens keep every name.
 
+## Tenant isolation (2026-11-03)
+
+Rows are isolated by `org_id` from the signed session (`current_org`, `list_scope`, `can_access_org`); a non-owner with no org gets scope 0, never `None`. Cross-tenant ids return 404, platform keys are unreadable and unwritable for a client, and `smoke_tenancy` walks those paths. Logical tenancy, one database, not a box per client. Uploaded media is served by a UUID name plus a row check. Generated and stock images live under the public `/artifacts/` route (a published page embeds them without a session), so their file names carry a random 16-hex token (`tools/media._safe_name`, `tools/pexels._destination`); `tests/test_artifact_paths.py` pins it. The public `/api/health` exposes only counts.
+
 ## Studio — the workspace's main tool (2026-11-01, merged with the Assistant 2026-11-02)
 
 The front door of the workspace (`#/app/studio`, and `AREAS.app.home`): chat sessions on
