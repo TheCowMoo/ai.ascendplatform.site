@@ -2370,7 +2370,15 @@ def check_site(site_id):
         "dns_last_check": now_str(),
         "status": "dns_ok" if (info["ok"] and site["status"] != "live") else site["status"],
     })
-    return jsonify({"site": updated, "check": info})
+    # Green DNS is the moment provisioning can succeed, so do not make the user wait for
+    # the hourly sweep or press a second button. A member may look at the records but
+    # only a client admin may start a write, which is the same rule as /provision.
+    job = None
+    needs = bool(info["ok"] and updated and updated.get("status") != "live")
+    if needs and (is_owner() or session.get("role") == CLIENT_ADMIN_ROLE):
+        job = sites_service.queue_provision(updated, session.get("user_id"))
+    return jsonify({"site": updated, "check": info, "provision": job,
+                    "needs_provision": needs})
 
 
 # ---------- The spoken assistant ----------
@@ -2771,7 +2779,15 @@ def verify_site(site_id):
         if site["status"] != "live":
             fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
     updated = sites_service.update_site(site_id, fields)
-    return jsonify({"site": updated, "report": report, "probe": probe})
+    # DNS is right but nothing answers: that is exactly the state provisioning exists to
+    # fix, so queue it here too rather than leaving the user to guess the next step. The
+    # same rule as /check: looking is open to a member, starting a write is not.
+    job = None
+    needs = bool(report["ok"] and not probe["ok"])
+    if needs and (is_owner() or session.get("role") == CLIENT_ADMIN_ROLE):
+        job = sites_service.queue_provision(updated or site)
+    return jsonify({"site": updated, "report": report, "probe": probe,
+                    "needs_provision": needs, "provision": job})
 
 
 @app.route("/api/sites/<int:site_id>/provision", methods=["POST"])
@@ -2781,13 +2797,17 @@ def provision_site(site_id):
     site = _site_for_request(site_id)
     if not site:
         return jsonify({"error": "Not found"}), 404
-    job_id = jobs.create_job(
-        "Provision %s" % site["domain"], site["domain"],
-        session.get("user_id"), "selector", "site_provision",
-        org_id=site.get("org_id"),
-    )
-    jobs.submit(job_id)
-    return jsonify({"job": jobs.get_job(job_id), "site": site}), 201
+    # Double-clicking Provision used to queue two runs that wrote the same two files and
+    # asked for two approvals. One run per site at a time is the whole point.
+    existing = sites_service.open_provision_job(site)
+    if existing:
+        return jsonify({"job": existing, "site": site, "already": True}), 200
+    job = sites_service.queue_provision(site, session.get("user_id"), manual=True)
+    if not job:
+        # Lost a race with the hourly sweep between the check above and the insert.
+        return jsonify({"job": sites_service.open_provision_job(site), "site": site,
+                        "already": True}), 202
+    return jsonify({"job": job, "site": site}), 201
 
 
 # ---------------------------------------------------------------------------

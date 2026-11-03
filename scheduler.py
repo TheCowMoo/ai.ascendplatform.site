@@ -163,9 +163,10 @@ def verify_pending(limit=20):
     """Re-check the domains that are waiting on DNS, and record what the web says.
 
     This is what makes "point it here and SSL issues itself" true without a human: a
-    client who fixes a record at midnight finds the domain green in the morning. It is
-    read-only - a DNS lookup and an HTTPS handshake - so it needs no approval gate, and
-    the handshake is also what asks Caddy for a certificate on a site that has not been
+    client who fixes a record at midnight finds the domain green in the morning. The
+    lookup and handshake are read-only, so they need no approval; the one write it causes
+    is a *job*, and that job asks for a single approval before it touches the server.
+    The handshake is also what asks Caddy for a certificate on a site that has not been
     visited yet.
     """
     import provisioner
@@ -195,7 +196,12 @@ def verify_pending(limit=20):
             fields["last_error"] = (probe["hint"] or probe["error"])[:200]
             fields["status"] = "dns_ok" if report["ok"] else "pending_dns"
         try:
-            sites_service.update_site(site["id"], fields)
+            updated = sites_service.update_site(site["id"], fields)
+            # The name resolves here but does not answer HTTPS: that is the gap
+            # provisioning fills. Queueing is deduplicated and capped inside the helper,
+            # so an hourly sweep cannot become an hourly certificate request.
+            if report["ok"] and not probe["ok"]:
+                sites_service.queue_provision(updated or site)
             checked += 1
         except Exception:
             continue

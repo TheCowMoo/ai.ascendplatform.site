@@ -131,6 +131,22 @@ team from the roster and runs it, emitting events. `agent_team` is the general t
 (downloads, image generation) — internal, ungated. The UI streams via SSE with a polling
 fallback.
 
+**A domain.** `sites.status` is `pending_dns` → `dns_ok` → `live`. The hourly sweep
+(`scheduler.verify_pending`, `SITE_VERIFY_MINUTES`, default 60) re-resolves the records
+and probes HTTPS. When DNS points here but HTTPS does not answer, it queues
+`sites.queue_provision` — the same helper `POST /check` calls — so "point it here and SSL
+issues itself" is true without a second button. Queueing is deduplicated (one open
+`site_provision` per domain) and capped at 3 automatic attempts per 24h, so a closed port
+80 cannot burn the ACME rate limit; pressing Provision is always allowed. The run asks
+**one** approval ("publish <domain>: page, site block, reload") and passes
+`preapproved=True` down to every write and the reload — policy is still enforced, so an
+approval is not a licence to run anything. `www` only exists for an apex name
+(`provisioner.is_apex`; `example.co.uk` counts as apex), is never required, and is added
+to the Caddy site block only when it actually resolves here. Before provisioning, a
+browser's `ERR_SSL_PROTOCOL_ERROR` is expected: Caddy has no site block for the name, and
+`describe_probe_error` now says exactly that. On the VPS, `python -m provisioner check
+<domain>` prints the same verdict without the UI.
+
 **A deliverable.** Copywriter/Operator calls `save_deliverable(kind, title, content,
 summary, deliverable_id)`. Ownership comes from the job row, never the model. Images:
 placeholders are filled from `artifacts/images/job-<id>/` → `/artifacts/...`; if the job

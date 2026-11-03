@@ -36,7 +36,8 @@ def test_dns_helpers():
     records = provisioner.dns_records("example.com", "203.0.113.10")
     print("dns records:", json.dumps(records))
     assert records[0]["type"] == "A" and records[0]["value"] == "203.0.113.10"
-    assert records[1]["name"] == "www.example.com"
+    assert records[1]["type"] == "CNAME" and records[1]["value"] == "example.com"
+    assert records[1]["host"] == "www.example.com"
 
     result = provisioner.check_dns("nothing.invalid", "203.0.113.10")
     print("unresolvable domain:", result["reason"] or "resolved")
@@ -87,7 +88,7 @@ def test_provision_dry_run():
     assert result["url"] == "https://acme.test", result["url"]
     # The site is configured; it is only waiting for the user's DNS records.
     assert result["status"] == "pending_dns", result["status"]
-    assert {s["step"] for s in result["steps"]} == {"dns", "content", "vhost", "reload"}
+    assert {s["step"] for s in result["steps"]} == {"dns", "content", "vhost", "reload", "ssl"}
     details = " ".join(s["detail"] for s in result["steps"])
     assert "index.html" in details, details
     assert "acme.test.caddy" in details, details

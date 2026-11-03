@@ -5956,6 +5956,20 @@
   // The old DNS modal listed two records and a single yes/no. This shows every record
   // judged separately, what DNS actually answers, and whether a certificate exists -
   // because "it does not work" is almost always one specific record.
+  // How a domain row describes its provisioning run. Pure, so the harness in
+  // tests/domains_state.mjs can evaluate the real function rather than match strings.
+  function provisionState(job) {
+    if (!job) return '';
+    if (job.status === 'queued' || job.status === 'running') {
+      return 'provisioning ' + job.status;
+    }
+    if (job.status === 'failed' || job.status === 'error') {
+      return 'last provision failed';
+    }
+    return '';
+  }
+  // End provisionState.
+
   function viewDomains(openId) {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -5963,6 +5977,12 @@
       'watch each record go green, then go live. A certificate is only reported once the ' +
       'site actually answers over HTTPS.</p></div>';
     container.appendChild(head);
+
+    // The one thing the Sites tab says and this tab did not: whether anything will
+    // actually be written. A dry-run domain can show green DNS and still fail in the
+    // browser, because provisioning only pretends to install the site block.
+    var banner = el('div', 'panel-card mt');
+    container.appendChild(banner);
 
     // After a server move, a domain pointing at the old address looks healthy from here and
     // dead from the visitor's side. One button asks DNS about every domain at once.
@@ -6118,9 +6138,31 @@
     container.insertBefore(addCard, body);
 
     function refresh() {
-      api('GET', '/api/sites').then(function (d) {
+      // The job list is what turns "dns_ok" into "provisioning queued": the site row
+      // cannot know about the run that was started for it, and a failed run has to say
+      // so here rather than only inside the transcript.
+      var jobsPromise = api('GET', '/api/jobs').catch(function () { return { jobs: [] }; });
+      Promise.all([api('GET', '/api/sites'), jobsPromise]).then(function (results) {
+        var d = results[0] || {};
         body.innerHTML = '';
+        banner.innerHTML = '<h3>How this works</h3><div class="muted">' +
+          (d.dry_run
+            ? 'Dry-run: DNS checks and certificates are real, but provisioning writes ' +
+              'nothing and reloads nothing until you set <code>ALLOW_LIVE_ACTIONS=1</code>.'
+            : 'Live: provisioning writes the page and the site block, reloads the web ' +
+              'server, then waits for the certificate. One approval covers the whole run.') +
+          (d.server_ip
+            ? '<br>Server IP: <b>' + esc(d.server_ip) + '</b>'
+            : '<br>Set <code>SERVER_IP</code> so the DNS hints are accurate.') +
+          '</div>';
         var sites = d.sites || [];
+        // Newest first from the API, so the first match per domain is the current run.
+        var latest = {};
+        (((results[1] || {}).jobs) || []).forEach(function (job) {
+          if (job.task !== 'site_provision') return;
+          var key = String(job.prompt || '').trim().toLowerCase();
+          if (!latest[key]) latest[key] = job;
+        });
         if (!sites.length) {
           body.innerHTML = '<div class="empty-state"><strong>No domains yet</strong>' +
             '<p>Add one under Websites first — a domain has to exist before it can be ' +
@@ -6128,7 +6170,8 @@
           return;
         }
         sites.forEach(function (site) {
-          body.appendChild(row(site));
+          var key = String(site.domain || '').trim().toLowerCase();
+          body.appendChild(row(site, latest[key]));
           if (String(openId) === String(site.id)) body.appendChild(panel(site));
         });
       }).catch(function (e) {
@@ -6136,16 +6179,21 @@
       });
     }
 
-    function row(site) {
+    function row(site, prov) {
       var card = el('div', 'panel-card dom-row');
       var cls = site.status === 'live' ? 'badge-done'
         : (site.status === 'dns_ok' ? 'badge-running'
         : (site.status === 'error' ? 'badge-failed' : 'badge-queued'));
+      var working = prov && (prov.status === 'queued' || prov.status === 'running');
+      var state = provisionState(prov);
       card.innerHTML = '<div><div class="dom-name">' + esc(site.domain) + '</div>' +
         '<div class="dom-meta"><span class="badge ' + cls + '">' +
         esc(String(site.status || 'pending').replace('_', ' ')) + '</span>' +
         (site.dns_last_ip ? ' · resolves to ' + esc(site.dns_last_ip) : '') +
-        (site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') + '</div></div>';
+        (site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') +
+        (state ? ' · ' + esc(state) : '') + '</div>' +
+        (site.last_error ? '<div class="fine-print">' + esc(site.last_error) + '</div>' : '') +
+        '</div>';
 
       var actions = el('div', 'row-actions');
       var open = el('button', 'btn btn-ghost btn-sm',
@@ -6156,6 +6204,12 @@
       };
       actions.appendChild(open);
 
+      if (working) {
+        var inspect = el('button', 'btn btn-ghost btn-sm', 'View job');
+        inspect.onclick = function () { location.hash = '#/app/jobs/' + prov.id; };
+        actions.appendChild(inspect);
+      }
+
       // The row is where someone looks when a domain is not detected, so the two things
       // they need next belong here: a fresh lookup, and the way to publish or remove it.
       // Before this, a typo could only be deleted from the Websites tab.
@@ -6164,9 +6218,12 @@
         check.disabled = true;
         api('POST', '/api/sites/' + site.id + '/check').then(function (d) {
           var verdict = d.check || {};
-          toast(verdict.ok ? 'DNS points here'
-                           : 'DNS: ' + (verdict.reason || 'not pointed here yet'),
-                !!verdict.ok);
+          var queued = d.provision || null;
+          var message = verdict.ok
+            ? (queued ? 'DNS points here - provisioning queued (job #' + queued.id + ')'
+                      : 'DNS points here')
+            : 'DNS: ' + (verdict.reason || 'not pointed here yet');
+          toast(message, !!verdict.ok);
           refresh();
         }).catch(function (e) { toast(e.message, false); })
           .finally(function () { check.disabled = false; });
@@ -6271,6 +6328,7 @@
             live.disabled = true;
             api('POST', '/api/sites/' + site.id + '/provision').then(function (res) {
               toast('Provisioning queued - job #' + ((res.job || {}).id || '?'), true);
+              refresh();
             }).catch(function (e) {
               live.disabled = false;
               toast(e.message, false);
@@ -6293,6 +6351,12 @@
               'a failure yet.';
           }
           box.appendChild(el('p', 'fine-print', cert));
+          if (report.ok && !probe.ok) {
+            box.appendChild(el('p', 'fine-print', 'DNS is right, so the next step is Go ' +
+              'live: it writes the page and the site block, reloads the web server, then ' +
+              'waits for the certificate. Until that runs a browser shows ' +
+              'ERR_SSL_PROTOCOL_ERROR - that is the missing site block, not a DNS fault.'));
+          }
         }).catch(function (e) {
           box.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
         });

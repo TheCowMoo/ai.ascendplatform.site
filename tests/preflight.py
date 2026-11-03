@@ -33,6 +33,9 @@ FAST_SUITES = (
     "test_artifact_paths",
     "smoke_assistant_sessions",
     "test_dns_records",
+    "test_auto_provision",
+    "test_provision_approval",
+    "smoke_provisioner",
     "smoke_voice",
     "smoke_automations",
     "smoke_analytics",
@@ -252,6 +255,16 @@ def check_js():
             raise AssertionError("the nav groups harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("nav groups harness OK")
+
+    # A provisioning run that is queued and one that failed look identical on a domain
+    # row unless the row is told; this checks the real label function.
+    harness = os.path.join(ROOT, "tests", "domains_state.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the domains state harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("domains state harness OK")
 
 
 def check_suites():

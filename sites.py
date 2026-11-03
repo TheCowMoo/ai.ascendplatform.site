@@ -8,7 +8,9 @@ module is the thin CRUD/status layer used by both the API and the agent tools.
 import json
 import secrets
 
-from db import get_connection, now_str
+import actions
+import jobs
+from db import days_ago, get_connection, now_str
 
 TEXT_FIELDS = (
     "domain", "docroot", "content_html", "linked_bot_id", "target",
@@ -167,6 +169,71 @@ def _first_failure(result):
         if not step.get("ok"):
             return "%s: %s" % (step.get("step"), (step.get("detail") or "")[:300])
     return ""
+
+
+# How many automatic attempts one domain gets in a day. The DNS sweep runs hourly, so
+# without a cap a domain whose port 80 is closed would ask Let's Encrypt for a
+# certificate every hour - and Let's Encrypt answers that with a rate limit that
+# outlasts the outage.
+AUTO_PROVISION_WINDOW_HOURS = 24
+AUTO_PROVISION_MAX_ATTEMPTS = 3
+
+
+def _provision_jobs(site, limit=200):
+    """Provisioning jobs for this domain, newest first, scoped to the site's tenant."""
+    domain = (site.get("domain") or "").strip().lower()
+    if not domain:
+        return []
+    rows = jobs.list_jobs(limit=limit, org_id=site.get("org_id"))
+    return [row for row in rows
+            if row.get("task") == "site_provision"
+            and (row.get("prompt") or "").strip().lower() == domain]
+
+
+def open_provision_job(site):
+    """The queued or running provisioning job for this site, if there is one."""
+    for row in _provision_jobs(site, limit=50):
+        if row.get("status") in ("queued", "running"):
+            return row
+    return None
+
+
+def queue_provision(site, requester_id=None, manual=False):
+    """Queue one provisioning run for a site whose DNS now points here.
+
+    This is the missing link in "point it here and SSL issues itself": the DNS sweep
+    proves the name resolves here, then this hands the vhost and the certificate request
+    to the job engine. Returns the job row, or ``None`` when nothing should be queued:
+
+    * dry-run - a job would only simulate writes, and the Sites banner already says so;
+    * a run is already queued or running (the hourly sweep and the Check button both
+      notice the same domain, and two vhosts written at once is not a feature);
+    * the automatic budget for the day is spent. Manual runs (``manual=True``) ignore the
+      budget, so pressing Provision always does something.
+    """
+    if not site or not site.get("domain"):
+        return None
+    if not manual and actions.is_dry_run():
+        return None
+    if open_provision_job(site):
+        return None
+    recent = [row for row in _provision_jobs(site)
+              if (row.get("created_at") or "") >= days_ago(AUTO_PROVISION_WINDOW_HOURS / 24.0)]
+    if not manual and len(recent) >= AUTO_PROVISION_MAX_ATTEMPTS:
+        note = ("automatic provisioning paused after %d attempts in %d hours - press "
+                "Provision to retry" % (AUTO_PROVISION_MAX_ATTEMPTS,
+                                        AUTO_PROVISION_WINDOW_HOURS))
+        if site.get("last_error") != note:
+            update_site(site["id"], {"last_error": note})
+        return None
+    domain = site["domain"]
+    job_id = jobs.create_job(
+        "Provision %s" % domain, domain,
+        requester_id if requester_id is not None else site.get("owner_id"),
+        "selector", "site_provision", org_id=site.get("org_id"),
+    )
+    jobs.submit(job_id)
+    return jobs.get_job(job_id)
 
 
 def new_site_token():

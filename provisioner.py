@@ -50,6 +50,32 @@ def slug(domain):
     return domain.strip().lower() if decision.allowed else ""
 
 
+# Second-level labels that sit under a country-code TLD. ``example.co.uk`` is a
+# registrable name even though it has three labels, so counting dots would call it a
+# subdomain and drop the ``www`` row - the one record the user is about to add.
+SECOND_LEVEL_LABELS = frozenset((
+    "ac", "co", "com", "edu", "go", "gob", "gov", "mil", "ne", "net", "or", "org", "sch",
+))
+
+
+def is_apex(domain):
+    """True when ``domain`` is the registrable name, not a host under one.
+
+    This decides whether ``www.`` is part of the site at all. For
+    ``test2.example.com`` the answer is no, so asking for a ``www.test2`` record would
+    invent a host nobody asked for. There is no public-suffix list in the image, so the
+    common two-level suffixes (co.uk, com.au, ...) are named explicitly; everything else
+    follows the usual "two labels is the apex" rule.
+    """
+    labels = [part for part in (domain or "").rstrip(".").lower().split(".") if part]
+    if len(labels) < 2:
+        return False
+    if len(labels) == 2:
+        return True
+    return (len(labels) == 3 and len(labels[-1]) == 2
+            and labels[-2] in SECOND_LEVEL_LABELS)
+
+
 def docroot_for(domain, sites_root=None):
     root = (sites_root or SITES_ROOT).rstrip("/")
     return "%s/%s/public_html" % (root, slug(domain))
@@ -330,12 +356,15 @@ def dns_report(domain, server_ip_value=None):
     apex4, apex6 = resolve_types(domain)
     www4, www6 = resolve_types("www." + domain)
 
-    rows = [
-        _record_row("A", "@", expected, apex4, True),
-        _www_row(domain, expected),
-        _record_row("AAAA", "@", expected, apex6, False),
-        _record_row("AAAA", "www", expected, www6, False),
-    ]
+    # A subdomain such as test2.example.com has no www of its own: publishing
+    # www.test2.example.com would create a host the user never asked for, and failing
+    # the report over a record they should not add is how a working domain looks broken.
+    rows = [_record_row("A", "@", expected, apex4, True)]
+    if is_apex(domain):
+        rows.append(_www_row(domain, expected))
+    rows.append(_record_row("AAAA", "@", expected, apex6, False))
+    if is_apex(domain):
+        rows.append(_record_row("AAAA", "www", expected, www6, False))
     required = [row for row in rows if row["required"]]
     proxied = any(row["status"] == "proxied" for row in rows) or (
         bool(apex4) and all(_in_cloudflare(a) for a in apex4))
@@ -368,16 +397,20 @@ def dns_records(domain, server_ip_value=None):
 
     ``www`` is a CNAME rather than a second A record: it keeps working when the server's
     address changes, which is the difference between a five-minute fix and an outage nobody
-    noticed. The ``copy`` strings are built here, not in the console, so the button and the
-    table can never disagree about what a record is.
+    noticed. It is only listed for an apex domain - ``test2.example.com`` is a host in its
+    own right and gets one record, not a meaningless ``www.test2``. The ``copy`` strings
+    are built here, not in the console, so the button and the table can never disagree
+    about what a record is.
     """
     ip = (server_ip_value or server_ip()) or "<this server's public IP>"
     rows = [
         {"type": "A", "name": "@", "host": domain, "value": ip, "ttl": 3600,
          "note": "the site itself"},
-        {"type": "CNAME", "name": "www", "host": "www." + domain, "value": domain,
-         "ttl": 3600, "note": "the friendly address"},
     ]
+    if is_apex(domain):
+        rows.append(
+            {"type": "CNAME", "name": "www", "host": "www." + domain, "value": domain,
+             "ttl": 3600, "note": "the friendly address"})
     for row in rows:
         row["copy"] = "%s  %s  %s  TTL %d" % (row["type"], row["name"], row["value"],
                                               row["ttl"])
@@ -421,6 +454,19 @@ def describe_probe_error(exc):
         if "self-signed" in lowered or "self signed" in lowered:
             return text, "The server is presenting its own internal certificate, so Caddy has not issued one yet."
         return text, "The certificate could not be trusted; it may still be issuing, or Caddy may have failed."
+    # No certificate at all, rather than a bad one. This is the state between "DNS points
+    # here" and "provisioned": Caddy has no site block for the name, so it cannot answer
+    # the handshake and the browser reports ERR_SSL_PROTOCOL_ERROR. Saying "the transcript
+    # should say why" hid the most common cause of that error.
+    if (isinstance(exc, (ConnectionResetError, ConnectionAbortedError))
+            or name.startswith("SSL") or "handshake" in lowered
+            or "wrong version number" in lowered or "unexpected eof" in lowered
+            or "eof occurred" in lowered or "record layer failure" in lowered
+            or "connection reset" in lowered):
+        return (text or name), (
+            "The TLS handshake did not complete because this server is not configured "
+            "for the name yet. Provision the site (Domains -> Provision) and make sure "
+            "the web server reloaded; a browser shows this as ERR_SSL_PROTOCOL_ERROR.")
     if "name or service not known" in lowered or "getaddrinfo" in lowered or "nodename" in lowered:
         return (text or name), "The domain does not resolve yet - DNS has not propagated to this machine."
     return (text or name), "The HTTPS check failed; the transcript above should say why."
@@ -683,9 +729,16 @@ def html_escape(value):
 
 
 def render_vhost(domain, docroot, aliases=None):
-    """Caddy site block for a domain plus its aliases."""
-    hosts = [slug(domain)] + [slug(a) for a in (aliases or []) if a]
-    hosts = [host for host in hosts if host]
+    """Caddy site block for a domain plus its aliases.
+
+    Duplicates are dropped: the apex block adds ``www`` when it resolves, and a site that
+    already listed it would otherwise produce the same host twice - which Caddy rejects
+    as a duplicate site address, turning a harmless overlap into a failed reload.
+    """
+    hosts = []
+    for host in [slug(domain)] + [slug(a) for a in (aliases or []) if a]:
+        if host and host not in hosts:
+            hosts.append(host)
     if not hosts:
         raise ProvisionError("no valid host for the site block")
     return VHOST_TEMPLATE.format(domain=slug(domain), hosts=", ".join(hosts), docroot=docroot)
@@ -772,8 +825,15 @@ def _aliases(site):
     return [a for a in (raw or []) if a]
 
 
-def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=True):
-    """Policy first, then the approval gate. Shared by both targets."""
+def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=True,
+               preapproved=False):
+    """Policy first, then the approval gate. Shared by both targets.
+
+    ``preapproved`` is set by a caller that already asked for one approval covering a
+    whole run - provisioning does, so a site is not three separate approvals that can be
+    missed. Policy is still enforced: approval to publish a site is not approval to run
+    any command at all. Dry-run still goes through the gate, so it keeps its note.
+    """
     if command is not None:
         decision = policy.check_command(command, allow_mutating=allow_mutating)
         if not decision.allowed:
@@ -781,6 +841,10 @@ def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=T
                 emit("policy", "error", "Blocked by policy: %s (%s)" % (command, decision.reason))
             return {"allowed": False, "blocked": True, "dry_run": actions.is_dry_run(),
                     "reason": decision.reason}
+    if preapproved and not actions.is_dry_run():
+        if emit:
+            emit("gate", "system", "Covered by the provisioning approval: %s" % summary)
+        return {"allowed": True, "dry_run": False, "reason": "preapproved", "approval_id": None}
     return actions.gate(tool, summary, args, job_id, emit)
 
 
@@ -795,9 +859,11 @@ class LocalTarget:
         self.caddy_sites_dir = (caddy_sites_dir or CADDY_SITES_DIR).rstrip("/")
         self.allowed_root = self.sites_root
 
-    def run(self, command, job_id=None, emit=None, allow_mutating=True, summary=None):
+    def run(self, command, job_id=None, emit=None, allow_mutating=True, summary=None,
+            preapproved=False):
         authorisation = _authorise("shell", summary or command, {"command": command},
-                                   job_id, emit, command=command, allow_mutating=allow_mutating)
+                                   job_id, emit, command=command, allow_mutating=allow_mutating,
+                                   preapproved=preapproved)
         if not authorisation["allowed"]:
             return {"ok": False, "blocked": authorisation.get("blocked", False),
                     "dry_run": authorisation["dry_run"], "output": authorisation["reason"]}
@@ -818,15 +884,17 @@ class LocalTarget:
         except Exception:
             return ""
 
-    def write_file(self, path, content, job_id=None, emit=None, summary=None):
+    def write_file(self, path, content, job_id=None, emit=None, summary=None,
+                   preapproved=False):
         decision = check_write_path(self, path)
         if not decision.allowed:
             if emit:
                 emit("policy", "error", "Refused to write %s: %s" % (path, decision.reason))
             return {"ok": False, "blocked": True, "dry_run": actions.is_dry_run(),
                     "output": "policy: %s" % decision.reason}
-        authorisation = actions.gate("file_write", summary or ("write %s" % path),
-                                     {"path": path, "bytes": len(content)}, job_id, emit)
+        authorisation = _authorise("file_write", summary or ("write %s" % path),
+                                   {"path": path, "bytes": len(content)}, job_id, emit,
+                                   preapproved=preapproved)
         if not authorisation["allowed"]:
             return {"ok": False, "blocked": False, "dry_run": authorisation["dry_run"],
                     "output": authorisation["reason"]}
@@ -866,12 +934,14 @@ class RemoteTarget:
             "output": (result["stdout"] or result["stderr"]).strip()[:4000],
         }
 
-    def run(self, command, job_id=None, emit=None, allow_mutating=True, summary=None):
+    def run(self, command, job_id=None, emit=None, allow_mutating=True, summary=None,
+            preapproved=False):
         authorisation = _authorise(
             "ssh",
             summary or ("%s: %s" % (self.label(), command)),
             {"host": self.label(), "command": command},
             job_id, emit, command=command, allow_mutating=allow_mutating,
+            preapproved=preapproved,
         )
         if not authorisation["allowed"]:
             return {"ok": False, "blocked": authorisation.get("blocked", False),
@@ -891,7 +961,8 @@ class RemoteTarget:
         except Exception:
             return ""
 
-    def write_file(self, path, content, job_id=None, emit=None, summary=None):
+    def write_file(self, path, content, job_id=None, emit=None, summary=None,
+                   preapproved=False):
         decision = check_write_path(self, path)
         if not decision.allowed:
             if emit:
@@ -899,11 +970,11 @@ class RemoteTarget:
             return {"ok": False, "blocked": True, "dry_run": actions.is_dry_run(),
                     "output": "policy: %s" % decision.reason}
 
-        authorisation = actions.gate(
+        authorisation = _authorise(
             "ssh_write",
             summary or ("write %s on %s (%d bytes)" % (path, self.label(), len(content))),
             {"host": self.label(), "path": path, "bytes": len(content)},
-            job_id, emit,
+            job_id, emit, preapproved=preapproved,
         )
         if not authorisation["allowed"]:
             return {"ok": False, "blocked": False, "dry_run": authorisation["dry_run"],
@@ -986,11 +1057,16 @@ def target_docroot(site):
 # ---------------------------------------------------------------------------
 # Provisioning
 # ---------------------------------------------------------------------------
-def provision(site, profile=None, job_id=None, emit=None, server_ip=None):
+def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapproved=False):
     """Make the target match the site row.
 
     Returns ``url``, ``status`` and per-step detail. In dry-run everything is
     simulated, so the returned URL is exactly what a live run would publish.
+
+    ``preapproved`` is set when the caller already obtained one approval for the whole
+    run (the ``site_provision`` job does). Without it, each write and the reload asks
+    its own question - three prompts for one intent, and missing the third leaves a
+    configured site with no certificate.
     """
     domain = slug((site or {}).get("domain"))
     if not domain:
@@ -1006,21 +1082,35 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None):
         if emit:
             emit("provision", "system", "[%s] %s: %s" % (target.name, name, text))
 
-    dns = check_dns(domain, server_ip)
+    report = dns_report(domain, server_ip)
+    dns = {"domain": domain, "resolved": report["resolved"], "expected": report["expected"],
+           "ok": report["ok"], "reason": report["reason"]}
     record("dns", {"ok": dns["ok"]},
            "resolved=%s expected=%s %s" % (dns["resolved"], dns["expected"], dns["reason"]))
 
     content = (site.get("content_html") or "").strip() or index_from_profile(profile, site)
     record("content", target.write_file(join_path(docroot, "index.html"), content, job_id, emit,
-                                        summary="write index.html for %s" % domain))
+                                        summary="write index.html for %s" % domain,
+                                        preapproved=preapproved))
 
-    vhost = render_vhost(domain, docroot, _aliases(site))
+    aliases = _aliases(site)
+    if is_apex(domain):
+        # www is optional, but when it does point here it has to be in the same site
+        # block: otherwise a browser asking for www gets the apex certificate and
+        # fails, and the panel that told the user to add the record looks wrong.
+        points_here = any(row["name"] == "www" and row["type"] in ("CNAME", "A")
+                          and row["status"] == "ok" for row in report["rows"])
+        if points_here:
+            aliases.append("www." + domain)
+    vhost = render_vhost(domain, docroot, aliases)
     record("vhost", target.write_file(join_path(target.caddy_sites_dir, domain + ".caddy"), vhost,
                                       job_id, emit,
-                                      summary="install the web server config for %s" % domain))
+                                      summary="install the web server config for %s" % domain,
+                                      preapproved=preapproved))
 
     record("reload", target.run(CADDY_RELOAD_CMD, job_id, emit, allow_mutating=True,
-                                summary="reload the web server (%s)" % target.name))
+                                summary="reload the web server (%s)" % target.name,
+                                preapproved=preapproved))
 
     # Certificate. Caddy issues on the first TLS handshake for a name, so this probe is
     # both the request and the proof - without it a job could report "live" while the
@@ -1081,6 +1171,58 @@ def remove_site(site, job_id=None, emit=None):
                                summary="reload the web server (%s)" % target.name)
     steps.append({"step": "reload", "ok": reload_result["ok"], "detail": reload_result.get("output", "")})
     return {"ok": all(step["ok"] for step in steps), "steps": steps}
+
+
+# ---------------------------------------------------------------------------
+# Command line (for the VPS)
+# ---------------------------------------------------------------------------
+def main(argv=None):
+    """``python -m provisioner check <domain>`` - the same verdict the console shows.
+
+    The question this answers is the one that arrives as a screenshot:
+    ``ERR_SSL_PROTOCOL_ERROR``. It prints every record with its verdict, then knocks on
+    HTTPS with the same probe provisioning uses, so "DNS is right but nothing is
+    configured" is visible without opening the UI.
+    """
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help"):
+        print("usage: python -m provisioner check <domain>")
+        return 0
+    if args[0] != "check" or len(args) < 2:
+        print("usage: python -m provisioner check <domain>")
+        return 2
+
+    domain = slug(args[1])
+    if not domain:
+        print("not a valid domain: %s" % args[1])
+        return 2
+
+    report = dns_report(domain)
+    print("domain:    %s" % domain)
+    print("server ip: %s (%s)" % (report["expected"] or "not set", report["expected_source"]))
+    if not report["expected"]:
+        print("           set SERVER_IP so there is an address to point at")
+    for row in report["rows"]:
+        seen = ", ".join(row["seen"]) or "-"
+        print("  %-5s %-4s %-40s %-8s %s" % (row["type"], row["name"], seen,
+                                              row["status"], row["note"] or ""))
+    print("dns:       %s" % ("ok" if report["ok"] else (report["reason"] or "not ok")))
+
+    probe = live_probe(domain)
+    if probe["ok"]:
+        print("https:     ok - %s, expires %s" % (probe["issuer"] or "issued",
+                                                  probe["expires"] or "unknown"))
+    else:
+        print("https:     failed - %s" % (probe["hint"] or probe["error"]))
+    if report["ok"] and not probe["ok"]:
+        print("next:      provision the site (Domains -> Provision), then run this again")
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 

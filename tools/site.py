@@ -10,6 +10,7 @@ and in dry-run nothing happens at all.
 
 import json
 
+import actions
 import jobs
 import provisioner
 import sites as sites_service
@@ -151,12 +152,13 @@ register(
 # ---------------------------------------------------------------------------
 # Job task
 # ---------------------------------------------------------------------------
-def _run_provision(site, job_id, emit):
+def _run_provision(site, job_id, emit, preapproved=False):
     """Shared by the agent tool and the job task."""
     owner_id = site.get("owner_id")
     profile = _profile_for(owner_id)
     try:
-        result = provisioner.provision(site, profile=profile, job_id=job_id, emit=emit)
+        result = provisioner.provision(site, profile=profile, job_id=job_id, emit=emit,
+                                       preapproved=preapproved)
     except provisioner.ProvisionError as exc:
         sites_service.update_site(site["id"], {"status": "error", "last_error": str(exc)})
         return "provisioning refused: %s" % exc
@@ -178,5 +180,27 @@ async def site_provision_task(job, emit):
     site = sites_service.upsert_for_agent(domain, job.get("requester_id"))
     if not site:
         return "could not create a site record for %r" % domain
-    return _run_provision(site, job.get("id"), emit)
+    try:
+        target = provisioner.get_target(site)
+    except provisioner.ProvisionError as exc:
+        sites_service.update_site(site["id"], {"status": "error", "last_error": str(exc)})
+        return "provisioning refused: %s" % exc
+
+    # One approval for one intent. This used to be three gates - index.html, the site
+    # block, the reload - and a missed card left the site configured with no certificate,
+    # which is precisely the failure this job exists to fix.
+    approval = actions.gate(
+        "site_provision",
+        "publish %s on %s: write the page, install the site block, reload the web server"
+        % (domain, target.name),
+        {"domain": domain, "target": target.name}, job.get("id"), emit,
+    )
+    if not approval["allowed"]:
+        sites_service.update_site(site["id"], {
+            "status": "error",
+            "last_error": "provisioning not approved: %s" % approval["reason"],
+        })
+        return "provisioning not approved: %s" % approval["reason"]
+    return _run_provision(site, job.get("id"), emit,
+                          preapproved=not approval["dry_run"])
 
