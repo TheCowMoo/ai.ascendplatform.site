@@ -1398,7 +1398,9 @@ def _org_usage(org, days=30, pricing=False):
         "low_water": usage_service.low_water(),
         "enforce": usage_service.enforcement_mode(),
         "balance": balance,
-        # What the sidebar gauge measures against when the plan has no allowance.
+        # The sidebar gauge: credits used this month against the plan's credits (or what
+        # was added when there is no plan).
+        "spent": usage_service.spent_this_month(org_id),
         "added": usage_service.added_this_month(org_id),
         "low": balance is not None and balance <= usage_service.low_water(),
         "ledger": usage_service.ledger(org_id, limit=25) if org_id else [],

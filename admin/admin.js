@@ -248,44 +248,60 @@
   }
 
   // ---------- Shell: sidebar + topbar ----------
-  // The bar under the username asks /api/usage on every render; a 15-second cache keeps
-  // clicking through tabs from firing a request each time. The acting client can change
-  // inside one render (workspaceSwitcher), so that path clears the cache explicitly.
+  // The bar under the username is this client month: credits used against the plan
+  // credits (or what was added when there is no plan). A balance gauge answers the wrong
+  // question - a client runs out of an allowance, not out of a wallet - and the operator
+  // gets a quiet hint instead of a blank, because the number is per client.
   var creditCache = { at: 0, data: null };
 
   function creditMeter(node) {
     function paint(d) {
       var balance = d && d.balance;
-      // No ledger row, or the operator on "All clients": there is no one balance to draw.
-      if (balance === null || balance === undefined) { node.hidden = true; return; }
-      var allowance = Number(d.allowance || 0);
-      // With no plan allowance, the tank is what was actually added this month (the
-      // monthly grant, or a one-off top-up), so the gauge still means something.
-      var tank = allowance > 0 ? allowance : Number(d.added || 0);
-      var low = !!d.low || Number(balance) < 0;
       var value = node.querySelector('.side-credit-value');
       var track = node.querySelector('.side-credit-track');
       var fill = node.querySelector('.side-credit-fill');
+
+      if ((balance === null || balance === undefined) && d && d.orgs) {
+        // The operator on All clients: usage is per client, so say so rather than leave
+        // an unexplained gap.
+        node.hidden = false;
+        node.classList.remove('low');
+        value.textContent = 'Usage · pick a client';
+        track.classList.add('hidden');
+        node.title = 'Credits used this month are per client. Pick one in the workspace ' +
+          'switcher, or open Platform → Usage for every client.';
+        return;
+      }
+      if (balance === null || balance === undefined) { node.hidden = true; return; }
+
+      var allowance = Number(d.allowance || 0);
+      var spent = Number(d.spent || 0);
+      var added = Number(d.added || 0);
+      // The month budget: the plan credits, or what was actually put in this month.
+      var tank = allowance > 0 ? allowance : added;
+      var over = tank > 0 && spent >= tank;
+      var low = !!d.low || over || Number(balance) < 0;
+
       node.hidden = false;
       node.classList.toggle('low', low);
       if (tank > 0) {
-        value.textContent = fmtCredits(balance) + ' / ' + fmtCredits(tank) + ' credits';
+        value.textContent = fmtCredits(spent) + ' / ' + fmtCredits(tank) + ' credits used';
         track.classList.remove('hidden');
-        // A top-up can put the balance above the tank; it is a meter, not a debt.
-        fill.style.width = Math.max(0, Math.min(100, (balance / tank) * 100)) + '%';
+        // The bar fills as the month is consumed; at 100% the credits are used up.
+        fill.style.width = Math.max(0, Math.min(100, (spent / tank) * 100)) + '%';
         track.setAttribute('aria-valuemax', String(tank));
-        track.setAttribute('aria-valuenow', String(Math.max(0, Number(balance))));
+        track.setAttribute('aria-valuenow', String(Math.max(0, spent)));
       } else {
-        // Nothing was ever added: the number is the whole story, so no empty track.
-        value.textContent = fmtCredits(balance) + ' credits';
+        // No plan and nothing added: the usage number is the whole story.
+        value.textContent = fmtCredits(spent) + ' credits used this month';
         track.classList.add('hidden');
         track.removeAttribute('aria-valuemax');
         track.removeAttribute('aria-valuenow');
       }
-      node.title = fmtCredits(balance) + ' credits' +
-        (tank > 0 ? ' remaining of ' + fmtCredits(tank) +
-          (allowance > 0 ? ' a month' : ' added this month') : '') +
-        ' · plan ' + (d.plan || 'standard');
+      node.title = fmtCredits(spent) + ' credits used this month' +
+        (tank > 0 ? ' of ' + fmtCredits(tank) +
+          (allowance > 0 ? ' on the ' + (d.plan || 'standard') + ' plan' : ' added') : '') +
+        ' · ' + fmtCredits(balance) + ' left';
     }
     var now = Date.now();
     if (creditCache.data && now - creditCache.at < 15000) {

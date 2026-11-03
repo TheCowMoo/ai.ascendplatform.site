@@ -153,7 +153,9 @@ balance. Set it as a share of the smallest plan (20 credits for the 200-credit p
 ### What the client sees
 
 Credits only. The client Usage page shows balance, plan, allowance, spend by model and
-recent calls, all in credits; it never states a dollar figure. `GET /api/usage` for a
+recent calls, all in credits; it never states a dollar figure. The sidebar gauge is the
+month: credits used against the plan credits (or what was added this month when there is
+no plan), not a wallet balance. `GET /api/usage` for a
 non-owner omits `credit_usd`, `markup_percent` and `margin_percent` entirely, so the price
 is not in the browser either. The operator (including while acting as a client) sees the
 price, the markup and the margin on Platform -> Usage, plus a *Value* column (balance x

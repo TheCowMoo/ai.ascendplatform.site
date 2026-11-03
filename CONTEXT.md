@@ -628,16 +628,17 @@ API: `GET /api/usage` (own meter; the operator with no client picked gets every 
 `owner_required`; a client cannot read another client's usage.
 
 **The sidebar bar.** `creditMeter` (under the username, in the sidebar foot) shows the
-acting client's balance against its monthly allowance - `1,240 / 5,000 credits` - with a
-4 px track that shrinks as credits are spent and turns red at `LOW_WATER`. With no plan
-allowance the tank is what was added this month (grants and top-ups), so a one-off top-up
-still gets a gauge; only a client with no ledger row (or the operator on *All clients*,
-where one balance does not exist) hides. It reads `GET /api/usage`, caches
+acting client's credits used this calendar month against the plan's credits -
+`1,240 / 5,000 credits used` - and the track fills as the month is consumed, turning red
+at 100% or at `LOW_WATER`. No plan: the tank is what was added this month (grants,
+top-ups); neither: the usage number alone. `usage.spent_this_month` reads the ledger's
+`reason='usage'` rows for the current month, so a refund does not lower usage. A client
+with no ledger row hides the bar; the operator on *All clients* gets a muted
+`Usage - pick a client` row, because the number is per client. It reads `GET /api/usage`, caches
 for 15 seconds so tab clicks do not each fire a request, and clears that cache when
 `POST /api/session/org` switches client. Clicking it opens the Usage tab.
-`tests/credit_bar.mjs` runs in preflight: it reads the real `creditMeter` out of
-`admin.js`, evaluates it with fake `api`/DOM, and pins the width, the allowance fallback,
-the low state, the cache, the clamps and the three hidden cases.
+`tests/credit_bar.mjs` (in preflight) evaluates the real `creditMeter` and pins the
+width, the fallbacks, the over-budget red, the operator hint and the cache.
 
 **Voice accuracy (phase 3).** The reservation is no longer charged at mint. `POST
 /api/voice/session` inserts a `voice_sessions` row (token, org, user, reserved seconds,

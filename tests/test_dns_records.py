@@ -11,6 +11,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.pop("ALLOW_LIVE_ACTIONS", None)
+# The endpoint checks need a known server address. Without this the suite falls back to a
+# public-IP echo service, and a network hiccup fails two checks that are about the API,
+# not about DNS. Pin it before app/provisioner read it.
+os.environ["SERVER_IP"] = "203.0.113.7"
 
 import app as appmod  # noqa: E402
 import provisioner  # noqa: E402

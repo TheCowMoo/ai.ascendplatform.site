@@ -101,6 +101,7 @@ def test_a_client_sees_only_its_own_meter(alpha, beta):
     check("with its balance", mine["balance"], 25.0)
     check("and its own ledger", mine["ledger"][0]["delta_milli"], 25000)
     check("and the month's top-up, for the gauge", mine["added"], 25.0)
+    check("the month's usage starts at zero", mine.get("spent"), 0.0)
     check("no other client appears", mine["org_id"] == beta["id"], False)
 
     negative = owner.post("/api/orgs/%d/credits" % alpha["id"],
@@ -243,6 +244,11 @@ def test_the_price_is_the_operators_only(alpha):
 
 def test_provider_names_are_the_operators_only(alpha):
     """A client sees kinds, agents and credits; provider and model names are ours."""
+    # A rate, so the call is actually charged: an unpriced event records usage but
+    # moves no credits, and this test is about the charge the gauge counts.
+    import rates as rates_service
+
+    rates_service.set_rate("testapi-%s" % TOKEN, "model-a", input_per_1m=3.0)
     usage.record_model("testapi-%s" % TOKEN, "model-a", "model-a", "agent",
                        {"input_uncached": 1000, "output": 10}, org_id=alpha["id"])
     client = _login(alpha)
@@ -254,6 +260,7 @@ def test_provider_names_are_the_operators_only(alpha):
     check("nor a model", all("model" not in row for row in mine["rows"]), True)
     check("nor a model on recent calls",
           all("model_returned" not in item for item in mine["recent"]), True)
+    check("the month's usage is counted", mine.get("spent", 0) > 0, True)
     check("the operator still sees the provider",
           any(row.get("provider") for row in theirs["rows"]), True)
     check("and the model", any(row.get("model") for row in theirs["rows"]), True)
@@ -283,7 +290,8 @@ def test_the_console_is_wired():
     check("the rate card is edited there", "'/api/usage/rates'" in admin_js, True)
     check("invoices are checked from the platform page",
           "'/api/usage/reconciliation'" in admin_js, True)
-    check("the bar falls back to the month's top-ups", "Number(d.added" in admin_js, True)
+    check("the bar shows the month's usage", "d.spent" in admin_js, True)
+    check("the operator is told to pick a client", "pick a client" in admin_js, True)
     check("the client page never shows a dollar price",
           "1 credit = $0.001" not in admin_js, True)
     check("the platform page states the sale price", "d.credit_usd" in admin_js, True)

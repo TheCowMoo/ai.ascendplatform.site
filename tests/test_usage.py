@@ -464,6 +464,23 @@ def test_the_credit_sale_price():
     print("one sale price, one margin, and a safe fallback")
 
 
+def test_spent_this_month():
+    """The usage gauge's numerator: ledger charges this month, not refunds."""
+    _rates()
+    org = _org()
+    usage.grant(org["id"], 100)
+    usage.record_model(PROVIDER, MODEL, MODEL, "agent",
+                       {"input_uncached": 1000, "output": 0}, org_id=org["id"])
+    usage.adjust(org["id"], 5, note="refund")      # a positive correction, not usage
+    spent = usage.spent_this_month(org["id"])
+    check("the month's charge is the usage", spent, 3.0)
+    check("a refund does not lower it", usage.spent_this_month(org["id"]), 3.0)
+    check("another month has no usage",
+          usage.spent_this_month(org["id"], "1999-01"), 0.0)
+    check("no client means no usage", usage.spent_this_month(None), 0.0)
+    print("spent this month is measured from the ledger charges")
+
+
 def test_what_was_added_this_month():
     """The sidebar gauge's tank: grants and top-ups, not spend, not corrections."""
     _rates()
@@ -530,6 +547,7 @@ def main():
         test_the_metered_client_records_and_falls_back()
         test_voice_is_billed_when_it_closes()
         test_the_credit_sale_price()
+        test_spent_this_month()
         test_what_was_added_this_month()
         test_reconciliation_compares_the_meter_to_the_invoice()
     finally:

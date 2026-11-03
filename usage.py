@@ -310,6 +310,24 @@ def added_this_month(org_id, period=None):
     return rates.credits(int(row["milli"] or 0))
 
 
+def spent_this_month(org_id, period=None):
+    """Credits charged this calendar month - the usage gauge's numerator.
+
+    Read from the ledger, not the events: a refund or a correction is not usage, and
+    the charge is what the client's balance actually feels.
+    """
+    if org_id is None:
+        return 0.0
+    period = period or now_str()[:7]
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(-delta_milli), 0) AS milli FROM credit_ledger "
+            "WHERE org_id = ? AND reason = 'usage' AND delta_milli < 0 "
+            "AND created_at LIKE ?",
+            (org_id, period + "%")).fetchone()
+    return rates.credits(int(row["milli"] or 0))
+
+
 def job_cost(job_id):
     """``(credits, unpriced_calls)`` for one job, or ``(None, 0)`` when it spent nothing."""
     if not job_id:

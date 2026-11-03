@@ -1,13 +1,12 @@
-/* The credit bar under the username, driven without a browser.
+/* The usage bar under the username, driven without a browser.
  *
  * Run: node tests/credit_bar.mjs
  *
- * `creditMeter` is the only place the sidebar turns a balance into a width, and every
- * way it can be wrong is silent: a 5000-credit allowance drawn as 100%, a bar shown for
- * the operator on "All clients", an overdraft painted green, a request per tab click.
- * admin.js is one IIFE that boots the whole shell, so this reads the real function's
- * source out of the file and evaluates just that, with fakes for `api` and `fmtCredits`.
- * Nothing here duplicates the logic under test - it is the shipped code.
+ * creditMeter turns "credits used this month" and "the plan credits" into a width, and
+ * every way it can be wrong is silent: an allowance drawn at 0%, usage past 100% hidden,
+ * the operator All clients state showing a stray empty bar. admin.js is one IIFE that
+ * boots the shell, so this reads the real function out and evaluates it with fakes for
+ * api and fmtCredits.
  */
 
 import assert from 'node:assert/strict';
@@ -29,7 +28,6 @@ for (; index < source.length; index += 1) {
 assert.ok(end > start, 'creditMeter has balanced braces');
 const code = source.slice(start, end);
 
-// The real formatter: three decimals, thousands separators. The width never depends on it.
 function fmtCredits(value) {
   if (value === null || value === undefined) return '-';
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -39,7 +37,7 @@ function makeNode() {
   const classes = new Set(['side-credit']);
   const trackClasses = new Set(['side-credit-track', 'hidden']);
   const children = {
-    '.side-credit-value': { textContent: '…' },
+    '.side-credit-value': { textContent: '...' },
     '.side-credit-track': {
       attrs: {},
       classList: {
@@ -57,6 +55,7 @@ function makeNode() {
     title: '',
     classList: {
       toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
+      remove(name) { classes.delete(name); },
       contains: (name) => classes.has(name)
     },
     querySelector: (selector) => children[selector] || null,
@@ -64,99 +63,106 @@ function makeNode() {
   };
 }
 
-// A fresh copy of the module state (the 15-second cache lives beside the function).
 function load(api) {
-  const body = 'var creditCache = { at: 0, data: null };\n' + code +
-    '\nreturn creditMeter;';
+  const body = 'var creditCache = { at: 0, data: null };' + String.fromCharCode(10) + code +
+    String.fromCharCode(10) + 'return creditMeter;';
   return new Function('api', 'fmtCredits', body)(api, fmtCredits);
 }
 
 const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+const label = (node) => node.children['.side-credit-value'].textContent;
 
-// ---------- A client with 1,240 of a 5,000 allowance ----------
+// ---------- 1,240 used of a 5,000 plan ----------
 let node = makeNode();
 let calls = 0;
-let creditMeter = load(() => {
+let meter = load(() => {
   calls += 1;
-  return Promise.resolve({ balance: 1240, allowance: 5000, plan: 'growth', low: false });
+  return Promise.resolve({ balance: 3760, allowance: 5000, spent: 1240, added: 5000,
+                           plan: 'growth', low: false });
 });
-creditMeter(node);
+meter(node);
 await tick();
-assert.equal(calls, 1, 'the first render asks once');
-assert.equal(node.hidden, false, 'a balance is shown');
-assert.match(node.children['.side-credit-value'].textContent, /1,240 \/ 5,000 credits/);
-assert.equal(node.children['.side-credit-fill'].style.width, '24.8%',
-             'the fill is the balance over the allowance');
+assert.equal(calls, 1);
+assert.equal(node.hidden, false);
+assert.match(label(node), /1,240 \/ 5,000 credits used/);
+assert.equal(node.children['.side-credit-fill'].style.width, '24.8%');
 assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), false);
 assert.equal(node.children['.side-credit-track'].attrs['aria-valuemax'], '5000');
 assert.equal(node.children['.side-credit-track'].attrs['aria-valuenow'], '1240');
-assert.equal(node.classList.contains('low'), false, 'plenty left is not red');
+assert.equal(node.classList.contains('low'), false);
+assert.match(node.title, /1,240 credits used this month of 5,000 on the growth plan/);
+assert.match(node.title, /3,760 left/);
 
-// ---------- The 15-second cache ----------
+// ---------- the 15-second cache ----------
 node = makeNode();
-creditMeter(node);
+meter(node);
 await tick();
 assert.equal(calls, 1, 'a second render inside the window does not refetch');
-assert.equal(node.hidden, false, 'and it still paints');
-
-// ---------- Low balance ----------
-node = makeNode();
-creditMeter = load(() => Promise.resolve({ balance: 3, allowance: 5000, low: true }));
-creditMeter(node);
-await tick();
-assert.equal(node.classList.contains('low'), true, 'low water is red');
-assert.equal(node.children['.side-credit-fill'].style.width, '0.06%');
-
-// ---------- No allowance, but a top-up this month: it is the tank ----------
-node = makeNode();
-creditMeter = load(() => Promise.resolve({ balance: 1240, allowance: 0, added: 5000 }));
-creditMeter(node);
-await tick();
 assert.equal(node.hidden, false);
-assert.equal(node.children['.side-credit-fill'].style.width, '24.8%',
-             'the month additions are the denominator');
-assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), false,
-             'a top-up is a gauge even without a plan allowance');
-assert.equal(node.children['.side-credit-track'].attrs['aria-valuemax'], '5000');
 
-// ---------- No allowance: the number is the whole story ----------
+// ---------- the allowance is used up ----------
 node = makeNode();
-creditMeter = load(() => Promise.resolve({ balance: 12, allowance: 0, low: false }));
-creditMeter(node);
+meter = load(() => Promise.resolve({ balance: -200, allowance: 5000, spent: 5200 }));
+meter(node);
 await tick();
-assert.equal(node.hidden, false);
-assert.match(node.children['.side-credit-value'].textContent, /^12 credits$/);
-assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), true,
-             'no empty track implying a budget');
+assert.equal(node.children['.side-credit-fill'].style.width, '100%');
+assert.equal(node.classList.contains('low'), true, 'past the plan is red');
+assert.match(label(node), /5,200 \/ 5,000 credits used/);
+
+// ---------- a low balance under budget is still a warning ----------
+node = makeNode();
+meter = load(() => Promise.resolve({ balance: 2, allowance: 5000, spent: 100, low: true }));
+meter(node);
+await tick();
+assert.equal(node.classList.contains('low'), true);
+
+// ---------- no plan: the month additions are the budget ----------
+node = makeNode();
+meter = load(() => Promise.resolve({ balance: 3760, allowance: 0, spent: 1240, added: 5000 }));
+meter(node);
+await tick();
+assert.match(label(node), /1,240 \/ 5,000 credits used/);
+assert.equal(node.children['.side-credit-fill'].style.width, '24.8%');
+
+// ---------- no plan and nothing added: usage alone ----------
+node = makeNode();
+meter = load(() => Promise.resolve({ balance: 0, allowance: 0, spent: 120, added: 0 }));
+meter(node);
+await tick();
+assert.match(label(node), /^120 credits used this month$/);
+assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), true);
 assert.equal('aria-valuenow' in node.children['.side-credit-track'].attrs, false);
 
-// ---------- A top-up above the allowance, and an overdraft ----------
+// ---------- a fresh month on a plan is an empty bar, not a missing one ----------
 node = makeNode();
-creditMeter = load(() => Promise.resolve({ balance: 9000, allowance: 5000 }));
-creditMeter(node);
+meter = load(() => Promise.resolve({ balance: 5000, allowance: 5000, spent: 0 }));
+meter(node);
 await tick();
-assert.equal(node.children['.side-credit-fill'].style.width, '100%', 'never past full');
+assert.equal(node.hidden, false);
+assert.equal(node.children['.side-credit-fill'].style.width, '0%');
 
+// ---------- not on the credit system ----------
 node = makeNode();
-creditMeter = load(() => Promise.resolve({ balance: -12, allowance: 5000 }));
-creditMeter(node);
+meter = load(() => Promise.resolve({ balance: null, allowance: 0 }));
+meter(node);
 await tick();
-assert.equal(node.children['.side-credit-fill'].style.width, '0%', 'never below empty');
-assert.equal(node.classList.contains('low'), true, 'an overdraft is red');
-assert.match(node.children['.side-credit-value'].textContent, /^-12 \/ 5,000 credits$/);
+assert.equal(node.hidden, true, 'no ledger row hides the bar');
 
-// ---------- Nothing honest to draw ----------
-for (const payload of [null, { balance: null, allowance: 0 }]) {
-  node = makeNode();
-  creditMeter = load(() => Promise.resolve(payload));
-  creditMeter(node);
-  await tick();
-  assert.equal(node.hidden, true, 'no ledger row, or "All clients"');
-}
+// ---------- the operator on All clients ----------
 node = makeNode();
-creditMeter = load(() => Promise.reject(new Error('400')));
-creditMeter(node);
+meter = load(() => Promise.resolve({ balance: null, orgs: [{ id: 1 }], credits: 120 }));
+meter(node);
+await tick();
+assert.equal(node.hidden, false);
+assert.match(label(node), /Usage . pick a client/);
+assert.equal(node.children['.side-credit-track'].classList.contains('hidden'), true);
+assert.equal(node.classList.contains('low'), false, 'a hint is not a warning');
+
+// ---------- a failed request hides it ----------
+node = makeNode();
+meter = load(() => Promise.reject(new Error('400')));
+meter(node);
 await tick();
 assert.equal(node.hidden, true, 'a broken meter hides the bar, never the shell');
 
-console.log('CREDIT BAR OK - percent, allowance fallback, low state, cache and the hidden paths');
+console.log('CREDIT BAR OK - usage vs the plan, the fallbacks, the operator hint and the cache');
