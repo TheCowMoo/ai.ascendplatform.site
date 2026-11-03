@@ -18,7 +18,9 @@
 
 {
 	admin 0.0.0.0:2019
-	email {$ACME_EMAIL:ops@example.com}
+	# Let's Encrypt refuses contact addresses at example.com, so the fallback is on the
+	# platform's own domain. Caddy would otherwise fall back to ZeroSSL and hide the error.
+	email {$ACME_EMAIL:ops@ascendplatform.site}
 }
 
 # The app (FastAPI + Flask over ASGI) on the compose network. Caddy sets

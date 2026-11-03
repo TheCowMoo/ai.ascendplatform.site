@@ -176,7 +176,10 @@ def verify_pending(limit=20):
     for site in sites_service.list_sites(limit=200):
         if checked >= limit:
             break
-        if site.get("status") not in ("pending_dns", "dns_ok"):
+        # "error" is what a failed provisioning run leaves behind. Leaving it out meant a
+        # deployment that was since fixed never retried: the row stayed red until someone
+        # pressed a button, which is the opposite of what this sweep promises.
+        if site.get("status") not in ("pending_dns", "dns_ok", "error"):
             continue
         # An unowned site (created before POST /api/sites fell back to the acting client)
         # is exactly the one no client can refresh, so skipping it here is how a correct

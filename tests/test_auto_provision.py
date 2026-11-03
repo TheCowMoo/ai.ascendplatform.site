@@ -123,6 +123,13 @@ def test_the_handshake_hint():
     check("and names the error the browser shows", "ERR_SSL_PROTOCOL_ERROR" in hint, True)
     reason, hint = provisioner.describe_probe_error(ConnectionResetError("reset by peer"))
     check("a reset is the same failed handshake", "TLS handshake" in hint, True)
+    # A site block Caddy cannot get a certificate for is a different failure from one it
+    # has never heard of; the hint has to name ACME or it sends everyone at DNS again.
+    reason, hint = provisioner.describe_probe_error(
+        ssl.SSLError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error"))
+    check("an issuance failure names the ACME step",
+          "issuance" in hint and "ACME" in hint, True)
+    check("and not the missing site block", "not configured" in hint, False)
     # A certificate that exists but is wrong must not be described as missing.
     reason, hint = provisioner.describe_probe_error(
         ssl.SSLCertVerificationError("certificate verify failed"))
@@ -197,6 +204,10 @@ def test_the_sweep():
     pending = sites_service.create_site({"domain": "sweep.example.com"})
     live = sites_service.create_site({"domain": "already.example.com"})
     sites_service.update_site(live["id"], {"status": "live"})
+    # A run that failed (denied approval, unreadable config) leaves "error" behind. If the
+    # sweep ignores it, a deployment that has since been fixed never retries by itself.
+    broken = sites_service.create_site({"domain": "broken.example.com"})
+    sites_service.update_site(broken["id"], {"status": "error"})
 
     queued = []
     originals = (provisioner.dns_report, provisioner.live_probe,
@@ -216,6 +227,8 @@ def test_the_sweep():
     check("the sweep queues a domain DNS now points here",
           "sweep.example.com" in queued, True)
     check("it does not touch a live site", "already.example.com" in queued, False)
+    check("a failed site is retried once the deployment is fixed",
+          "broken.example.com" in queued, True)
     check("once per domain per sweep", queued.count("sweep.example.com"), 1)
     check("and the row is marked dns_ok",
           (sites_service.get_site(pending["id"]) or {}).get("status"), "dns_ok")

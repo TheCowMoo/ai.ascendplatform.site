@@ -24,6 +24,9 @@ import os
 import socket
 import subprocess
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import actions
 from db import get_connection
@@ -35,6 +38,10 @@ SITES_ROOT = (os.environ.get("SITE_ROOT") or "/srv/sites").rstrip("/")
 CADDY_SITES_DIR = (os.environ.get("CADDY_SITES_DIR") or "/etc/caddy/sites").rstrip("/")
 CADDYFILE = os.environ.get("CADDYFILE") or "/etc/caddy/Caddyfile"
 CADDY_RELOAD_CMD = (os.environ.get("CADDY_RELOAD_CMD") or ("caddy reload --config " + CADDYFILE)).strip()
+# Where Caddy's admin API answers, when the app runs next to it (the compose stack has no
+# caddy binary in the Python image). Set this and a reload is one HTTP POST of CADDYFILE;
+# leave it empty for a local install with the caddy CLI, or for a remote target.
+CADDY_ADMIN_URL = (os.environ.get("CADDY_ADMIN_URL") or "").strip()
 SERVER_IP = (os.environ.get("SERVER_IP") or "").strip()
 
 STEPS = ("dns", "content", "vhost", "reload")
@@ -454,6 +461,17 @@ def describe_probe_error(exc):
         if "self-signed" in lowered or "self signed" in lowered:
             return text, "The server is presenting its own internal certificate, so Caddy has not issued one yet."
         return text, "The certificate could not be trusted; it may still be issuing, or Caddy may have failed."
+    # Caddy answers an SNI it has a site block for but no certificate for with an
+    # "internal error" alert. Saying "not configured" there sent us looking at DNS and
+    # the vhost while the real cause was ACME (a rejected contact email, or ports 80/443
+    # closed). Name the layer instead of guessing.
+    if ("alert internal error" in lowered or "internal error" in lowered
+            or "alert_internal_error" in lowered):
+        return (text or name), (
+            "Caddy accepted the connection but could not present a certificate for this "
+            "name: issuance failed or is still running. Check the web server's log for "
+            "the ACME error - a rejected ACME contact email (example.com is refused) or "
+            "ports 80/443 not reachable are the usual causes.")
     # No certificate at all, rather than a bad one. This is the state between "DNS points
     # here" and "provisioned": Caddy has no site block for the name, so it cannot answer
     # the handshake and the browser reports ERR_SSL_PROTOCOL_ERROR. Saying "the transcript
@@ -848,6 +866,82 @@ def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=T
     return actions.gate(tool, summary, args, job_id, emit)
 
 
+def _admin_url_ok(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except Exception:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def reload_web_server(target, job_id=None, emit=None, preapproved=False):
+    """Ask the web server to re-read its configuration.
+
+    In the compose stack the app runs in a Python image with no caddy binary, so the
+    reload is an HTTP POST of the project's own Caddyfile to Caddy's admin API. It used
+    to be a shell string, which put a fixed platform action behind the *agent* command
+    policy - and that policy refuses ``curl`` (correctly: an agent could POST anywhere).
+    Every live provisioning run then wrote the site block and failed here, and a domain
+    with a perfect vhost answered the browser with a TLS alert because Caddy had never
+    read it.
+
+    The destination comes from ``CADDY_ADMIN_URL`` and the body is the Caddyfile the
+    container already mounts, so this is not an agent-chosen request. A remote target
+    keeps its own reload command: the admin API is not reachable from there.
+    """
+    if target.is_remote or not CADDY_ADMIN_URL:
+        return target.run(CADDY_RELOAD_CMD, job_id, emit, allow_mutating=True,
+                          summary="reload the web server (%s)" % target.name,
+                          preapproved=preapproved)
+
+    summary = "reload the web server via %s" % CADDY_ADMIN_URL
+    if preapproved and not actions.is_dry_run():
+        if emit:
+            emit("gate", "system", "Covered by the provisioning approval: %s" % summary)
+    else:
+        authorisation = actions.gate("caddy_reload", summary, {"url": CADDY_ADMIN_URL},
+                                     job_id, emit)
+        if not authorisation["allowed"]:
+            return {"ok": False, "dry_run": authorisation["dry_run"],
+                    "output": authorisation["reason"]}
+        if authorisation["dry_run"]:
+            return {"ok": True, "dry_run": True,
+                    "output": "[dry-run] would POST %s to %s/load"
+                              % (CADDYFILE, CADDY_ADMIN_URL)}
+
+    if not _admin_url_ok(CADDY_ADMIN_URL):
+        return {"ok": False, "dry_run": False,
+                "output": "CADDY_ADMIN_URL must be an http(s) URL, got %r" % CADDY_ADMIN_URL}
+    try:
+        with open(CADDYFILE, "rb") as handle:
+            body = handle.read()
+    except OSError as exc:
+        return {"ok": False, "dry_run": False,
+                "output": "cannot read %s: %s" % (CADDYFILE, exc)}
+
+    request = urllib.request.Request(
+        CADDY_ADMIN_URL.rstrip("/") + "/load", data=body, method="POST",
+        headers={"Content-Type": "text/caddyfile"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            status = int(getattr(response, "status", 200))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read()[:2000].decode("utf-8", "replace").strip()
+        except Exception:
+            detail = ""
+        return {"ok": False, "dry_run": False,
+                "output": "Caddy rejected the config (HTTP %s): %s"
+                          % (exc.code, detail or "no detail")}
+    except Exception as exc:
+        return {"ok": False, "dry_run": False,
+                "output": "%s: %s" % (type(exc).__name__, exc)}
+    return {"ok": 200 <= status < 300, "dry_run": False,
+            "output": "reloaded Caddy via %s (HTTP %s)" % (CADDY_ADMIN_URL, status)}
+
+
 class LocalTarget:
     """The machine the app itself runs on."""
 
@@ -1108,9 +1202,7 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapp
                                       summary="install the web server config for %s" % domain,
                                       preapproved=preapproved))
 
-    record("reload", target.run(CADDY_RELOAD_CMD, job_id, emit, allow_mutating=True,
-                                summary="reload the web server (%s)" % target.name,
-                                preapproved=preapproved))
+    record("reload", reload_web_server(target, job_id, emit, preapproved=preapproved))
 
     # Certificate. Caddy issues on the first TLS handshake for a name, so this probe is
     # both the request and the proof - without it a job could report "live" while the
@@ -1167,8 +1259,7 @@ def remove_site(site, job_id=None, emit=None):
     result = target.run("rm -f %s" % policy.quote(vhost_path), job_id, emit, allow_mutating=True,
                         summary="remove the web server config for %s" % domain)
     steps.append({"step": "remove_vhost", "ok": result["ok"], "detail": result.get("output", "")})
-    reload_result = target.run(CADDY_RELOAD_CMD, job_id, emit, allow_mutating=True,
-                               summary="reload the web server (%s)" % target.name)
+    reload_result = reload_web_server(target, job_id, emit)
     steps.append({"step": "reload", "ok": reload_result["ok"], "detail": reload_result.get("output", "")})
     return {"ok": all(step["ok"] for step in steps), "steps": steps}
 

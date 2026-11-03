@@ -52,8 +52,9 @@ services:
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites
       CADDYFILE: /app/Caddyfile
-      # Reload Caddy through its admin API (no caddy binary in this image).
-      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/app/Caddyfile http://caddy:2019/load}"
+      # Reload Caddy through its admin API: this image has no caddy binary, and a shell
+      # curl is refused by the agent command policy (correctly - it could POST anywhere).
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://caddy:2019}
     depends_on:
       db:
         condition: service_healthy
@@ -94,7 +95,7 @@ services:
       SITE_ROOT: /srv/sites
       CADDY_SITES_DIR: /etc/caddy/sites
       CADDYFILE: /app/Caddyfile
-      CADDY_RELOAD_CMD: "${CADDY_RELOAD_CMD:-curl -fsS -X POST -H 'Content-Type: text/caddyfile' --data-binary @/app/Caddyfile http://caddy:2019/load}"
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://caddy:2019}
     depends_on:
       db:
         condition: service_healthy
@@ -123,6 +124,10 @@ services:
       - "443:443"
     environment:
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:-localhost}
+      # Let's Encrypt refuses contact addresses at example.com, so the fallback must be a
+      # real domain. Without this Caddy falls back to ZeroSSL, which works but hides the
+      # mistake - and every certificate then comes from a CA nobody chose.
+      ACME_EMAIL: ${ACME_EMAIL:-ops@ascendplatform.site}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

@@ -137,15 +137,24 @@ and probes HTTPS. When DNS points here but HTTPS does not answer, it queues
 `sites.queue_provision` — the same helper `POST /check` calls — so "point it here and SSL
 issues itself" is true without a second button. Queueing is deduplicated (one open
 `site_provision` per domain) and capped at 3 automatic attempts per 24h, so a closed port
-80 cannot burn the ACME rate limit; pressing Provision is always allowed. The run asks
-**one** approval ("publish <domain>: page, site block, reload") and passes
-`preapproved=True` down to every write and the reload — policy is still enforced, so an
-approval is not a licence to run anything. `www` only exists for an apex name
+80 cannot burn the ACME rate limit; pressing Provision is always allowed. A failed run
+leaves `error`, and the sweep includes that status too, so a deployment that has since been
+fixed retries without anyone pressing a button. The run asks **one** approval ("publish
+<domain>: page, site block, reload") and passes `preapproved=True` down to every write and
+the reload — policy is still enforced, so an approval is not a licence to run anything.
+The reload is not a shell command: the app image has no caddy binary and the command policy
+(rightly) refuses `curl`, so it POSTs `CADDYFILE` to `CADDY_ADMIN_URL` (Caddy's admin API).
+A remote `ssh_hosts` target keeps `CADDY_RELOAD_CMD`, since the admin API is not reachable
+from there. `www` only exists for an apex name
 (`provisioner.is_apex`; `example.co.uk` counts as apex), is never required, and is added
 to the Caddy site block only when it actually resolves here. Before provisioning, a
 browser's `ERR_SSL_PROTOCOL_ERROR` is expected: Caddy has no site block for the name, and
-`describe_probe_error` now says exactly that. On the VPS, `python -m provisioner check
-<domain>` prints the same verdict without the UI.
+`describe_probe_error` now says exactly that. Once the block is loaded, an
+`alert internal error` is a different failure — certificate issuance — and the hint says so;
+the Caddy log names the ACME error. `ACME_EMAIL` must be a real address: Let's Encrypt
+refuses contacts at `example.com` (`invalidContact`) and Caddy then silently issues from
+ZeroSSL instead. On the VPS, `python -m provisioner check <domain>` prints the same verdict
+without the UI.
 
 **A deliverable.** Copywriter/Operator calls `save_deliverable(kind, title, content,
 summary, deliverable_id)`. Ownership comes from the job row, never the model. Images:

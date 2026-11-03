@@ -35,6 +35,7 @@ FAST_SUITES = (
     "test_dns_records",
     "test_auto_provision",
     "test_provision_approval",
+    "test_caddy_reload",
     "smoke_provisioner",
     "smoke_voice",
     "smoke_automations",
@@ -119,6 +120,20 @@ def check_compose():
         raise AssertionError(
             "the worker service is missing %s - provisioning would write where Caddy "
             "cannot see it" % ", ".join(missing))
+    # The reload cannot be a shell command: this image has no caddy binary, and the shell
+    # policy refuses curl. Both app and worker must be told where the admin API answers.
+    app = text.split("\n  app:", 1)[-1].split("\n  worker:", 1)[0]
+    for name, service in (("app", app), ("worker", worker)):
+        assert "CADDY_ADMIN_URL" in service, (
+            "the %s service has no CADDY_ADMIN_URL - its reload would fall back to a "
+            "command that either does not exist or is refused by policy" % name)
+    assert "curl -fsS -X POST" not in text, (
+        "docker-compose.yml still configures a curl reload - the command policy denies "
+        "curl, so every live provisioning run would fail at the reload")
+    caddy = text.split("\n  caddy:", 1)[-1]
+    assert "ACME_EMAIL" in caddy, (
+        "the caddy service does not receive ACME_EMAIL - it falls back to ops@example.com, "
+        "which Let's Encrypt refuses (invalidContact) and then quietly switches to ZeroSSL")
     # A *directory* bind over /etc/caddy takes the Caddyfile with it: if that directory is
     # absent when the container is created, Caddy starts with no config and exits, and the
     # site is simply unreachable. Mount the file.
@@ -147,6 +162,13 @@ def check_caddyfile():
     assert b"\r" not in raw, "Caddyfile has CRLF line endings - `caddy fmt` will warn"
     assert raw.endswith(b"\n"), "Caddyfile must end with a newline"
     assert b"header_up X-Forwarded-Proto" not in raw, "Caddy sets X-Forwarded-Proto itself"
+    # A contact at example.com is refused by Let's Encrypt (invalidContact). Caddy then
+    # falls back to ZeroSSL, so the site works and every certificate quietly comes from
+    # the wrong CA - the failure is only visible in the log.
+    assert b"ops@example.com" not in raw, (
+        "Caddyfile asks Let's Encrypt for a contact at example.com, which it refuses; "
+        "Caddy would silently issue from ZeroSSL instead")
+    assert b"ACME_EMAIL" in raw, "Caddyfile must take its ACME contact from ACME_EMAIL"
     indented = [line for line in raw.decode("utf-8").splitlines()
                 if line.startswith(" ") and line.strip()]
     assert not indented, "Caddyfile indents with spaces (use tabs): %r" % indented[0]
