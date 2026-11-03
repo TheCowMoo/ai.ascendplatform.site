@@ -425,9 +425,16 @@
   function updateNote() {
     if (!ui) return;
     if (!state.session) { ui.note.textContent = 'Preparing the session…'; return; }
-    ui.note.textContent = 'Voice ' + state.session.voice + ' · ' + state.session.model +
-      ' · ' + state.session.api_version + ' · ' + state.session.remaining_minutes +
-      ' min left today';
+    // A client payload carries only the minutes; the operator also sees the voice, the
+    // model and the API version. Build from whatever is present.
+    var parts = ['Voice'];
+    if (state.session.voice) parts.push(state.session.voice);
+    if (state.session.model) parts.push(state.session.model);
+    if (state.session.api_version) parts.push(state.session.api_version);
+    if (state.session.remaining_minutes !== undefined) {
+      parts.push(state.session.remaining_minutes + ' min left today');
+    }
+    ui.note.textContent = parts.join(' · ');
   }
 
   function paintLevel() {

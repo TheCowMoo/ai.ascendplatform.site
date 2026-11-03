@@ -83,6 +83,9 @@ SPEC = [
         "id": "llm",
         "label": "AI providers",
         "icon": "cpu",
+        # The agency's own credentials: a client may never see the group or its key
+        # names. Explicit so a future edit cannot inherit a client scope by accident.
+        "scope": PLATFORM,
         "blurb": "Credentials for the models the agents run on. Applied immediately.",
         "test": "llm",
         "fields": [

@@ -5376,7 +5376,8 @@
         return;
       }
       talk.style.display = '';
-      voiceNote.textContent = 'Voice: ' + s.voice + ' \u00b7 ' +
+      voiceNote.textContent = (s.voice ? 'Voice: ' + s.voice + ' \u00b7 '
+                                       : 'Voice ready \u00b7 ') +
         s.remaining_minutes + ' min left today';
     }).catch(function () { /* no voice is not an error worth a toast */ });
 
@@ -5495,14 +5496,18 @@
         if (!rows.length) {
           summary.appendChild(el('p', 'muted', 'Nothing has been spent in this window.'));
         } else {
+          // A client payload has no provider or model (stripped server-side); the
+          // operator does, so the same table serves both without a wasted column.
+          var named = rows.some(function (row) { return !!(row.provider || row.model); });
           var table = el('table', 'table');
           table.innerHTML = '<thead><tr><th>Where</th><th>Agent</th><th>Calls</th>' +
             '<th>Input (cached)</th><th>Output</th><th>Credits</th></tr></thead>';
           var tbody = el('tbody');
           rows.forEach(function (row) {
             var tr = el('tr');
-            tr.innerHTML = '<td><span class="badge">' + esc(row.kind) + '</span> ' +
-              esc(row.provider || '') + (row.model ? ' \u00b7 ' + esc(row.model) : '') + '</td>' +
+            tr.innerHTML = '<td><span class="badge">' + esc(row.kind) + '</span>' +
+              (named ? ' ' + esc(row.provider || '') +
+                (row.model ? ' \u00b7 ' + esc(row.model) : '') : '') + '</td>' +
               '<td>' + esc(row.label || '-') + '</td>' +
               '<td>' + esc(row.calls || 0) + '</td>' +
               '<td>' + esc(row.input_uncached || 0) +
@@ -5525,8 +5530,12 @@
         if (!items.length) {
           recent.appendChild(el('p', 'muted', 'No calls yet.'));
         } else {
+          var showModel = items.some(function (item) {
+            return !!(item.model_returned || item.model_configured);
+          });
           var list = el('table', 'table');
-          list.innerHTML = '<thead><tr><th>When</th><th>Kind</th><th>Model</th>' +
+          list.innerHTML = '<thead><tr><th>When</th><th>Kind</th>' +
+            (showModel ? '<th>Model</th>' : '') +
             '<th>Agent</th><th>Credits</th></tr></thead>';
           var listBody = el('tbody');
           items.forEach(function (item) {
@@ -5534,7 +5543,8 @@
             tr.innerHTML = '<td class="muted">' +
               esc((item.created_at || '').slice(0, 16)) + '</td>' +
               '<td>' + esc(item.kind) + '</td>' +
-              '<td>' + esc(item.model_returned || item.model_configured || '-') + '</td>' +
+              (showModel ? '<td>' + esc(item.model_returned || item.model_configured || '-') +
+                '</td>' : '') +
               '<td>' + esc(item.label || '-') + '</td>' +
               '<td>' + (item.credits_milli === null
                 ? '<span class="badge badge-queued">unpriced</span>'
@@ -7992,6 +8002,11 @@
     // version of the same screen.
     if (parts[0] === 'app' && parts[1] === 'assistant') {
       location.replace('#/app/studio');
+      return;
+    }
+    // Settings is admin-only (nav hides it); a bookmark should not collect a 403 toast.
+    if (parts[0] === 'app' && parts[1] === 'settings' && !canAdmin(state.user)) {
+      location.replace(AREAS.app.home);
       return;
     }
 

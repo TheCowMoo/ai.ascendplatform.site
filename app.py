@@ -1107,7 +1107,8 @@ def generate_reply(bot, user_message, history, conversation_id):
 @app.route("/api/chat", methods=["POST"])
 def chat():
     if get_client() is None:
-        return jsonify({"reply": "Server is not configured with a DeepSeek API key."}), 500
+        # Public widget surface: say it is unavailable, not what the agency runs on.
+        return jsonify({"reply": "The assistant is not available right now."}), 500
     data = request.get_json(silent=True) or {}
     bot_id = data.get("bot_id")
     user_message = (data.get("message") or "").strip()
@@ -1369,6 +1370,21 @@ def _usage_days(default=30):
         return default
 
 
+def _hide_provider_names(payload):
+    """White-label: a client sees kinds, agents and credits, never a provider or model.
+
+    Stripped from the payload (not just the template) so the browser cannot read it
+    either; the operator keeps every name on the platform screens.
+    """
+    for row in payload.get("rows") or []:
+        row.pop("provider", None)
+        row.pop("model", None)
+    for item in payload.get("recent") or []:
+        item.pop("model_returned", None)
+        item.pop("model_configured", None)
+    return payload
+
+
 def _org_usage(org, days=30, pricing=False):
     org_id = org["id"] if org else None
     data = usage_service.summary(org_id, days=days)
@@ -1426,6 +1442,8 @@ def usage_overview():
 
     data = _org_usage(orgs_service.get_org(org), days, pricing=is_owner())
     data["recent"] = usage_service.recent(org, limit=25)
+    if not is_owner():
+        _hide_provider_names(data)
     if is_owner():
         data["missing_rates"] = rates_service.missing_rates()
     return jsonify(data)
@@ -2105,6 +2123,12 @@ def test_settings_group(group_id):
     org, error = _settings_scope_or_403(request.get_json(silent=True) or {})
     if error:
         return error
+    if not is_owner():
+        # A client may test its own SMTP, never a platform group: running the provider
+        # check would spend the agency's key and confirm that it exists.
+        allowed = {group["id"] for group in settings.all_for_ui(org)}
+        if group_id not in allowed:
+            return jsonify({"error": "That configures the platform, not your workspace."}), 403
     return jsonify(settings.test(group_id, org))
 
 
@@ -2357,6 +2381,22 @@ def check_site(site_id):
 _VOICE_TURNS = {}
 
 
+def _voice_public(payload):
+    """Strip provider and model details from a voice payload for a non-owner.
+
+    The Live socket is browser->Google, so the setup JSON still names the model when a
+    client actually starts a session. What this removes is the advertising of it: the
+    status row, the diagnostics and the error hints.
+    """
+    if is_owner():
+        return payload
+    for key in ("model", "model_note", "api_version", "default_model", "voice",
+                "available_models", "elsewhere", "hint", "transcription",
+                "endpoint"):
+        payload.pop(key, None)
+    return payload
+
+
 @app.route("/api/voice/status", methods=["GET"])
 @login_required
 def voice_status():
@@ -2365,7 +2405,12 @@ def voice_status():
     # The model probe spends one request on Google's model list, so only the operator's
     # Settings screen may ask for it.
     probe = is_owner() and request.args.get("probe") in ("1", "true", "yes")
-    return jsonify(voice.status(session.get("user_id"), probe=probe))
+    payload = voice.status(session.get("user_id"), probe=probe)
+    _voice_public(payload)
+    if not is_owner() and "key" in str(payload.get("reason") or "").lower():
+        payload["reason"] = ("Voice is not available here yet. Ask your agency to finish "
+                             "the setup.")
+    return jsonify(payload)
 
 
 @app.route("/api/voice/session", methods=["POST"])
@@ -2377,10 +2422,19 @@ def voice_session():
     state = voice.status(session.get("user_id"))
     if not state["available"]:
         expired = "minutes" in state["reason"]
-        return jsonify({"error": state["reason"], "fallback": "text",
-                        "model": state["model"]}), 429 if expired else 400
+        reason = state["reason"]
+        if not is_owner() and "key" in str(reason).lower():
+            reason = ("Voice is not available here yet. Ask your agency to finish the "
+                      "setup.")
+        payload = {"error": reason, "fallback": "text"}
+        if is_owner():
+            payload["model"] = state["model"]
+        return jsonify(payload), 429 if expired else 400
     availability = voice.model_availability()
     if availability.get("checked") and not availability.get("ok"):
+        if not is_owner():
+            return jsonify({"error": "Voice is not available right now.",
+                            "fallback": "text"}), 400
         # Do not open a socket that will sit silent until the 12-second setup timer.
         return jsonify({
             "error": availability["error"],
@@ -2402,8 +2456,11 @@ def voice_session():
     except voice.VoiceError as exc:
         # The key is never in this message, and never logged.
         app.logger.warning("Voice session mint failed: %s", exc)
-        return jsonify({"error": str(exc), "fallback": "text", "model": voice.model(),
-                        "api_version": voice.api_version()}), 502
+        payload = {"error": str(exc), "fallback": "text"}
+        if is_owner():
+            payload["model"] = voice.model()
+            payload["api_version"] = voice.api_version()
+        return jsonify(payload), 502
     # Counted up front, not on hang-up: a browser that never closes the socket cleanly must
     # not become free minutes. The microphone is opened before this route is called, so a
     # refused permission no longer spends a session.
@@ -2424,7 +2481,7 @@ def voice_session():
     # A new spoken session must not inherit the previous session's answer target. The voice
     # can still ask about the job, but only this session's question may be answered.
     session.pop("voice_job_id", None)
-    return jsonify({
+    return jsonify(_voice_public({
         "token": token,
         "session_id": voice_token,
         "setup": setup_message,
@@ -2435,7 +2492,7 @@ def voice_session():
         "seconds": voice.SESSION_SECONDS,
         "calls": voice.SESSION_CALLS,
         "remaining_minutes": round(voice.remaining_minutes(session.get("user_id")), 1),
-    })
+    }))
 
 
 @app.route("/api/voice/usage", methods=["POST"])
@@ -3680,9 +3737,12 @@ def manager_chat():
     import llm
 
     if not llm.configured_providers():
-        return jsonify({"error": "The assistant is not configured. Add an AI provider "
-                                 "key in Settings -> AI providers; DeepSeek is the "
-                                 "default, and Gemini or Claude also work."}), 503
+        if is_owner():
+            return jsonify({"error": "The assistant is not configured. Add an AI provider "
+                                     "key in Settings -> AI providers; DeepSeek is the "
+                                     "default, and Gemini or Claude also work."}), 503
+        return jsonify({"error": "The AI assistant is not set up for this workspace yet. "
+                                 "Your agency configures the model keys."}), 503
     # The Assistant page names its session; the floating sheet and Manager page still
     # send their own history. A session's history comes from the server, never from the
     # browser, so "continue" means the same thing after a reload or another device.
@@ -3910,9 +3970,9 @@ def health():
         job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     return jsonify({
         "status": "ok",
-        "model": deepseek_config()[2],
-        "api_key_configured": bool(deepseek_config()[0]),
-        "providers_configured": llm.configured_providers(),
+        # No provider, model or key state here: this route answers anonymously, and the
+        # stack we run on is the agency business. The owner reads it in Platform ->
+        # Settings and /api/providers.
         "brand": brand(),
         "bots": bot_count,
         "users": user_count,

@@ -36,6 +36,10 @@ def main():
     print("health via mount:", {k: health.json()[k] for k in ("status", "brand", "job_backend")})
     assert health.json()["brand"] == "AscendPlatform"
     assert health.json()["job_backend"] == "local"
+    # The health route answers anonymously: it must not advertise the model stack.
+    for hidden in ("model", "api_key_configured", "providers_configured"):
+        assert hidden not in health.json(), hidden
+    print("health hides the provider stack from anonymous callers")
 
     # FastAPI's own OpenAPI surface is reachable and precedes the mount.
     docs = client.get("/api/openapi.json")

@@ -241,6 +241,27 @@ def test_the_price_is_the_operators_only(alpha):
     print("the credit price is measured for the operator and hidden from clients")
 
 
+def test_provider_names_are_the_operators_only(alpha):
+    """A client sees kinds, agents and credits; provider and model names are ours."""
+    usage.record_model("testapi-%s" % TOKEN, "model-a", "model-a", "agent",
+                       {"input_uncached": 1000, "output": 10}, org_id=alpha["id"])
+    client = _login(alpha)
+    owner = _owner()
+    mine = client.get("/api/usage?days=7").get_json()
+    theirs = owner.get("/api/orgs/%d/usage?days=7" % alpha["id"]).get_json()
+    check("a client's rows carry no provider",
+          all("provider" not in row for row in mine["rows"]), True)
+    check("nor a model", all("model" not in row for row in mine["rows"]), True)
+    check("nor a model on recent calls",
+          all("model_returned" not in item for item in mine["recent"]), True)
+    check("the operator still sees the provider",
+          any(row.get("provider") for row in theirs["rows"]), True)
+    check("and the model", any(row.get("model") for row in theirs["rows"]), True)
+    check("a client cannot test a platform group",
+          client.post("/api/settings/test/llm").status_code, 403)
+    print("provider and model names stay on the operator's side")
+
+
 def test_the_console_is_wired():
     """Static: the endpoints can be perfect and the screens still never load."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -292,6 +313,7 @@ def main():
         test_a_voice_session_is_settled_by_its_owner(alpha, beta)
         test_invoices_are_reconciled_by_the_operator(alpha)
         test_the_price_is_the_operators_only(alpha)
+        test_provider_names_are_the_operators_only(alpha)
         test_the_console_is_wired()
     finally:
         cleanup()

@@ -411,10 +411,11 @@ def test_settings_are_scoped(alpha, beta):
     print("  audit trail: A sees %s, B sees %s" % (sorted(a_keys), sorted(b_keys)))
 
     # A may only test client-scoped groups: the platform's Pexels check spends the
-    # operator's key and would confirm to the client that it exists.
+    # operator's key and would confirm to the client that it exists. The route says
+    # 403 rather than 200-with-a-message, so it behaves like the rest of the API.
     resp = a.post("/api/settings/test/pexels")
-    assert resp.status_code == 200 and resp.get_json()["ok"] is False, resp.get_json()
-    print("  A cannot test the platform's Pexels group: %s" % resp.get_json()["output"][:44])
+    assert resp.status_code == 403, resp.get_json()
+    print("  A cannot test the platform's Pexels group -> 403")
 
     # Leave nothing behind, so a second run starts from an empty SMTP config.
     cleared = a.put("/api/settings", json={"clear": ["SMTP_HOST", "SMTP_FROM"]})
@@ -559,6 +560,19 @@ def test_owner_only_surfaces_are_shut(alpha):
     resp = a.put("/api/settings", json={"values": {"DEEPSEEK_API_KEY": "stolen"}})
     assert resp.status_code == 400, resp.status_code
     print("  blocked PUT  platform key -> 400 (%s)" % resp.get_json()["error"][:52])
+
+    # Nor can a client run a platform group's live test (it would spend the agency's key).
+    resp = a.post("/api/settings/test/llm")
+    assert resp.status_code == 403, resp.status_code
+    print("  blocked POST /api/settings/test/llm -> 403")
+
+    # The voice status is white-labelled too: minutes and availability, no model names.
+    status = a.get("/api/voice/status").get_json()
+    for hidden in ("model", "default_model", "voice", "api_version", "endpoint"):
+        assert hidden not in status, hidden
+    owner_status = owner_login().get("/api/voice/status").get_json()
+    assert "model" in owner_status, owner_status
+    print("  voice status -> client: minutes only, owner: model visible")
 
     # The hosting fleet's SSH targets must not even appear in a client's payload.
     body = a.get("/api/sites").get_json()

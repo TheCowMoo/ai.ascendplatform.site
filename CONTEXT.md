@@ -387,6 +387,21 @@ open/closed per user in `localStorage["nav:open:<user>"]`. `flattenNav(nav)` fee
 hashes, and the exact Sites/Customers/Account children. The Platform console stays flat
 (seven rows).
 
+## Provider configuration is the agency's (2026-11-03)
+
+The model stack is white-labelled. `settings.all_for_ui(org)` returns only client-scoped
+groups to a client - `email` and nothing else - so `DEEPSEEK_API_KEY` and friends never
+appear on their page, and `_writable_field` refuses a client write to a platform key.
+`POST /api/settings/test/<group>` answers 403 for a group a client cannot see (it used to
+be a 200 with a message). `/api/health` is anonymous and no longer returns `model`,
+`api_key_configured` or `providers_configured`. `/api/voice/status` and the voice session
+redact model, voice, API version and endpoint for non-owners (`app._voice_public`); a
+client who actually starts a Live session still receives the model inside the setup, which
+the browser-to-Google socket requires. `GET /api/usage` strips provider/model from rows
+and recent calls for a client (`app._hide_provider_names`), and the Usage table only shows
+a Model column when the payload has one. The manager's "not configured" 503 is
+role-aware; the Platform screens keep every name.
+
 ## Studio — the workspace's main tool (2026-11-01, merged with the Assistant 2026-11-02)
 
 The front door of the workspace (`#/app/studio`, and `AREAS.app.home`): chat sessions on

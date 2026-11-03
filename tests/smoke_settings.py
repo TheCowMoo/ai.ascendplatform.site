@@ -126,6 +126,15 @@ def test_listing_masks_secrets(client):
     body = client.get("/api/settings").get_json()
     print("groups     ->", [(g["id"], len(g["fields"])) for g in body["groups"]])
 
+    # Every group except the client's own email is platform-scoped. This is what keeps
+    # the AI provider keys off a client's page entirely, not merely blanked.
+    for group in settings.SPEC:
+        if group["id"] == "email":
+            assert settings.group_scope(group) == settings.CLIENT, group["id"]
+        else:
+            assert settings.group_scope(group) == settings.PLATFORM, group["id"]
+    print("scopes     -> every group but email is platform-only")
+
 
 def test_saved_key_applies_without_restart(client):
     """The point of the panel: save it, and the tool uses it immediately."""
