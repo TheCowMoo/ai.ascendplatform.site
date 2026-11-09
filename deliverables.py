@@ -384,17 +384,28 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
     path = provisioner.join_path(docroot, page_path(item.get("slug")))
     summary = "publish %r to %s" % (item["title"], site["domain"])
 
-    # actions.gate() blocks until an operator decides, which would hang this request
-    # until the approval times out. The person clicking Publish *is* that operator, so
-    # record the decision first and let the gate read it back as approved: the audit
-    # row ends up identical to an agent-initiated write, with this user's name on it.
-    if not actions.is_dry_run():
+    # The person clicking Publish *is* the operator the gate would wait for. Record the
+    # decision, then pass preapproved so the write neither asks a second question nor
+    # blocks. actions.gate() inserts its own pending row and waits APPROVAL_TIMEOUT (300s)
+    # for it; this handler is synchronous Flask running on the uvicorn event loop, so two
+    # clicks held both workers and the whole console answered 502 until the waits expired.
+    # The audit row is still the same shape as an agent-initiated write, with this user on it.
+    live = not actions.is_dry_run()
+    approval_id = None
+    if live:
         approval_id = actions.request_approval(
             "file_write", summary, {"path": path, "bytes": len(item["content"])}, None
         )
-        actions.decide_approval(approval_id, "approved", actor or "operator")
+        decided = actions.decide_approval(approval_id, "approved", actor or "operator")
+        if not decided or decided.get("status") != "approved":
+            raise DeliverableError(
+                "This publish could not be recorded as approved (approval #%s)." % approval_id)
 
-    result = target.write_file(path, item["content"], None, None, summary=summary)
+    result = target.write_file(path, item["content"], None, None, summary=summary,
+                               preapproved=live)
+    if approval_id:
+        actions.set_result(approval_id, result.get("output")
+                           or ("wrote to %s" % path if result.get("ok") else "the write failed"))
     if not result.get("ok"):
         raise DeliverableError(result.get("output") or "The write failed.")
 
@@ -405,6 +416,7 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
             "path": path,
             "url": "",
             "output": result.get("output") or "",
+            "warning": "",
             "deliverable": item,
         }
 
@@ -426,11 +438,18 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
         import sites as sites_service
 
         sites_service.update_site(site["id"], {"content_html": item["content"]})
+    # A page written into a docroot nobody serves looks exactly like a publish that did
+    # nothing. Say it in the response so the toast can, instead of leaving it to the domain.
+    warning = ""
+    if (site.get("status") or "") != "live":
+        warning = ("The domain is not live yet - provision it from the Domains tab, then "
+                   "this page will appear at %s." % url)
     return {
         "ok": True,
         "dry_run": False,
         "path": path,
         "url": url,
         "output": result.get("output") or "",
+        "warning": warning,
         "deliverable": updated,
     }

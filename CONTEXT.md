@@ -163,7 +163,12 @@ has no photos the placeholder `<img>` is stripped so the email still saves. Same
 kind+title from the same job updates that draft. `proposal` is never publishable.
 Publishing writes through `provisioner`, snapshots the previous HTML into
 `site_versions`, and records an approved approval row carrying the operator's name —
-the click *is* the decision.
+the click *is* the decision. The write then runs ``preapproved``: the gate must not ask a
+second time, because this handler is synchronous Flask on the uvicorn event loop and the
+blocking gate held a worker for ``APPROVAL_TIMEOUT`` per click - two clicks starved both
+workers and every request answered 502. The response carries a warning when the site is not
+live yet, since a page written into a docroot nobody serves looks exactly like a publish
+that did nothing.
 
 **How the AI works for a client.** `business_profiles.preferences` holds short rules, one per
 line, and `signature` the block a written piece ends with - instructions, not business facts.

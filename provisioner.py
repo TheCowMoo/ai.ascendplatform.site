@@ -861,7 +861,7 @@ def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=T
                     "reason": decision.reason}
     if preapproved and not actions.is_dry_run():
         if emit:
-            emit("gate", "system", "Covered by the provisioning approval: %s" % summary)
+            emit("gate", "system", "Covered by the operator's approval: %s" % summary)
         return {"allowed": True, "dry_run": False, "reason": "preapproved", "approval_id": None}
     return actions.gate(tool, summary, args, job_id, emit)
 
@@ -897,7 +897,7 @@ def reload_web_server(target, job_id=None, emit=None, preapproved=False):
     summary = "reload the web server via %s" % CADDY_ADMIN_URL
     if preapproved and not actions.is_dry_run():
         if emit:
-            emit("gate", "system", "Covered by the provisioning approval: %s" % summary)
+            emit("gate", "system", "Covered by the operator's approval: %s" % summary)
     else:
         authorisation = actions.gate("caddy_reload", summary, {"url": CADDY_ADMIN_URL},
                                      job_id, emit)

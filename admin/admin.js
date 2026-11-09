@@ -3021,20 +3021,23 @@
     document.body.appendChild(backdrop);
   }
 
-  function sendPublish(item, siteId, onDone) {
+  function sendPublish(item, siteId, onDone, button) {
+    if (button) button.disabled = true;
     api('POST', '/api/deliverables/' + item.id + '/publish', { site_id: siteId })
       .then(function (res) {
         if (res.dry_run) {
           toast('Dry-run: would write ' + res.path + ' (set ALLOW_LIVE_ACTIONS=1)', true);
         } else {
-          toast('Published to ' + res.url, true);
+          toast('Published to ' + res.url + (res.warning ? ' - ' + res.warning : ''),
+                !res.warning);
         }
         if (onDone) onDone(res);
       })
-      .catch(function (e) { toast(e.message, false); });
+      .catch(function (e) { toast(e.message, false); })
+      .finally(function () { if (button) button.disabled = false; });
   }
 
-  function publishDeliverable(item, onDone) {
+  function publishDeliverable(item, onDone, button) {
     api('GET', '/api/sites').then(function (d) {
       var sites = d.sites || [];
       if (!sites.length) {
@@ -3042,7 +3045,7 @@
         return;
       }
       if (sites.length === 1) {
-        sendPublish(item, sites[0].id, onDone);
+        sendPublish(item, sites[0].id, onDone, button);
         return;
       }
       // The API refuses to guess when a client owns several sites.
@@ -3051,9 +3054,10 @@
       ], function (data, fail, ok) {
         var chosen = sites.filter(function (s) { return s.domain === data.domain; })[0];
         if (!chosen) { fail('Choose a site'); return; }
-        api('POST', '/api/deliverables/' + item.id + '/publish', { site_id: chosen.id })
-          .then(function () { ok(); sendPublish(item, chosen.id, onDone); })
-          .catch(function (e) { fail(e.message); });
+        // One publish, not two: this used to POST here and again inside sendPublish, which
+        // wrote the page twice and asked for two approvals.
+        ok();
+        sendPublish(item, chosen.id, onDone, button);
       });
     }).catch(function (e) { toast(e.message, false); });
   }
@@ -3100,13 +3104,17 @@
           prev.onclick = function () { previewDeliverable(item); };
           var studio = el('button', 'btn btn-primary btn-sm', 'Studio');
           studio.onclick = function () { openInStudio('deliverable', item.id); };
-          var pub = el('button', 'btn btn-ghost btn-sm', 'Publish');
-          pub.onclick = function () { publishDeliverable(item, load); };
           var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
           edit.onclick = function () { showDeliverableForm('website', item, load); };
           td.appendChild(prev);
           td.appendChild(studio);
-          td.appendChild(pub);
+          // Only a website page has somewhere to be published. The button used to sit on
+          // every kind and answered "Only website pages can be published".
+          if (item.kind === 'website') {
+            var pub = el('button', 'btn btn-ghost btn-sm', 'Publish');
+            pub.onclick = function () { publishDeliverable(item, load, pub); };
+            td.appendChild(pub);
+          }
           td.appendChild(edit);
           tr.appendChild(td);
           tbody.appendChild(tr);
@@ -3365,7 +3373,7 @@
           td.appendChild(open);
           if (item.kind === 'website') {
             var pub = el('button', 'btn btn-primary btn-sm', 'Publish');
-            pub.onclick = function () { publishDeliverable(item, refresh); };
+            pub.onclick = function () { publishDeliverable(item, refresh, pub); };
             td.appendChild(pub);
           }
           var del = el('button', 'btn btn-danger btn-sm', 'Delete');
