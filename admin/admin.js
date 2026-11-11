@@ -493,7 +493,7 @@
       err.textContent = '';
       btn.disabled = true;
       api('POST', '/api/auth/login', { email: email.value, password: pw.value })
-        .then(function (d) { state.user = d.user; render(); })
+        .then(function (d) { state.user = d.user; render(); firstRun(); })
         .catch(function (e) { err.textContent = e.message; })
         .finally(function () { btn.disabled = false; });
     }
@@ -8414,6 +8414,64 @@
     show();
   }
 
+  // ---------- The first login: a short spoken welcome ----------
+  // Marked per account (users.onboarded_at), not per browser, so a second device does not
+  // replay it and a cleared localStorage cannot bring it back. The tour stays separate and
+  // follows when the voice overlay closes.
+  var INTRO_TEXT =
+    'Ask for anything - a page, an email, a whole site - and the team builds it in the ' +
+    'Studio, with the work on the canvas beside the chat. Sites and Domains put a page on ' +
+    'your own domain and issue the certificate automatically. Forms turn answers into ' +
+    'contacts, and Automations follow up, asking before anything is sent.';
+
+  function markOnboarded() {
+    if (!state.user || state.user.onboarded_at) return;
+    state.user.onboarded_at = new Date().toISOString();
+    api('POST', '/api/auth/onboarded', {}).catch(function () { /* next login retries */ });
+  }
+
+  // The same words the voice is asked to say, for a browser with no voice configured and
+  // for anyone who cannot use a microphone.
+  function showTextIntro(after) {
+    var veil = el('div', 'tour-veil');
+    var card = el('div', 'tour-card');
+    veil.appendChild(card);
+    document.body.appendChild(veil);
+    card.appendChild(el('p', 'fine-print', 'Welcome'));
+    card.appendChild(el('h3', 'card-title', 'A quick look at ' + BRAND));
+    card.appendChild(el('p', 'muted', INTRO_TEXT));
+    var row = el('div', 'chip-input');
+    var skip = el('button', 'btn btn-ghost', 'Skip');
+    skip.onclick = function () { if (veil.parentNode) veil.parentNode.removeChild(veil); };
+    var go = el('button', 'btn btn-primary', 'Show me around');
+    go.onclick = function () {
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+      after();
+    };
+    row.appendChild(skip);
+    row.appendChild(go);
+    card.appendChild(row);
+  }
+
+  function firstRun() {
+    if (!state.user) return;
+    if (state.user.onboarded_at) { startTour(false); return; }
+    markOnboarded();
+    var after = function () { startTour(false); };
+    api('GET', '/api/voice/status').then(function (s) {
+      if (s && s.available && window.AscendVoice) {
+        window.AscendVoice.open({
+          page: 'welcome',
+          source: 'welcome',
+          intro: true,
+          onClose: after
+        });
+        return;
+      }
+      showTextIntro(after);
+    }).catch(function () { showTextIntro(after); });
+  }
+
   window.addEventListener('hashchange', render);
 
   api('GET', '/api/health').then(function (d) {
@@ -8428,8 +8486,9 @@
     // The Ask sheet is the single floating entry point. Its header links to the full
     // Studio, so the old manager panel is no longer booted alongside it.
     assistOrb();
-    startTour(false);
     render();
+    // A first login gets the short spoken welcome, then the tour.
+    firstRun();
   }).catch(function () {
     state.user = null;
     render();

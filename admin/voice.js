@@ -46,7 +46,8 @@
     generation: 0, opener: null,
     team: { generation: 0, jobs: {}, timer: 0, ticks: 0, polling: false,
             approvals: {}, awaitingAnswer: false },
-    teamQueue: [], teamFlushTimer: 0
+    teamQueue: [], teamFlushTimer: 0,
+    introSent: false, introKick: null
   };
   var ui = null;
   var sessionCounter = 0;
@@ -626,7 +627,8 @@
     return fetch('/api/voice/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page: (state.opts && state.opts.page) || '' })
+      body: JSON.stringify({ page: (state.opts && state.opts.page) || '',
+                             intro: !!(state.opts && state.opts.intro) })
     }).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (!response.ok) {
@@ -724,6 +726,37 @@
     state.settled = true;
     setPhase('listening', PHASES.listening, 'Speak normally. Tap Stop when you are done.');
     flushTeamUpdates();
+    if (state.opts && state.opts.intro && maybeStartIntro()) dropIntroKick();
+  }
+
+
+  // The first-run welcome speaks first, so it needs one kickoff turn. A browser that has
+  // suspended audio waits for a tap; any tap resumes the context and sends it, once.
+  function maybeStartIntro() {
+    if (!state.opts || !state.opts.intro || state.introSent) return false;
+    if (!state.settled || !state.ws || state.ws.readyState !== 1) return false;
+    if (state.context && state.context.state !== 'running') {
+      setPhase('listening', 'Tap to hear the introduction',
+               'Your browser paused audio until you interact.');
+      return false;
+    }
+    var sent = send({ clientContent: {
+      turns: [{ role: 'user', parts: [{ text:
+        '[First visit] Give the introduction now, exactly as your instructions describe, ' +
+        'then stop and wait for the user.' }] }],
+      turnComplete: true
+    }});
+    if (!sent) return false;
+    state.introSent = true;
+    setPhase('thinking', 'Starting your introduction?', 'One moment.');
+    return true;
+  }
+
+
+  function dropIntroKick() {
+    if (!state.introKick) return;
+    document.removeEventListener('pointerdown', state.introKick);
+    state.introKick = null;
   }
 
   function handleServerContent(content) {
@@ -792,6 +825,7 @@
 
   function fail(message, detail) {
     state.lastError = message;
+    dropIntroKick();
     // Invalidate any tool fetch or job poll still in flight. Without this a slow response
     // from the previous session could start polling a job after the overlay has reopened.
     state.generation += 1;
@@ -1273,6 +1307,8 @@
     state.opts = options || {};
     mountHost(state.opts.host || null);
     state.session = null;
+    state.introSent = false;
+    state.introKick = null;
     state.turns = [];
     state.calls = 0;
     state.settled = false;
@@ -1302,6 +1338,16 @@
     } catch (error) {
       fail('This browser could not open an audio context.', String((error && error.message) || error));
       return Promise.resolve(false);
+    }
+
+    if (state.opts.intro) {
+      state.introKick = function () {
+        if (state.context && state.context.state !== 'running' && state.context.resume) {
+          state.context.resume();
+        }
+        if (maybeStartIntro()) dropIntroKick();
+      };
+      document.addEventListener('pointerdown', state.introKick);
     }
 
     return startSession(generation);
@@ -1336,6 +1382,7 @@
   }
 
   function stop() {
+    dropIntroKick();
     state.intentional = true;
     state.generation += 1;
     resetTeam();

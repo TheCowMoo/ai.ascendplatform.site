@@ -119,6 +119,9 @@ users = Table(
     # client_admin = a client's admin; member = a client's staff.
     Column("role", Text, nullable=False, server_default=_literal("member")),
     Column("org_id", Integer),
+    # The first login gets a short spoken welcome. Per account, not per browser: a second
+    # device must not replay it, and clearing localStorage must not bring it back.
+    Column("onboarded_at", Text),
     _created_at(),
 )
 
@@ -1192,6 +1195,7 @@ _ADDITIVE_COLUMNS = (
     ("automation_runs", "context", "context TEXT NOT NULL DEFAULT '{}'"),
     ("automation_runs", "wake_at", "wake_at TEXT"),
     ("users", "org_id", "org_id INTEGER"),
+    ("users", "onboarded_at", "onboarded_at TEXT"),
     ("bots", "org_id", "org_id INTEGER"),
     ("sites", "org_id", "org_id INTEGER"),
     ("jobs", "org_id", "org_id INTEGER"),

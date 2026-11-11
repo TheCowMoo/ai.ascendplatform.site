@@ -195,6 +195,16 @@ and emits `Preference: Saved ...` into the transcript, and the system prompt tel
 that when a lasting rule is stated, without waiting for "remember". The same block is editable
 on the Business Profile screen, so a wrong rule is one deletion away.
 
+**The first login.** `users.onboarded_at` (migration `0025`) is per account, not per
+browser, so a second device does not replay the welcome. Boot and the login handler call
+`firstRun()`, which marks the account through `POST /api/auth/onboarded` (idempotent) and
+asks `/api/voice/status`. With voice configured it opens the overlay with `intro: true`: the
+server adds a thirty-second, role-aware script to `voice.instruction(intro=True)` and
+`voice.js` sends one kickoff `clientContent` after `setupComplete`, so the voice speaks
+first. A browser that suspended audio waits for any tap, which resumes the context and
+sends it once. With no voice key the same words appear as a tour-style card. Closing the
+welcome starts the existing five-stop tour.
+
 **An invitation.** Owner invites → user row with an unusable random password → SHA-256
 token stored, plaintext returned once → GHL upserts the contact and sends → `#/accept/
 <token>` sets the password and starts the session. Resend rotates the token and kills

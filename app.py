@@ -497,10 +497,28 @@ def login():
         return jsonify({"user": {
             "id": row["id"], "email": row["email"], "name": row["name"],
             "role": row["role"], "org_id": row["org_id"],
+            "onboarded_at": row["onboarded_at"],
             # Sent with the login too, so the nav is correct without a reload.
             "is_owner": is_owner_role(row["role"]),
         }})
     return jsonify({"error": "Invalid email or password"}), 401
+
+
+@app.route("/api/auth/onboarded", methods=["POST"])
+@login_required
+def mark_onboarded():
+    """Record that this account has seen the first-run introduction.
+
+    Idempotent: the first timestamp wins, so a double call (or a replay) cannot move it.
+    """
+    uid = session.get("user_id")
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?",
+            (now_str(), uid),
+        )
+        row = conn.execute("SELECT onboarded_at FROM users WHERE id = ?", (uid,)).fetchone()
+    return jsonify({"onboarded_at": row["onboarded_at"] if row else None})
 
 
 @app.route("/api/auth/logout", methods=["POST"])
@@ -574,7 +592,7 @@ def me():
         return jsonify({"user": None})
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, email, name, role, org_id FROM users WHERE id = ?", (uid,)
+            "SELECT id, email, name, role, org_id, onboarded_at FROM users WHERE id = ?", (uid,)
         ).fetchone()
     if not row:
         session.clear()
@@ -2462,9 +2480,11 @@ def voice_session():
         }), 400
     data = request.get_json(silent=True) or {}
     page = str(data.get("page") or "").strip()[:40]
+    intro = bool(data.get("intro"))
     org = orgs_service.get_org(current_org()) if current_org() else None
     org_name = str((org or {}).get("name") or "")
-    setup_message = voice.setup(org_name=org_name, page=page)
+    setup_message = voice.setup(org_name=org_name, page=page, intro=intro,
+                                role=str(session.get("role") or ""))
     try:
         token = voice.mint(live_setup=setup_message["setup"])
     except voice.VoiceError as exc:

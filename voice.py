@@ -256,13 +256,14 @@ def publish_declaration():
     }
 
 
-def live_config(org_name="", page=""):
+def live_config(org_name="", page="", intro=False, role=""):
     """The Live connection config shared by the token constraints and the setup frame."""
     return {
         "responseModalities": ["AUDIO"],
         "speechConfig": {"voiceConfig": {
             "prebuiltVoiceConfig": {"voiceName": voice_name()}}},
-        "systemInstruction": {"parts": [{"text": instruction(org_name, page)}]},
+        "systemInstruction": {"parts": [{"text": instruction(org_name, page, intro,
+                                                              role)}]},
         "tools": [{"functionDeclarations": [
             delegate_declaration(), answer_declaration(), publish_declaration()]}],
         "inputAudioTranscription": {},
@@ -273,7 +274,7 @@ def live_config(org_name="", page=""):
     }
 
 
-def setup(org_name="", page=""):
+def setup(org_name="", page="", intro=False, role=""):
     """The first message the browser sends once the socket opens.
 
     Two things here are not optional if the console is to be usable:
@@ -284,7 +285,7 @@ def setup(org_name="", page=""):
     * ``realtimeInputConfig.automaticActivityDetection`` - stated explicitly rather than
       left to the server default, so turn-taking is a decision this file made.
     """
-    config = live_config(org_name, page)
+    config = live_config(org_name, page, intro, role)
     return {"setup": {
         "model": "models/" + model(),
         "generationConfig": {
@@ -299,7 +300,7 @@ def setup(org_name="", page=""):
     }}
 
 
-def instruction(org_name="", page=""):
+def instruction(org_name="", page="", intro=False, role=""):
     """The character: a guide and spokesperson who delegates, not a second brain.
 
     Written as a prompt rather than a rule, because the failure this prevents is a voice that
@@ -307,11 +308,26 @@ def instruction(org_name="", page=""):
     """
     where = (" The user is looking at the %s screen." % page) if page else ""
     client = (" The client being worked on is %s." % org_name) if org_name else ""
+    intro_text = ""
+    if intro:
+        who = ("the agency operator, who manages several clients from this one login"
+               if role in ("owner", "admin") else "the owner of this business")
+        intro_text = (
+            "This is the user's first visit, and you are speaking to %s. Begin with a short "
+            "spoken welcome of about thirty seconds: say what the platform is, then name the "
+            "four things they will use - the Studio, where talking or typing builds work and "
+            "the page stays on the canvas beside the chat; Sites and Domains, where publishing "
+            "puts a page on their own domain and the certificate is issued automatically; "
+            "Forms, which live at a link and turn answers into contacts; and Automations, "
+            "which follow up and ask before anything is sent. End by asking what they would "
+            "like to build first, then stop and listen. Do not call tools during the "
+            "introduction. " % who)
     return (
         "You are the platform's spoken guide and the team's spokesperson: warm, brief, "
         "concrete. Two sentences, then stop, unless you are reading the team's questions as a "
         "short numbered list. You explain what is on screen, answer questions about it, and can "
         "walk a new user through the product one step at a time.%s%s "
+        "%s"
         "You have three tools. Use delegate_to_team for new work: if the user asks for anything "
         "to be built, changed or sent, call it with one clear sentence, then say you are on "
         "it. Never claim work is done until a team update says it is. "
@@ -329,7 +345,7 @@ def instruction(org_name="", page=""):
         "Never approve a gated action or carry out a send or server change yourself; delegate "
         "those to the team, where the console's approval gates decide them. Publishing is "
         "the exception above, and still needs the user's yes first."
-        % (client, where))
+        % (client, where, intro_text))
 
 
 def probe_session(live_setup=None, timeout=15):
