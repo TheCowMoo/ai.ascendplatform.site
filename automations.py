@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 NODE_TYPES = ("agent", "tool", "condition", "gate", "notify", "stop", "delay")
 TRIGGER_TYPES = ("manual", "schedule", "event")
-OUTWARD_TOOLS = ("send_email", "publish_site", "provision_site")
+OUTWARD_TOOLS = ("send_email", "publish_page", "publish_site", "provision_site")
 MAX_NODES = 12
 MAX_NAME = 120
 

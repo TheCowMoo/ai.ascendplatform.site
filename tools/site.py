@@ -11,6 +11,7 @@ and in dry-run nothing happens at all.
 import json
 
 import actions
+import deliverables as deliverables_service
 import jobs
 import provisioner
 import sites as sites_service
@@ -125,6 +126,102 @@ def _build_list_sites(emit, job_id=None):
         )
 
     return list_sites
+
+
+def _build_publish_page(emit, job_id=None):
+    async def publish_page(deliverable_id: int = 0, title: str = "",
+                           site_id: int = 0) -> str:
+        """Publish a website page to this client's site and return its URL.
+
+        The page is the one this run is bound to, an explicit id, or the newest website
+        draft (optionally matched by ``title``). With one site it publishes there; with
+        several it asks which domain rather than guessing.
+        """
+        job = (jobs.get_job(job_id) if job_id else None) or {}
+        org_id = job.get("org_id")
+        if org_id is None:
+            return ("This run is not attached to a client, so there is no site to publish "
+                    "to. Pick a client in the workspace switcher first.")
+
+        item = None
+        wanted = int(deliverable_id or 0)
+        if wanted:
+            item = deliverables_service.get_deliverable(wanted)
+            if not item or item.get("org_id") != org_id:
+                return "There is no draft %s for this client." % wanted
+        else:
+            bound = int(job.get("deliverable_id") or 0)
+            if bound:
+                item = deliverables_service.get_deliverable(bound)
+                if item and item.get("org_id") != org_id:
+                    item = None
+            if item is None:
+                pages = deliverables_service.list_deliverables("website", org_id)
+                needle = (title or "").strip().lower()
+                if needle:
+                    pages = [p for p in pages if needle in (p.get("title") or "").lower()]
+                item = pages[0] if pages else None
+        if not item:
+            return "There is no website page to publish for this client. Build one first."
+        if item.get("kind") != "website":
+            return ("#%d is a %s, not a website page; only website pages are published to a "
+                    "site." % (item["id"], item.get("kind")))
+
+        site = None
+        chosen = int(site_id or 0) or int(item.get("site_id") or 0)
+        if chosen:
+            site = sites_service.get_site(chosen)
+            if not site or site.get("org_id") != org_id:
+                return "There is no site %s for this client." % chosen
+        else:
+            candidates = sites_service.list_sites(org_id)
+            if not candidates:
+                return ("This client has no site yet. Add a domain in the Domains tab, "
+                        "then ask me to publish again.")
+            if len(candidates) > 1:
+                return ("This client has %d sites (%s). Ask which domain to publish to."
+                        % (len(candidates),
+                           ", ".join(s["domain"] for s in candidates[:8])))
+            site = candidates[0]
+
+        actor = "operator"
+        requester = job.get("requester_id")
+        if requester:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT name, email FROM users WHERE id = ?", (requester,)
+                ).fetchone()
+            if row:
+                actor = row["email"] or row["name"] or actor
+        try:
+            result = deliverables_service.publish_deliverable(
+                item["id"], site_id=site["id"], actor=actor)
+        except deliverables_service.DeliverableError as exc:
+            return "Not published: %s" % exc
+        if result.get("dry_run"):
+            return ("[dry-run] would publish %r to %s - set ALLOW_LIVE_ACTIONS=1 to make it "
+                    "live." % (item.get("title") or "page", site["domain"]))
+        message = "Published %r to %s: %s" % (item.get("title") or "page",
+                                              site["domain"], result["url"])
+        if result.get("warning"):
+            message += "\nNote: " + result["warning"]
+        if emit:
+            emit("publish", "system", message)
+        return message
+
+    return publish_page
+
+
+register(
+    "publish_page",
+    "Publish a website page to this client's site and return its URL.",
+    _build_publish_page,
+)
+register(
+    "publish_site",
+    "Publish a website page to this client's site (the same action as publish_page).",
+    _build_publish_page,
+)
 
 
 register(

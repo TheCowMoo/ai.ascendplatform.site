@@ -178,6 +178,30 @@ SPEC = [
         ],
     },
     {
+        "id": "client_email_ghl",
+        "label": "Client email (GoHighLevel)",
+        "icon": "mail",
+        "blurb": "Send this client's email through their own GoHighLevel sub-account. "
+                 "When these are set they take priority over SMTP; leave them blank to "
+                 "keep sending through SMTP.",
+        "test": "client_email_ghl",
+        "scope": CLIENT,
+        "fields": [
+            _f("GHL_CLIENT_API_TOKEN", "GoHighLevel API token", secret=True,
+               help="Private Integration token from this client's sub-account."),
+            _f("GHL_CLIENT_LOCATION_ID", "Location ID",
+               help="The sub-account that sends this client's email."),
+            _f("GHL_CLIENT_API_VERSION", "API version", default="2021-07-28",
+               help="Sent as the Version header. Change only if GoHighLevel asks."),
+            _f("GHL_CLIENT_API_BASE", "API base URL",
+               default="https://services.leadconnectorhq.com"),
+            _f("GHL_CLIENT_FROM_NAME", "From name"),
+            _f("GHL_CLIENT_FROM_EMAIL", "From address",
+               help="Must be verified in this client's GoHighLevel account."),
+            _f("GHL_CLIENT_REPLY_TO", "Reply-to address"),
+        ],
+    },
+    {
         "id": "platform_email",
         "label": "Platform email (GoHighLevel)",
         "icon": "mail",
@@ -701,6 +725,7 @@ def test(group_id, org_id=None):
         "llm": _test_llm,
         "smtp": _test_smtp,
         "ghl": _test_ghl,
+        "client_email_ghl": _test_client_ghl,
         "voice": _test_voice,
     }.get(group_id)
     if runner is None:
@@ -828,3 +853,16 @@ def _test_ghl(org_id=None):
     import platform_mail  # lazy: platform_mail imports this module
 
     return platform_mail.test_connection()
+
+
+def _test_client_ghl(org_id=None):
+    """Prove this client's own token and location, never the platform's."""
+    if org_id is None:
+        return {"ok": False, "output": "Pick a client first."}
+    if not get("GHL_CLIENT_API_TOKEN", org_id=org_id) or not get(
+            "GHL_CLIENT_LOCATION_ID", org_id=org_id):
+        return {"ok": False,
+                "output": "Set this client's GoHighLevel token and location id first."}
+    import platform_mail  # lazy: platform_mail imports this module
+
+    return platform_mail.test_connection(org_id)

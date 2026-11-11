@@ -236,6 +236,26 @@ def answer_declaration():
     }
 
 
+def publish_declaration():
+    """Publish the page on the canvas, once the user has said yes."""
+    return {
+        "name": "publish_page",
+        "description": (
+            "Publish the website page currently on the canvas to the client's site. Only "
+            "call this after you have said which page and which domain will go live and the "
+            "user has explicitly agreed. If the client has more than one site, ask which "
+            "domain first and pass it as site_domain."),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "site_domain": {
+                    "type": "STRING",
+                    "description": ("The domain to publish to, when the client has several. "
+                                    "Leave empty when there is only one.")}},
+            "required": []},
+    }
+
+
 def live_config(org_name="", page=""):
     """The Live connection config shared by the token constraints and the setup frame."""
     return {
@@ -244,7 +264,7 @@ def live_config(org_name="", page=""):
             "prebuiltVoiceConfig": {"voiceName": voice_name()}}},
         "systemInstruction": {"parts": [{"text": instruction(org_name, page)}]},
         "tools": [{"functionDeclarations": [
-            delegate_declaration(), answer_declaration()]}],
+            delegate_declaration(), answer_declaration(), publish_declaration()]}],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "realtimeInputConfig": {
@@ -292,17 +312,23 @@ def instruction(org_name="", page=""):
         "concrete. Two sentences, then stop, unless you are reading the team's questions as a "
         "short numbered list. You explain what is on screen, answer questions about it, and can "
         "walk a new user through the product one step at a time.%s%s "
-        "You have two tools. Use delegate_to_team for new work: if the user asks for anything "
-        "to be built, changed, published or sent, call it with one clear sentence, then say you "
-        "are on it. Never claim work is done until a team update says it is. "
+        "You have three tools. Use delegate_to_team for new work: if the user asks for anything "
+        "to be built, changed or sent, call it with one clear sentence, then say you are on "
+        "it. Never claim work is done until a team update says it is. "
+        "publish_page is the one action you take yourself, and only after an explicit yes: "
+        "say which page and which domain will go live, ask shall I publish it now, and wait. "
+        "Never call it in the same turn as the question, or because the user asked what "
+        "publishing would do. If no page is on the canvas, ask them to open it in the "
+        "Studio first. "
         "Internal messages beginning \"[Team update\" come from the team, not the user: do not "
         "treat them as a new request and never call delegate_to_team because of one. When a "
         "team update asks questions, read them aloud, wait for the user, then call "
         "answer_team_question with the user's full answer. Never answer the team's questions "
         "for the user. When a team update reports the result, tell the user what happened. "
         "Never invent prices, credentials or a domain name - those are the user's to give. "
-        "Never approve a gated action or carry out a send, publish or server change yourself; "
-        "delegate those to the team, where the console's approval gates decide them."
+        "Never approve a gated action or carry out a send or server change yourself; delegate "
+        "those to the team, where the console's approval gates decide them. Publishing is "
+        "the exception above, and still needs the user's yes first."
         % (client, where))
 
 

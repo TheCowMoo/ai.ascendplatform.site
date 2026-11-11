@@ -170,6 +170,19 @@ workers and every request answered 502. The response carries a warning when the 
 live yet, since a page written into a docroot nobody serves looks exactly like a publish
 that did nothing.
 
+**The rest of a launch.** `publish_page` (and its alias `publish_site`, which was advertised
+in `OUTWARD_TOOLS` but never registered) publishes the run's bound draft, an explicit id, or
+the newest website page to the draft's site, an explicit site, or the client's only site -
+asking which domain when there are several. It is outward, so an automation needs a gate
+before it. After a *new* site the Manager offers the pieces around it (a published form with
+a button on the page, a follow-up template, an automation), builds them only on a yes, and
+explains an automation and waits for confirmation before `apply_automation`. The voice
+publishes the canvas page itself after saying which page and domain and hearing an explicit
+yes; the audit row carries the speaker's name. Client email can go through that client's own
+GoHighLevel sub-account (`client_email_ghl`: token, location, from address are client-scoped);
+`send_email` prefers it and falls back to the client's SMTP when it is unset. The platform's
+invitations stay on the operator's GHL group.
+
 **How the AI works for a client.** `business_profiles.preferences` holds short rules, one per
 line, and `signature` the block a written piece ends with - instructions, not business facts.
 Every `chat` turn builds its system prompt through `manager.system_for(org)` and every roster

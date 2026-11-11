@@ -260,7 +260,7 @@ def test_the_agent_can_build_a_form():
         {}, CancellationToken()))
     rows = json.loads(listing)
     check("the agent can see what it built", rows[0]["questions"], 2)
-    check("and that it is a draft", rows[0]["status"], "draft")
+    check("and that it is live", rows[0]["status"], "published")
 
     check("without a client it refuses",
           asyncio.run(tools.resolve(["create_form"], job_id=None)[0].run_json(

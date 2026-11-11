@@ -43,6 +43,36 @@ def _job_target(job_id):
         return 0
 
 
+def _platform_url():
+    """Where the public form pages live, without a trailing slash."""
+    import settings as settings_mod
+
+    return (settings_mod.get("PLATFORM_URL") or "").rstrip("/")
+
+
+def _form_link(form):
+    base = _platform_url()
+    return (base + "/f/" + form["slug"]) if base else ("/f/" + form["slug"])
+
+
+def _insert_cta(content, href, label):
+    """Put one button into a page without disturbing its structure."""
+    import html as html_mod
+
+    button = (
+        '<p style="text-align:center;margin:32px 0">'
+        '<a href="%s" style="display:inline-block;padding:14px 22px;border-radius:999px;'
+        'background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:600">%s</a></p>'
+        % (html_mod.escape(href, quote=True), html_mod.escape(label))
+    )
+    lowered = content.lower()
+    for marker in ("</main>", "</body>"):
+        index = lowered.find(marker)
+        if index != -1:
+            return content[:index] + button + "\n" + content[index:]
+    return content.rstrip() + "\n" + button + "\n"
+
+
 def _build_remember_preference(emit, job_id=None):
     async def remember_preference(preference: str) -> str:
         """Save a lasting rule about how this client's work should be done."""
@@ -256,10 +286,10 @@ def _build_describe_capabilities(emit, job_id=None):
             "triggers": {
                 "manual": "run by hand",
                 "schedule": {"every_minutes": 1440, "note": "minutes between runs"},
-                "event": ["contact.created"],
+                "event": ["contact.created", "form.submitted"],
             },
             "tools": ["send_email", "tag_contact", "save_deliverable", "get_metrics",
-                      "list_sites", "start_job"],
+                      "list_sites", "start_job", "publish_page"],
             "conditions": list(automations.CONDITION_FACTS),
             "delays": {"config": "days, hours or minutes", "max_days": 30,
                        "note": "a delay parks the run and wakes it; use it for drip pacing"},
@@ -271,7 +301,10 @@ def _build_describe_capabilities(emit, job_id=None):
                         "own link, and it triggers form.submitted when answered",
                 "tag": "tag_contact(contact_id, tags) inside a graph",
                 "draft": "save_deliverable(kind, title, content)",
-                "automation": "propose_automation(name, steps) - a draft the user applies",
+                "automation": "propose_automation(name, steps) - explain it, get a yes, "
+                              "then apply_automation()",
+                "form_link": "add_form_link(deliverable_id, form_id) - a button on the page",
+                "publish": "publish_page() - live once the user has asked for it",
                 "never": ["SMTP settings", "API keys", "the domain a site lives on"],
             },
             "templates": [{"id": t["id"], "name": t["name"]}
@@ -285,7 +318,7 @@ def _build_describe_capabilities(emit, job_id=None):
                          "is stored in this client's Media."),
             },
             "agent_tools": [tool["name"] for tool in _approved_tools(org_id)],
-            "note": ("Outward tools (send_email, publish_site, provision_site) need a gate "
+            "note": ("Outward tools (send_email, publish_page, publish_site, provision_site) need a gate "
                      "node before them or the graph is refused. If what you need is not "
                      "listed, say so and call propose_tool - it is recorded for approval "
                      "and does not run."),
@@ -503,7 +536,8 @@ register("create_site", "Add a website for this client; the domain must come fro
 
 
 def _build_create_form(emit, job_id=None):
-    async def create_form(name: str, kind: str = "form", questions: list = None) -> str:
+    async def create_form(name: str, kind: str = "form", questions: list = None,
+                          publish: bool = True) -> str:
         """Create a form, survey or quiz for this client and return its link.
 
         Each question is an object: {"id", "label", "type", "page", "required", "options",
@@ -533,11 +567,88 @@ def _build_create_form(emit, job_id=None):
                 org_id)
         except forms_service.FormServiceError as exc:
             return "Not created: %s" % exc
-        return ("Created the %s “%s” (#%d) as a draft at /f/%s. It collects answers as soon "
-                "as it is published - ask me to publish it, or press Publish in Forms."
-                % (form["kind"], form["name"], form["id"], form["slug"]))
+        # A form is born a draft, and the public page refuses a draft - the link we hand
+        # back would 404. Publishing here is what makes "put a form on the page" work.
+        if publish:
+            try:
+                form = forms_service.update_form(form["id"], org_id,
+                                                 {"status": "published"}) or form
+            except forms_service.FormServiceError as exc:
+                return ("Created #%d, but it could not be published: %s"
+                        % (form["id"], exc))
+        link = _form_link(form)
+        return ("Created the %s '%s' (#%d) at %s. It is %s; a submission creates a "
+                "contact and fires form.submitted."
+                % (form["kind"], form["name"], form["id"], link,
+                   "live" if publish else "a draft"))
 
     return create_form
+
+
+def _build_add_form_link(emit, job_id=None):
+    async def add_form_link(deliverable_id: int, form_id: int,
+                            label: str = "Get in touch") -> str:
+        """Put a button on a website page that opens one of this client's forms."""
+        import forms as forms_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - a page and a form both belong to one."
+        item = deliverables_service.get_deliverable(int(deliverable_id or 0))
+        if not item or item.get("org_id") != org_id:
+            return "There is no draft %s for this client." % deliverable_id
+        if item.get("kind") != "website":
+            return "#%s is a %s, not a website page." % (item["id"], item.get("kind"))
+        form = forms_service.get_form(int(form_id or 0), org_id)
+        if not form:
+            return "There is no form %s for this client." % form_id
+        if form.get("status") != "published":
+            updated = forms_service.update_form(form["id"], org_id,
+                                                {"status": "published"})
+            if updated:
+                form = updated
+        link = _form_link(form)
+        content = item.get("content") or ""
+        if link in content:
+            return "The page already links to %s." % link
+        text = label or form.get("name") or "Get in touch"
+        deliverables_service.update_deliverable(item["id"],
+                                                {"content": _insert_cta(content, link, text)})
+        return ("Added a button labelled %r to %r (#%d), pointing at %s. Publish the page "
+                "to make it live." % (text, item.get("title"), item["id"], link))
+
+    return add_form_link
+
+
+def _build_apply_automation(emit, job_id=None):
+    async def apply_automation(proposal_id: int = 0) -> str:
+        """Apply a proposed automation after the user has approved it.
+
+        ``proposal_id=0`` means this client's newest pending proposal - the one you just
+        explained - so the model does not have to fish an id out of an earlier turn.
+        """
+        import automations as automations_service
+
+        org_id, requester = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - an automation belongs to one."
+        wanted = int(proposal_id or 0)
+        if not wanted:
+            pending = automations_service.list_proposals(org_id)
+            if not pending:
+                return "There is no automation proposal waiting for this client."
+            wanted = pending[0]["id"]
+        try:
+            saved, problems = automations_service.apply_proposal(wanted, org_id, requester)
+        except automations_service.AutomationError as exc:
+            return "Not applied: %s" % exc
+        if problems:
+            return "Not applied: %s" % " ".join(problems)
+        return ("Applied %r (#%d) with %d step(s). It is enabled; any send inside it still "
+                "needs its approval when the run reaches it."
+                % (saved.get("name"), saved.get("id"), len(saved.get("steps") or [])))
+
+    return apply_automation
 
 
 def _build_list_forms(emit, job_id=None):
@@ -568,6 +679,16 @@ register("create_form",
 
 register("list_forms", "List this client's forms, with their links and answer counts.",
          _build_list_forms)
+
+register("add_form_link",
+         "Put a button on a website page that opens one of this client's forms. "
+         "Publish the page afterwards to make it live.",
+         _build_add_form_link)
+
+register("apply_automation",
+         "Apply a proposed automation after the user has approved it. proposal_id=0 "
+         "applies this client's newest pending proposal.",
+         _build_apply_automation)
 
 
 register("create_contact", "Add a contact to this client's CRM.",

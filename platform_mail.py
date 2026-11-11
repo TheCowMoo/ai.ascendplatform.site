@@ -40,8 +40,20 @@ class MailError(Exception):
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
-def connection():
-    """The GHL credentials and endpoint, resolved from settings."""
+def connection(org_id=None):
+    """The GHL credentials and endpoint: the client’s own, or the platform’s."""
+    if org_id is not None:
+        token = settings.get("GHL_CLIENT_API_TOKEN", org_id=org_id)
+        location = settings.get("GHL_CLIENT_LOCATION_ID", org_id=org_id)
+        if token and location:
+            return {
+                "token": token,
+                "location": location,
+                "version": (settings.get("GHL_CLIENT_API_VERSION", org_id=org_id)
+                            or DEFAULT_VERSION),
+                "base": (settings.get("GHL_CLIENT_API_BASE", org_id=org_id)
+                         or DEFAULT_BASE).rstrip("/"),
+            }
     return {
         "token": settings.get("GHL_API_TOKEN"),
         "location": settings.get("GHL_LOCATION_ID"),
@@ -50,7 +62,16 @@ def connection():
     }
 
 
-def is_configured():
+def client_configured(org_id):
+    """True when this client has its own GoHighLevel token and location."""
+    return bool(org_id is not None
+                and settings.get("GHL_CLIENT_API_TOKEN", org_id=org_id)
+                and settings.get("GHL_CLIENT_LOCATION_ID", org_id=org_id))
+
+
+def is_configured(org_id=None):
+    if org_id is not None:
+        return client_configured(org_id)
     conn = connection()
     return bool(conn["token"] and conn["location"])
 
@@ -87,9 +108,14 @@ def _short(text, limit=400):
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
-def _call(method, path, payload=None):
+def _call(method, path, payload=None, org_id=None):
     """Call the GHL API and return the decoded body, or raise MailError."""
-    conn = connection()
+    conn = connection(org_id)
+    if org_id is not None and not client_configured(org_id):
+        raise MailError(
+            "GoHighLevel is not configured for this client: set their API token and "
+            "location id in Settings -> Client email."
+        )
     if not conn["token"] or not conn["location"]:
         raise MailError(
             "GoHighLevel is not configured: set the API token and location id in "
@@ -125,16 +151,17 @@ def _describe_failure(method, path, status, raw):
 # ---------------------------------------------------------------------------
 # Custom fields
 # ---------------------------------------------------------------------------
-def custom_fields():
+def custom_fields(org_id=None):
     """The location's contact custom fields, as the UI and the sender record see them."""
-    return _catalogue()
+    return _catalogue(org_id)
 
 
-def _catalogue():
+def _catalogue(org_id=None):
     """The raw list. Named separately because ``send(custom_fields=...)`` shadows the
     public function for the whole body of ``send``."""
     body = _call(
-        "GET", "/locations/%s/customFields?model=contact" % connection()["location"]
+        "GET", "/locations/%s/customFields?model=contact" % connection(org_id)["location"],
+        org_id=org_id
     )
     fields = []
     for item in body.get("customFields") or []:
@@ -207,8 +234,8 @@ def get_sender(sender_id):
     return _sender_out(row) if row else None
 
 
-def default_sender():
-    rows = senders()
+def default_sender(org_id=None):
+    rows = senders(org_id)
     for row in rows:
         if row["is_default"]:
             return row
@@ -277,15 +304,15 @@ def delete_sender(sender_id):
 # ---------------------------------------------------------------------------
 # Sending
 # ---------------------------------------------------------------------------
-def upsert_contact(email, name="", custom=None):
+def upsert_contact(email, name="", custom=None, org_id=None):
     """Create or update the contact and return its id - GHL sends to contacts only."""
-    conn = connection()
+    conn = connection(org_id)
     payload = {"locationId": conn["location"], "email": email}
     if name:
         payload["name"] = name
     if custom:
         payload["customFields"] = custom
-    body = _call("POST", "/contacts/upsert", payload)
+    body = _call("POST", "/contacts/upsert", payload, org_id=org_id)
     contact = body.get("contact") or {}
     contact_id = contact.get("id") or body.get("id")
     if not contact_id:
@@ -306,7 +333,7 @@ def _plain_text(html):
     return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
-def send(to, subject, html, sender=None, custom_fields=None):
+def send(to, subject, html, sender=None, custom_fields=None, org_id=None):
     """Send one email through GHL. Returns the provider's response for the log.
 
     ``sender`` is a stored sender record (see ``default_sender``); without one the
@@ -314,22 +341,36 @@ def send(to, subject, html, sender=None, custom_fields=None):
     verified in the sub-account, which is why the UI offers a real test send rather
     than a "looks valid" check.
     """
-    if not is_configured():
+    if not is_configured(org_id):
         # Check the connection before the sender: "no from-address" would send the
         # operator looking at the wrong screen when nothing is configured at all.
+        where = ("Settings -> Client email" if org_id is not None
+                 else "Settings -> Platform email")
         raise MailError(
-            "GoHighLevel is not configured: set the API token and location id in "
-            "Settings -> Platform email."
+            "GoHighLevel is not configured: set the API token and location id in %s."
+            % where
         )
-    sender = sender or default_sender() or {}
-    from_email = sender.get("from_email") or settings.get("GHL_FROM_EMAIL")
+    sender = sender or default_sender(org_id)
+    if sender is None and org_id is not None:
+        # A client need not have a saved sender row: the settings group is enough, and
+        # using the platform's sender here would send as the operator.
+        sender = {
+            "from_name": settings.get("GHL_CLIENT_FROM_NAME", org_id=org_id),
+            "from_email": settings.get("GHL_CLIENT_FROM_EMAIL", org_id=org_id),
+            "reply_to": settings.get("GHL_CLIENT_REPLY_TO", org_id=org_id),
+            "custom_fields": {},
+        }
+    sender = sender or {}
+    fallback_from = (settings.get("GHL_CLIENT_FROM_EMAIL", org_id=org_id)
+                     if org_id is not None else settings.get("GHL_FROM_EMAIL"))
+    from_email = sender.get("from_email") or fallback_from
     if not from_email:
-        raise MailError("No from-address: save a sender, or set GHL_FROM_EMAIL in Settings.")
+        raise MailError("No from-address: save a sender, or set the from address in Settings.")
 
-    catalogue = _catalogue()
+    catalogue = _catalogue(org_id)
     merged = dict(sender.get("custom_fields") or {})
     merged.update(custom_fields or {})
-    contact_id = upsert_contact(to, "", _custom_field_values(merged, catalogue))
+    contact_id = upsert_contact(to, "", _custom_field_values(merged, catalogue), org_id=org_id)
 
     payload = {
         "type": "Email",
@@ -341,10 +382,12 @@ def send(to, subject, html, sender=None, custom_fields=None):
     }
     if sender.get("from_name"):
         payload["emailFrom"] = "%s <%s>" % (sender["from_name"], from_email)
-    reply_to = sender.get("reply_to") or settings.get("GHL_REPLY_TO")
+    reply_to = sender.get("reply_to") or (
+        settings.get("GHL_CLIENT_REPLY_TO", org_id=org_id) if org_id is not None
+        else settings.get("GHL_REPLY_TO"))
     if reply_to:
         payload["emailReplyTo"] = reply_to
-    body = _call("POST", "/conversations/messages", payload)
+    body = _call("POST", "/conversations/messages", payload, org_id=org_id)
     return {
         "ok": True,
         "contact_id": contact_id,
@@ -356,11 +399,12 @@ def send(to, subject, html, sender=None, custom_fields=None):
     }
 
 
-def test_connection():
+def test_connection(org_id=None):
     """Prove the token, the version header and the custom-fields scope in one go."""
     try:
-        location = _call("GET", "/locations/%s" % connection()["location"])
-        fields = custom_fields()
+        location = _call("GET", "/locations/%s" % connection(org_id)["location"],
+                         org_id=org_id)
+        fields = custom_fields(org_id)
     except MailError as exc:
         return {"ok": False, "output": str(exc)}
     entry = location.get("location") or location
@@ -368,5 +412,5 @@ def test_connection():
     return {
         "ok": True,
         "output": "Connected to %s with %d contact custom field(s)."
-        % (label or connection()["location"], len(fields)),
+        % (label or connection(org_id)["location"], len(fields)),
     }

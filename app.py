@@ -2538,7 +2538,7 @@ def voice_usage():
 @app.route("/api/voice/tool", methods=["POST"])
 @login_required
 def voice_tool():
-    """The two tools the voice may use: delegate work, or answer the team's questions.
+    """The three tools the voice may use: delegate work, answer questions, publish a page.
 
     The browser relays these calls because the socket is browser-direct. That is safe because
     this route - not the model - is what executes: it needs a login, takes the tenant from the
@@ -2549,9 +2549,9 @@ def voice_tool():
 
     data = request.get_json(silent=True) or {}
     name = str(data.get("name") or "")
-    if name not in ("delegate_to_team", "answer_team_question"):
-        return jsonify({"error": "The voice may only delegate to the team or answer its "
-                                 "questions."}), 403
+    if name not in ("delegate_to_team", "answer_team_question", "publish_page"):
+        return jsonify({"error": "The voice may only delegate to the team, answer its "
+                                 "questions, or publish a page."}), 403
     # The voice can talk with Gemini alone, but the team it delegates to needs a chat
     # provider. Refuse before creating a job that would only fail in the transcript.
     import llm
@@ -2570,6 +2570,64 @@ def voice_tool():
     args = data.get("args") or {}
     if not isinstance(args, dict):
         args = {}
+
+    if name == "publish_page":
+        # The one write the voice performs itself. The spoken yes is the decision, so the
+
+        # audit row is the same shape as the Publish button - but only the page validated
+
+        # here can go out, and only to this client's site.
+
+        item, artifact_error = _studio_artifact(data.get("artifact"))
+        if artifact_error:
+            return artifact_error
+        if not item:
+            return jsonify({"error": "Open the page you want to publish on the canvas "
+                                     "first."}), 400
+        if (item.get("kind") or "") != "website":
+            return jsonify({"error": "Only a website page is published to a site."}), 400
+        if turn and seen.get(turn):
+            return jsonify({"ok": True, "duplicate": True,
+                            "message": "Already published."})
+        org_id = item.get("org_id")
+        candidates = sites_service.list_sites(org_id)
+        wanted = str(args.get("site_domain") or args.get("domain") or "").strip().lower()
+        site = None
+        if wanted:
+            site = next((s for s in candidates
+                         if (s.get("domain") or "").lower() == wanted), None)
+            if not site:
+                return jsonify({"error": "No site with that domain for this client.",
+                                "domains": [s["domain"] for s in candidates[:8]]}), 404
+        elif item.get("site_id"):
+            site = sites_service.get_site(int(item["site_id"]))
+        elif len(candidates) == 1:
+            site = candidates[0]
+        elif candidates:
+            return jsonify({"error": "This client has several sites. Ask which domain to "
+                                     "publish to.",
+                            "domains": [s["domain"] for s in candidates[:8]]}), 400
+        if not site:
+            return jsonify({"error": "This client has no site yet. Add a domain in the "
+                                     "Domains tab first."}), 400
+        actor = session.get("email") or session.get("name") or "operator"
+        try:
+            result = deliverables_service.publish_deliverable(
+                item["id"], site_id=site["id"], actor=actor)
+        except deliverables_service.DeliverableError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if turn:
+            seen[turn] = "publish"
+        if result.get("dry_run"):
+            message = "[dry-run] would publish %r to %s" % (item.get("title"),
+                                                            site["domain"])
+        else:
+            message = "Published %r to %s" % (item.get("title"), site["domain"])
+        if result.get("warning"):
+            message += ". " + result["warning"]
+        return jsonify({"ok": True, "url": result.get("url") or "",
+                        "message": message})
+
     if name == "answer_team_question":
         answers = args.get("answers", args.get("answer", ""))
         if isinstance(answers, (list, tuple)):

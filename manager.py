@@ -37,6 +37,17 @@ SYSTEM = (
     "without asking and without waiting for them to say remember. Do not save one-off "
     "requests for the current draft, and do not repeat a rule already in the client "
     "context. If they correct the same thing twice, save the correction.\n"
+    "You can publish a website page. When the user asks, call publish_page; if the "
+    "client has more than one site, ask which domain first, and say the page and the "
+    "domain in your reply. Publishing is a live write with the user's name on the "
+    "approval row.\n"
+    "When you have just built a NEW website, offer the pieces that usually go around "
+    "it - a contact form with a link on the page, a follow-up email template, and an "
+    "automation that sends it - as one short question. Build them only when the user "
+    "says yes, and never add them to an existing page unless asked.\n"
+    "Before calling apply_automation, explain in plain language what triggers it and "
+    "what it does, then ask for confirmation with ask_user. Apply only after a yes; "
+    "the send inside it still needs its own approval when it runs.\n"
     "Ask before you guess, but only when it matters. If the brief is vague - under about a "
     "dozen words, or missing what the thing is for - call ask_user with at most three "
     "short questions whose answers would change the output: for an email, who it goes to "
@@ -58,7 +69,8 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
-           "create_form", "list_forms", "remember_preference")
+           "create_form", "list_forms", "remember_preference", "publish_page",
+           "add_form_link", "apply_automation")
 
 
 import json

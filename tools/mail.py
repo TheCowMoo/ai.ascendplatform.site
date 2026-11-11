@@ -106,6 +106,23 @@ def _build_send_email(emit, job_id=None):
             return "Not sent: %s" % authorisation["reason"]
         if authorisation["dry_run"]:
             return "[dry-run] would email %s (subject: %s)" % (", ".join(recipients), subject)
+        # A client with their own GoHighLevel sends through it; SMTP is the fallback for
+        # everyone else. A GHL failure is reported rather than retried over SMTP: the
+        # identity would be the operator's mailbox, which is a worse bug than a failure.
+        import platform_mail
+
+        if org is not None and platform_mail.is_configured(org):
+            import html as html_mod
+
+            body_html = "<p>%s</p>" % html_mod.escape(body).replace("\n", "<br>")
+            try:
+                for address in recipients:
+                    platform_mail.send(address, subject or "(no subject)", body_html,
+                                       org_id=org)
+            except platform_mail.MailError as exc:
+                return "Sending through GoHighLevel failed: %s" % exc
+            return "Sent via GoHighLevel to %s" % ", ".join(recipients)
+
         if not host(org) or not sender(org):
             return "SMTP_HOST and SMTP_FROM (or SMTP_USER) must be set to send email."
 

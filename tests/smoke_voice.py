@@ -57,7 +57,7 @@ def test_setup_declares_team_tools():
     setup = voice.setup()["setup"]
     names = [item["name"] for item in setup["tools"][0]["functionDeclarations"]]
     check("the voice can delegate and answer", names,
-          ["delegate_to_team", "answer_team_question"])
+          ["delegate_to_team", "answer_team_question", "publish_page"])
     check("it asks for audio back", setup["generationConfig"]["responseModalities"], ["AUDIO"])
     check("it asks for the user's words", setup.get("inputAudioTranscription"), {})
     check("it asks for its own words", setup.get("outputAudioTranscription"), {})
@@ -317,7 +317,7 @@ def test_the_routes():
         check("the setup carries the tools",
               [item["name"] for item in
                data["setup"]["setup"]["tools"][0]["functionDeclarations"]],
-              ["delegate_to_team", "answer_team_question"])
+              ["delegate_to_team", "answer_team_question", "publish_page"])
 
         voice.model_availability = lambda: {
             "ok": False, "checked": True, "model": voice.model(),
