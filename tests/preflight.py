@@ -32,6 +32,7 @@ FAST_SUITES = (
     "smoke_stock_media",
     "test_artifact_paths",
     "smoke_assistant_sessions",
+    "test_chat_thread",
     "test_dns_records",
     "test_auto_provision",
     "test_provision_approval",
@@ -278,6 +279,15 @@ def check_js():
             raise AssertionError("the studio draft harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("studio draft harness OK")
+
+    # The active chat is shared by the Studio, the sheet and the voices.
+    harness = os.path.join(ROOT, "tests", "studio_session.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the studio session harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("studio session harness OK")
 
     # The grouped nav is data: a dropped child or a duplicate hash is a dead page.
     harness = os.path.join(ROOT, "tests", "nav_groups.mjs")

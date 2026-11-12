@@ -400,11 +400,39 @@
     if (final) emitTurn(last);
   }
 
-  function emitTurn(turn) {
-    if (!turn || !turn.text || !state.opts.onTurn) return;
+  function persistTurn(turn) {
+    // One thread for typing and speaking. The server session is the transcript; the
+    // caller's onTurn is only the visible copy. The scripted welcome/tour set
+    // persistTurns:false and start a session only when the user asks for real work.
+    var target = state.opts && state.opts.sessionId;
+    if (!target || !turn || !turn.text || state.opts.persistTurns === false) return;
+    if (turn.role === 'user' && state.opts.serverStoredText &&
+        turn.text === state.opts.serverStoredText) {
+      // The welcome's first work request was stored server-side with the job id;
+      // persisting the same words again would duplicate the first turn.
+      state.opts.serverStoredText = '';
+      return;
+    }
     try {
-      state.opts.onTurn({ role: turn.role, text: turn.text, final: true });
-    } catch (e) { /* the transcript is ours; the caller's copy is a bonus */ }
+      fetch('/api/assistant/sessions/' + encodeURIComponent(target) + '/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: turn.role === 'user' ? 'user' : 'assistant',
+          content: turn.text
+        })
+      }).catch(function () { /* the audible thread still worked */ });
+    } catch (e) { /* no fetch is not a reason to stop the voice */ }
+  }
+
+  function emitTurn(turn) {
+    if (!turn || !turn.text) return;
+    if (state.opts.onTurn) {
+      try {
+        state.opts.onTurn({ role: turn.role, text: turn.text, final: true });
+      } catch (e) { /* the transcript is ours; the caller's copy is a bonus */ }
+    }
+    persistTurn(turn);
   }
 
   function finalizeTurn(role) {
@@ -1244,6 +1272,10 @@
     var generation = state.generation;
 
     var body = { name: call.name, args: call.args || {}, turn_id: turnId };
+    // The spoken request is part of the same conversation as typing. The server checks
+    // this id against the signed-in user and acting client; a welcome with no session
+    // sends none, and the response starts one.
+    if (state.opts && state.opts.sessionId) body.session_id = state.opts.sessionId;
     // The canvas on screen is part of a spoken request, not just a typed one. The server
     // validates the id against this session's client; the model never learns a job id
     // or a tenant from it.
@@ -1272,6 +1304,18 @@
       var data = result.data || {};
       var message = data.message || data.error ||
         (result.ok ? 'The team has it.' : 'The team could not take that request.');
+      if (data.session_id && state.opts) {
+        // The welcome's first work request started the thread on the server. Keep it
+        // for the rest of this voice session and let the caller remember it too.
+        if (!state.opts.sessionId) {
+          state.opts.sessionId = data.session_id;
+          state.opts.persistTurns = true;
+          state.opts.serverStoredText = detail;
+          if (typeof state.opts.onSession === 'function') {
+            try { state.opts.onSession(data.session_id); } catch (e) { /* hook */ }
+          }
+        }
+      }
       if (data.job_id) {
         if (state.opts.onJob) {
           try { state.opts.onJob(data.job_id, message); } catch (e) { /* a hook is not the product */ }
@@ -1305,6 +1349,7 @@
     resetTeam();
 
     state.opts = options || {};
+    if (state.opts.persistTurns === undefined) state.opts.persistTurns = true;
     mountHost(state.opts.host || null);
     state.session = null;
     state.introSent = false;

@@ -654,6 +654,47 @@ home/subpage, replacement and per-file restore; `test_fetch_page.py` runs a loca
 `tests/publish_state.mjs` pins the console wiring. Migration head is `0028_site_version_path`.
 
 
+## One chat thread across typing, the Ask sheet and voice (2026-11-12)
+
+Before this, the Studio typed chat used `assistant_sessions`, the floating Ask sheet kept
+its own last-8 array (`history: history.slice(-8)`), and the voice sent no session at all.
+Closing the sheet started a blank conversation, the voice Manager never saw the typed
+turns, and the sheet's voice turns never reached the Manager. The thread is now one server
+session per user + acting client:
+
+* `admin.js` has `studioSessionKey()` / `readStudioSession()` / `writeStudioSession()` next
+  to the draft store, plus `ensureChatSession()` creating the session on first use. The key
+  is still `studio:session:<acting-client>:<user>`, so existing Studio sessions survive.
+  The Studio starts from it, `sendTurn` adopts it if a sheet made it, and **+ New** clears
+  it. The sheet has a **New** control with the same meaning.
+* The Ask sheet loads the active session's messages when it opens, renders the last 30,
+  and sends `session_id` on every typed turn instead of a browser `history`. Its screen
+  hint goes in a `context` field to `POST /api/manager/chat`; the server puts that in the
+  Manager prompt but stores only the user's words, so the chat title is not
+  `[context: ...]`. A stale session is cleared and retried once, in the Studio and the
+  sheet.
+* `voice.js` sends `session_id` on `/api/voice/tool` calls and persists each final
+  user/assistant voice turn to `/api/assistant/sessions/<id>/messages`. The callers'
+  `onTurn` is only the visible copy. The Studio no longer double-persists.
+* `POST /api/voice/tool` validates the session against the signed-in user and acting
+  client, adds a compact `Conversation so far:` transcript to the Manager prompt (newest
+  turns first when trimming; the draft block stays first, the instruction last, inside the
+  4000-character follow-up cap), and returns `session_id`. A supplied but unknown id is a
+  404 for the client to retry; a missing id is the scripted welcome.
+* The welcome and tour are **not** a chat. They open with `persistTurns: false` and no
+  session. If the user asks for real work there, the route creates the first session,
+  stores that request as a user turn linked to the job (so `record_reply_for_job` stores
+  the detailed Manager answer), returns the id, and the voice client persists subsequent
+  turns. The scripted welcome/tour turns never enter the thread.
+* `studio:session` has no schema change; `assistant_sessions` / `assistant_messages`
+  already held the data. Past sheet-only turns were never stored and cannot be recovered.
+
+Tests: `tests/test_chat_thread.py` (typed history, voice job history, welcome first
+request, foreign/stale session), `tests/studio_session.mjs` (shared store and sheet/Studio
+wiring), and `tests/voice_ui.mjs` (`session_id` on the tool call and both spoken turns
+posted to the session). The full preflight includes all three.
+
+
 ## Usage & credits (2026-11-01, phase 1: meter only)
 
 Every billable call is recorded with the token split the provider actually billed, and

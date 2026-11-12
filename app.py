@@ -2583,6 +2583,27 @@ def voice_usage():
     return jsonify(settled)
 
 
+def _voice_assistant_session(raw):
+    """``(assistant_session, error_response)`` for a spoken request.
+
+    The voice is one door into the same thread as typing. A supplied id is checked
+    against this user and acting client; a missing id is allowed for the scripted
+    welcome, which creates a session only when the user asks for real work. A supplied
+    but unknown id is a 404, never a silent new thread - the caller clears and retries.
+    """
+    if raw in (None, ""):
+        return None, None
+    try:
+        session_id = int(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "session_id must be a number"}), 400)
+    assistant_session = assistant_service.get_session(
+        session_id, session.get("user_id"), current_org())
+    if not assistant_session:
+        return None, (jsonify({"error": "That chat was not found"}), 404)
+    return assistant_session, None
+
+
 @app.route("/api/voice/tool", methods=["POST"])
 @login_required
 def voice_tool():
@@ -2704,6 +2725,14 @@ def voice_tool():
         return jsonify({"error": "The team's assistant is not configured. Add an AI "
                                  "provider key in Settings -> AI providers."}), 503
 
+    assistant_session = None
+    if name in ("delegate_to_team", "answer_team_question"):
+        assistant_session, session_error = _voice_assistant_session(
+            data.get("session_id"))
+        if session_error:
+            return session_error
+    created_thread = False
+
     if name == "answer_team_question":
         previous_id = session.get("voice_job_id")
         if not previous_id:
@@ -2748,11 +2777,21 @@ def voice_tool():
             "question with ask_user; otherwise finish the work and report what you did."
             % (context or "(none stored)", question_text, answers_text)
         )
+        if assistant_session is None:
+            assistant_session = assistant_service.create_session(
+                session.get("user_id"), current_org(), title=answers_text,
+                deliverable_id=previous.get("deliverable_id"))
+            created_thread = True
         job_id = jobs.create_job(
             "Voice follow-up", prompt, session.get("user_id"), "selector", "chat",
             org_id=previous.get("org_id"),
             deliverable_id=previous.get("deliverable_id"),
             read_only=bool(previous.get("read_only")))
+        if created_thread:
+            # The scripted welcome had no thread. This answer is the first real turn,
+            # so link it to the job and let record_reply_for_job store the answer.
+            assistant_service.add_message(assistant_session["id"], "user", answers_text,
+                                          job_id=job_id)
         jobs.submit(job_id)
         session["voice_job_id"] = job_id
         if turn:
@@ -2761,22 +2800,38 @@ def voice_tool():
                 seen.clear()
         session["voice_calls"] = calls + 1
         return jsonify({"ok": True, "job_id": job_id, "continued": True,
+                        "session_id": assistant_session["id"],
                         "message": "The team has your answer and is continuing."}), 202
 
-    # A spoken edit of the draft on screen carries the same context a typed one does.
-    # The content is capped smaller than the typed path: answer_team_question copies
-    # this prompt with a 4000-character cap, and a block that fits keeps its content.
-    voice_prompt = instruction_text
-    if artifact_item:
-        voice_prompt = "%s\n\n%s" % (
-            studio_service.deliverable_block(artifact_item, content_limit=2600),
-            instruction_text)
+    # The draft on screen stays first: answer_team_question copies this prompt with a
+    # 4000-character cap, and the draft id must never be what gets cut. The conversation
+    # is next, compact and newest-first-trimmed; the instruction is last.
+    block = (studio_service.deliverable_block(artifact_item, content_limit=2600)
+             if artifact_item else "")
+    history = ""
+    if assistant_session:
+        budget = max(400, 3600 - len(block) - len(instruction_text) - 80)
+        history = assistant_service.history_text(
+            assistant_session["id"], limit=6, width=300, max_chars=budget)
+    history_block = ("Conversation so far:\n" + history) if history else ""
+    voice_prompt = "\n\n".join(
+        part for part in (block, history_block, instruction_text) if part)
+    if assistant_session is None:
+        # The scripted welcome had no thread. The first real request starts one; the
+        # request is linked to the job so record_reply_for_job stores the answer.
+        assistant_session = assistant_service.create_session(
+            session.get("user_id"), current_org(), title=instruction_text,
+            deliverable_id=(artifact_item["id"] if artifact_item else None))
+        created_thread = True
     import intent
 
     job_id = jobs.create_job("Voice request", voice_prompt, session.get("user_id"),
                              "selector", "chat", org_id=current_org(),
                              deliverable_id=(artifact_item["id"] if artifact_item else None),
                              read_only=intent.looks_read_only(instruction_text))
+    if created_thread:
+        assistant_service.add_message(assistant_session["id"], "user", instruction_text,
+                                      job_id=job_id)
     jobs.submit(job_id)
     session["voice_job_id"] = job_id
     if turn:
@@ -2785,6 +2840,7 @@ def voice_tool():
             seen.clear()
     session["voice_calls"] = calls + 1
     return jsonify({"ok": True, "job_id": job_id,
+                    "session_id": assistant_session["id"],
                     "message": "Working on it - the team has the request."}), 202
 
 
@@ -3868,6 +3924,10 @@ def manager_chat():
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "Say something first"}), 400
+    # The screen the user is on is prompt context, not part of the conversation. The
+    # floating sheet used to prepend "[context: ...]" to the message, which then became
+    # the chat title and the stored turn. Keep the stored turn as the user's words.
+    context = " ".join(str(data.get("context") or "").split())[:300]
     # The Studio names the artifact on its canvas. Validate before the provider check, so
     # an unusable draft is a 404 with a reason rather than a 503 about API keys.
     artifact_item, artifact_error = _studio_artifact(data.get("artifact"))
@@ -3885,9 +3945,9 @@ def manager_chat():
                                      "default, and Gemini or Claude also work."}), 503
         return jsonify({"error": "The AI assistant is not set up for this workspace yet. "
                                  "Your agency configures the model keys."}), 503
-    # The Assistant page names its session; the floating sheet and Manager page still
-    # send their own history. A session's history comes from the server, never from the
-    # browser, so "continue" means the same thing after a reload or another device.
+    # Every chat door names its session now. The `history` fallback remains for the old
+    # Manager panel and older clients, but the Studio and the Ask sheet use the server
+    # transcript, so "continue" means the same thing after a reload or another device.
     assistant_session = None
     session_id = data.get("session_id")
     if session_id not in (None, ""):
@@ -3918,6 +3978,8 @@ def manager_chat():
                 lines.append("%s: %s" % (turn.get("role", "user"),
                                           str(turn["content"])[:800]))
     prompt = ("%s\n\n%s" % ("\n".join(lines), message)) if lines else message
+    if context:
+        prompt = "[context: the user is on the %s]\n\n%s" % (context, prompt)
     # The editor says what the user has open, so "add an approval before the publish step"
     # revises that graph instead of drafting a new one. Plain text: the model needs the id
     # in front of it to pass it to propose_automation.

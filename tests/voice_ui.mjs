@@ -147,6 +147,7 @@ Object.defineProperty(window, 'navigator', { value: navigator, configurable: tru
 const listeners = {};
 window.addEventListener = (type, handler) => { listeners[type] = handler; };
 const toolCalls = [];
+const sessionTurns = [];
 const closes = [];
 const jobs = {
   7: {
@@ -176,6 +177,10 @@ window.fetch = async (url, options) => {
     const jobId = body.name === 'answer_team_question' ? 8 : 7;
     return { ok: true, status: 202,
              json: async () => ({ message: 'Working on it.', job_id: jobId }) };
+  }
+  if (url.indexOf('/api/assistant/sessions/') === 0) {
+    sessionTurns.push({ url, body: JSON.parse((options && options.body) || '{}') });
+    return { ok: true, status: 201, json: async () => ({ message: {} }) };
   }
   if (url.indexOf('/api/jobs/') === 0) {
     const id = Number(url.split('/api/jobs/')[1].split('/')[0]);
@@ -306,7 +311,7 @@ const host = new Node('div');
 document.body.appendChild(host);
 const studioCanvas = { kind: 'deliverable', id: 42 };
 assert.equal(await Voice.open({
-  page: 'studio', host, getContext: () => studioCanvas
+  page: 'studio', host, sessionId: 77, getContext: () => studioCanvas
 }), true, 'a docked session opens');
 ws = FakeWebSocket.last;
 ws.onopen();
@@ -328,6 +333,8 @@ const dockedCall = toolCalls[toolCalls.length - 1];
 assert.equal(dockedCall.name, 'delegate_to_team', 'the docked call delegates');
 assert.deepEqual(dockedCall.artifact, { kind: 'deliverable', id: 42 },
                  'the request carries the artifact on screen');
+assert.equal(dockedCall.session_id, 77,
+             'the spoken request carries the active chat session');
 
 // The hook is read when the call is made, not when the session opened: the user may
 // pick another draft while the dialogue is still running.
@@ -346,5 +353,25 @@ assert.equal(document.body.children.filter(
   (node) => node.className === 'voice-overlay').length, 1,
   'the overlay is still the one panel owner');
 
-console.log('VOICE UI OK - the gate, the transcripts and the failure paths');
+// ---------- The voice writes into the same chat session ----------
+// A spoken turn is a chat turn. The caller's onTurn is only the visible copy; the
+// session endpoint is what lets the typed chat continue after the voice closes.
+assert.equal(await Voice.open({ page: 'thread', sessionId: 55 }), true,
+             'a session-backed voice opens');
+ws = FakeWebSocket.last;
+ws.onopen();
+binaryMessage(ws, { setupComplete: {} });
+message(ws, { serverContent: { inputTranscription: { text: 'hello there' } } });
+message(ws, { serverContent: { outputTranscription: { text: 'hi back' } } });
+message(ws, { serverContent: { turnComplete: true } });
+await new Promise((resolve) => setTimeout(resolve, 30));
+assert.deepEqual(sessionTurns.map((turn) => turn.body), [
+  { role: 'user', content: 'hello there' },
+  { role: 'assistant', content: 'hi back' }
+], 'both spoken turns land in the assistant session');
+assert.equal(sessionTurns[0].url, '/api/assistant/sessions/55/messages',
+             'the turn goes to the active chat session');
+Voice.stop();
+
+console.log('VOICE UI OK - the gate, the transcripts, the shared thread and the failure paths');
 

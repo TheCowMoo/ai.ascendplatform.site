@@ -116,6 +116,29 @@ def list_messages(session_id, limit=200):
     return [_as_dict(row) for row in reversed(rows)]
 
 
+def history_text(session_id, limit=6, width=300, max_chars=1200):
+    """A compact transcript for a prompt: newest turns win, oldest are dropped first.
+
+    The voice follow-up copies the previous prompt with a 4000-character cap, so the
+    voice cannot spend the whole budget on history. Keeping the newest lines preserves
+    "what we were just doing" rather than the start of a long conversation.
+    """
+    messages = list_messages(session_id, limit=limit)
+    lines = []
+    used = 0
+    for message in reversed(messages):
+        text = " ".join(str(message.get("content") or "").split())
+        if not text:
+            continue
+        line = "%s: %s" % (message.get("role") or "user", text[:max(0, int(width))])
+        extra = len(line) + (1 if lines else 0)
+        if lines and used + extra > max(0, int(max_chars)):
+            break
+        lines.append(line)
+        used += extra
+    return "\n".join(reversed(lines))
+
+
 def get_session_with_messages(session_id, user_id, org_id=None, limit=200):
     session = get_session(session_id, user_id, org_id)
     if not session:

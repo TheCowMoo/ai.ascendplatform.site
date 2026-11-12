@@ -389,7 +389,9 @@ def test_the_routes():
                        json={"name": "delegate_to_team", "turn_id": "turn-1",
                              "args": {"instruction": "build a trip quiz"}})
     check("a delegation is accepted", made.status_code, 202)
-    job_id = (made.get_json() or {}).get("job_id")
+    made_data = made.get_json() or {}
+    job_id = made_data.get("job_id")
+    voice_session = made_data.get("session_id")
     check("and starts a normal manager job", bool(job_id), True)
     with db.get_connection() as conn:
         after = conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE title = 'Voice request'"
@@ -414,6 +416,7 @@ def test_the_routes():
     check("a pending question accepts an answer", answered.status_code, 202)
     answer_data = answered.get_json() or {}
     follow_id = answer_data.get("job_id")
+    follow_session = answer_data.get("session_id")
     check("the answer continues in a new job", bool(follow_id) and follow_id != job_id, True)
     check("and says it is continuing", answer_data.get("continued"), True)
     follow = {}
@@ -443,6 +446,15 @@ def test_the_routes():
         conn.execute("DELETE FROM job_events WHERE job_id IN (?, ?)",
                      (ids[0], ids[-1]))
         conn.execute("DELETE FROM jobs WHERE id IN (?, ?)", (ids[0], ids[-1]))
+        # This route now starts a real chat session; leaving it in the shared test
+        # database makes another suite see a thread it never created.
+        sessions = [voice_session, follow_session]
+        for session_id in sessions:
+            if not session_id:
+                continue
+            conn.execute("DELETE FROM assistant_messages WHERE session_id = ?",
+                         (session_id,))
+            conn.execute("DELETE FROM assistant_sessions WHERE id = ?", (session_id,))
     llm.configured_providers = original_providers
 
 
@@ -525,7 +537,7 @@ def test_the_browser_half_is_wired():
           "assistOrb();" in admin_js and "startTour(false);" in admin_js, True)
     check("the tour remembers being seen", "'tour:' +" in admin_js, True)
     check("the sheet sends page context with the question",
-          "the user is on the '" in admin_js, True)
+          "context: where" in admin_js and "var where = record ?" in admin_js, True)
     check("and names the record when there is one",
           "screen, record #" in admin_js, True)
 

@@ -4667,6 +4667,58 @@
     } catch (e) { /* private mode: the chat session still remembers it */ }
   }
 
+  // The active conversation is shared by every chat door: the Studio, the floating Ask
+  // sheet, and their voices. Only "New chat" clears it. The key was previously local to
+  // the Studio view, which is why the sheet and voice could not continue its thread.
+  function studioSessionKey() {
+    return 'studio:session:' + studioOrgKey() + ':' + ((state.user && state.user.id) || 0);
+  }
+
+  function readStudioSession() {
+    try {
+      return parseInt(localStorage.getItem(studioSessionKey()), 10) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeStudioSession(value) {
+    var id = parseInt(value, 10) || null;
+    try {
+      if (id) localStorage.setItem(studioSessionKey(), String(id));
+      else localStorage.removeItem(studioSessionKey());
+    } catch (e) { /* private mode: the session still works for this visit */ }
+    // The first-run welcome and the tour can create the first session while the
+    // Studio is already mounted. A light event lets the mounted thread adopt it.
+    try {
+      if (typeof window !== 'undefined' && typeof CustomEvent === 'function' &&
+          window.dispatchEvent) {
+        window.dispatchEvent(new CustomEvent('ascend:chat-session', { detail: id }));
+      }
+    } catch (e) { /* the store is still the source of truth */ }
+    return id;
+  }
+
+  var chatSessionPending = null;
+
+  function ensureChatSession() {
+    var stored = readStudioSession();
+    if (stored) return Promise.resolve(stored);
+    if (!state.user) return Promise.resolve(null);
+    if (chatSessionPending) return chatSessionPending;
+    chatSessionPending = api('POST', '/api/assistant/sessions', {})
+      .then(function (d) {
+        var created = (d && d.session) || {};
+        return created.id ? writeStudioSession(created.id) : null;
+      })
+      .catch(function () { return null; })
+      .then(function (id) {
+        chatSessionPending = null;
+        return id;
+      });
+    return chatSessionPending;
+  }
+
   // ---------- Studio: chats on the left, the conversation, the artifact ----------
   // The workspace's main tool: one conversation per job, the page it is changing beside
   // it, and the draft named on every turn. The old Assistant page was the same manager
@@ -4842,12 +4894,18 @@
     var voiceWaiting = false;      // the team asked by voice and has not been answered
     var typedAnswer = false;       // the user chose to answer that question by typing
     var previewMobile = false;
-    var sessionPending = null;
-    var orgKey = studioOrgKey();
-    var sessionKey = 'studio:session:' + orgKey + ':' + ((state.user && state.user.id) || 0);
-    var sessionId = (function () {
-      try { return parseInt(localStorage.getItem(sessionKey), 10) || null; } catch (e) { return null; }
-    })();
+    var sessionId = readStudioSession();
+    // The welcome/tour voice can create the first session after this view mounted.
+    // Adopt it and render its thread; our own saveSessionId calls arrive here too and
+    // fall out on the equality check.
+    window.addEventListener('ascend:chat-session', function (event) {
+      var next = parseInt(event && event.detail, 10) || null;
+      if (next === sessionId) return;
+      if (!next) { saveSessionId(null); return; }
+      saveSessionId(next);
+      openSession(next, { quiet: true, keepCanvas: true, keepPane: true,
+                          keepCanvasIfEmpty: true });
+    });
 
     function setTab(name) {
       livePane.hidden = name !== 'live';
@@ -4956,11 +5014,7 @@
 
     // ----- the thread's server session -----
     function saveSessionId(value) {
-      sessionId = value || null;
-      try {
-        if (sessionId) localStorage.setItem(sessionKey, String(sessionId));
-        else localStorage.removeItem(sessionKey);
-      } catch (e) { /* private mode: the thread still works for this visit */ }
+      sessionId = writeStudioSession(value);
     }
 
     function renderSessions() {
@@ -5063,31 +5117,14 @@
     }
 
     function ensureSession() {
+      var stored = readStudioSession();
+      if (stored && stored !== sessionId) saveSessionId(stored);
       if (sessionId) return Promise.resolve(sessionId);
-      if (sessionPending) return sessionPending;
-      sessionPending = api('POST', '/api/assistant/sessions', {}).then(function (d) {
-        var created = (d && d.session) || {};
-        if (created.id) {
-          saveSessionId(created.id);
-          rememberDraft();       // a draft opened before the chat existed
-        }
-        return sessionId;
-      }).catch(function () { return null; }).then(function (value) {
-        sessionPending = null;
-        return value;
+      return ensureChatSession().then(function (id) {
+        if (id) saveSessionId(id);
+        rememberDraft();         // a draft opened before the chat existed
+        return id;
       });
-      return sessionPending;
-    }
-
-    function persistTurn(role, text) {
-      var content = String(text || '').trim();
-      if (!content) return;
-      ensureSession().then(function (studioSession) {
-        if (!studioSession) return null;
-        return api('POST', '/api/assistant/sessions/' + studioSession + '/messages',
-                   { role: role, content: content });
-      }).then(function () { loadSessions(); })
-        .catch(function () { /* the turn is on screen; a lost save is not a toast */ });
     }
 
     // ----- the artifact on the canvas -----
@@ -5423,20 +5460,37 @@
       typedAnswer = false;
       updateComposerState();
       pendingWait = thinking();
+      var active = sessionId || readStudioSession();
+      if (active && active !== sessionId) saveSessionId(active);
       var payload = { message: text };
-      if (sessionId) payload.session_id = sessionId;
+      if (active) payload.session_id = active;
       else payload.create_session = true;
       var artifact = artifactRef();
       if (artifact) payload.artifact = artifact;
-      api('POST', '/api/manager/chat', payload).then(function (d) {
-        if (d.session_id) saveSessionId(d.session_id);
-        typedJobs[d.job_id] = true;
-        if (pendingWait) pendingWait.phase('Reading the draft\u2026');
-        watchJob(d.job_id);
-        loadSessions();          // a first turn titles the chat and puts it in the rail
-        sending = false;
-        refreshBusy();
-      }).catch(function (e) {
+      function postTurn(data, retried) {
+        return api('POST', '/api/manager/chat', data).then(function (d) {
+          if (d.session_id) saveSessionId(d.session_id);
+          typedJobs[d.job_id] = true;
+          if (pendingWait) pendingWait.phase('Reading the draft\u2026');
+          watchJob(d.job_id);
+          loadSessions();          // a first turn titles the chat and puts it in the rail
+          sending = false;
+          refreshBusy();
+        }).catch(function (e) {
+          if (!retried && e.status === 404 && e.message === 'That chat was not found') {
+            // The chat was deleted in another tab or by a workspace cleanup. A new
+            // session keeps this turn instead of losing the thread on a dead id.
+            saveSessionId(null);
+            return ensureChatSession().then(function (id) {
+              if (id) data.session_id = id;
+              else { delete data.session_id; data.create_session = true; }
+              return postTurn(data, true);
+            });
+          }
+          throw e;
+        });
+      }
+      postTurn(payload, false).catch(function (e) {
         sending = false;
         if (pendingWait) { pendingWait.done(); pendingWait = null; }
         bubble('them', e.message);
@@ -5503,38 +5557,45 @@
       if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
       if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
       if (busy) return;
-      voiceHost.hidden = false;
-      window.AscendVoice.open({
-        page: 'studio',
-        source: 'studio',
-        host: voiceHost,
-        compact: true,
-        // Read by the voice when it delegates, so "make it warmer" means the page on
-        // screen even if the user picked another draft mid-sentence.
-        getContext: artifactRef,
-        onState: function (phase, label) {
-          voiceOn = ['connecting', 'listening', 'thinking', 'speaking'].indexOf(phase) !== -1;
-          voiceNote.textContent = voiceOn ? 'Voice: ' + label : '';
-          if (!voiceOn) { voiceWaiting = false; typedAnswer = false; }
-          updateComposerState();
-        },
-        onTurn: function (turn) {
-          bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
-          persistTurn(turn.role === 'user' ? 'user' : 'assistant', turn.text);
-        },
-        onJob: function (jobId) {
-          voiceWaiting = false;
-          typedAnswer = false;
-          watchJob(jobId);
-        },
-        onClose: function () {
-          voiceOn = false;
-          voiceWaiting = false;
-          typedAnswer = false;
-          voiceHost.hidden = true;
-          voiceNote.textContent = '';
-          updateComposerState();
-        }
+      // The voice is the same thread as typing: it must start from the active session,
+      // not a fresh Manager prompt. The voice client persists each final turn into it.
+      ensureSession().then(function (studioSession) {
+        if (!studioSession) { toast('The chat could not be started.', false); return; }
+        voiceHost.hidden = false;
+        window.AscendVoice.open({
+          page: 'studio',
+          source: 'studio',
+          host: voiceHost,
+          compact: true,
+          sessionId: studioSession,
+          onSession: function (id) { saveSessionId(id); },
+          // Read by the voice when it delegates, so "make it warmer" means the page on
+          // screen even if the user picked another draft mid-sentence.
+          getContext: artifactRef,
+          onState: function (phase, label) {
+            voiceOn = ['connecting', 'listening', 'thinking', 'speaking'].indexOf(phase) !== -1;
+            voiceNote.textContent = voiceOn ? 'Voice: ' + label : '';
+            if (!voiceOn) { voiceWaiting = false; typedAnswer = false; }
+            updateComposerState();
+          },
+          onTurn: function (turn) {
+            bubble(turn.role === 'user' ? 'me' : 'them', turn.text);
+            loadSessions();       // the voice client saved the turn to the session
+          },
+          onJob: function (jobId) {
+            voiceWaiting = false;
+            typedAnswer = false;
+            watchJob(jobId);
+          },
+          onClose: function () {
+            voiceOn = false;
+            voiceWaiting = false;
+            typedAnswer = false;
+            voiceHost.hidden = true;
+            voiceNote.textContent = '';
+            updateComposerState();
+          }
+        });
       });
     };
 
@@ -7944,7 +8005,6 @@
     fab.id = 'mgr-fab';
     var panel = el('div', 'mgr-panel hidden');
     var log = el('div', 'mgr-log');
-    var history = [];   // last few turns, so a follow-up question has something to follow
     var say = el('input');
     say.placeholder = 'Ask about traffic, sites or drafts…';
     var send = el('button', 'mgr-send', '↑');
@@ -7995,16 +8055,18 @@
       if (!text) return;
       say.value = '';
       line(text, 'mgr-msg mine');
-      history.push({ role: 'user', content: text });
       var thinking = el('span', 'activity running');
       log.appendChild(thinking);
       send.disabled = true;
-      api('POST', '/api/manager/chat', {
-        message: text,
-        history: history.slice(-8),
-        // Tells the manager which graph the user is looking at, so a change request
-        // revises it instead of drafting a second automation.
-        automation_id: state.openAutomation || 0
+      ensureChatSession().then(function (session) {
+        if (!session) throw new Error('The chat could not be started.');
+        return api('POST', '/api/manager/chat', {
+          message: text,
+          session_id: session,
+          // Tells the manager which graph the user is looking at, so a change request
+          // revises it instead of drafting a second automation.
+          automation_id: state.openAutomation || 0
+        });
       })
         .then(function (d) {
           watchJob(d.job_id, thinking, function () {
@@ -8018,7 +8080,6 @@
                 : (result || ('The assistant could not answer: ' +
                   (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
               line(answer, 'mgr-msg');
-              history.push({ role: 'assistant', content: answer });
               // Questions arrive as their own event, so they get a card with inputs rather
               // than being folded into the answer text where they scroll away.
               var asked = (r.events || []).filter(function (ev) {
@@ -8050,7 +8111,6 @@
                     }
                     reply.disabled = true;
                     line(parts.join(' '), 'mgr-msg me');
-                    history.push({ role: 'user', content: parts.join(' ') });
                     card.parentNode.removeChild(card);
                     // The send handler reads the widget's own box, so the answers go there
                     // and a normal turn carries them - no second code path to keep in step.
@@ -8337,10 +8397,20 @@
       sheet = el('div', 'assist-sheet');
       var head = el('div', 'assist-head');
       head.appendChild(el('strong', null, 'Ask the AI'));
+      var fresh = el('button', 'btn btn-ghost btn-sm', 'New');
+      fresh.onclick = function () {
+        // The only way to start a new thread. Typing, talking and the Studio all share
+        // the same active session until this clears it.
+        writeStudioSession(null);
+        log.innerHTML = '';
+        greeting();
+        input.focus();
+      };
       var toPage = el('button', 'btn btn-ghost btn-sm', 'Full screen');
       toPage.onclick = function () { closeAll(); location.hash = '#/app/studio'; };
       var close = el('button', 'btn btn-ghost btn-sm', '×');
       close.onclick = closeAll;
+      head.appendChild(fresh);
       head.appendChild(toPage);
       head.appendChild(close);
       sheet.appendChild(head);
@@ -8367,8 +8437,31 @@
         return log.lastChild;
       }
 
-      say('them', 'Ask me to build, change or explain anything on this page.');
-      var history = [];
+      function greeting() {
+        log.innerHTML = '';
+        say('them', 'Ask me to build, change or explain anything on this page.');
+      }
+
+      // The sheet used to keep its own last-8 array, so closing it started a blank
+      // conversation and voice turns never reached the Manager. The server session is
+      // the thread now: opening the sheet shows the same one the Studio has.
+      function loadThread() {
+        ensureChatSession().then(function (id) {
+          if (!id) { greeting(); return; }
+          api('GET', '/api/assistant/sessions/' + id).then(function (d) {
+            var messages = (d.messages || []).slice(-30);
+            log.innerHTML = '';
+            if (!messages.length) { greeting(); return; }
+            messages.forEach(function (message) {
+              say(message.role === 'user' ? 'me' : 'them', message.content);
+            });
+          }).catch(function (e) {
+            if (e && e.status === 404) writeStudioSession(null);
+            greeting();
+          });
+        });
+      }
+
       // The hash is the only reliable statement of where the user is: #/app/forms/12/responses
       // is a different question from "the forms screen", and the manager can only ask about a
       // record it has the id for.
@@ -8376,15 +8469,35 @@
       var page = parts[1] || 'home';
       var record = parts[2] || '';
       var where = record ? (page + ' screen, record #' + record) : (page + ' screen');
+      loadThread();
 
       function ask(text) {
         say('me', text);
         var wait = say('them', 'Working…');
-        history.push({ role: 'user', content: text });
-        api('POST', '/api/manager/chat', {
-          message: '[context: the user is on the ' + where + ']\n' + text,
-          history: history.slice(-8), automation_id: state.openAutomation || 0
+        function send(sessionId, retried) {
+          return api('POST', '/api/manager/chat', {
+            message: text,
+            // The screen is prompt context; the server stores the user's words as the
+            // turn, so the chat title is not "[context: ...]".
+            context: where,
+            session_id: sessionId,
+            automation_id: state.openAutomation || 0
+          }).catch(function (e) {
+            if (!retried && e.status === 404 && e.message === 'That chat was not found') {
+              writeStudioSession(null);
+              return ensureChatSession().then(function (id) {
+                if (!id) throw e;
+                return send(id, true);
+              });
+            }
+            throw e;
+          });
+        }
+        ensureChatSession().then(function (id) {
+          if (!id) throw new Error('The chat could not be started.');
+          return send(id, false);
         }).then(function (d) {
+          if (d.session_id) writeStudioSession(d.session_id);
           watchJob(d.job_id, el('span', 'activity running'), function () {
             api('GET', '/api/jobs/' + d.job_id + '/events?after=0').then(function (r) {
               var said = (r.events || []).filter(function (ev) {
@@ -8396,7 +8509,6 @@
                   (jobFailure(r.events) || ('open job #' + d.job_id + ' to see why.'))));
               if (wait.parentNode) wait.parentNode.removeChild(wait);
               say('them', answer);
-              history.push({ role: 'assistant', content: answer });
             }).catch(function () { wait.textContent = 'Something went wrong.'; });
           });
         }).catch(function (e) { wait.textContent = e.message; });
@@ -8417,19 +8529,24 @@
         mic.style.display = '';
         mic.onclick = function () {
           // The sheet stays for typing; Talk hands the screen to the one voice mode. Final
-          // turns land back in this log, so closing the overlay leaves a readable thread.
+          // turns land in this log and in the same session the typed chat uses.
           if (!window.AscendVoice) { toast('The voice client did not load.', false); return; }
           if (window.AscendVoice.running()) { window.AscendVoice.restore(); return; }
-          window.AscendVoice.open({
-            page: page,
-            source: 'sheet',
-            onState: function (phase, label) { mic.title = label; },
-            onTurn: function (turn) {
-              say(turn.role === 'user' ? 'me' : 'them', turn.text);
-            },
-            onJob: function (jobId) {
-              say('them', 'The team is working - job #' + jobId);
-            }
+          ensureChatSession().then(function (id) {
+            if (!id) { toast('The chat could not be started.', false); return; }
+            window.AscendVoice.open({
+              page: page,
+              source: 'sheet',
+              sessionId: id,
+              onSession: function (next) { writeStudioSession(next); },
+              onState: function (phase, label) { mic.title = label; },
+              onTurn: function (turn) {
+                say(turn.role === 'user' ? 'me' : 'them', turn.text);
+              },
+              onJob: function (jobId) {
+                say('them', 'The team is working - job #' + jobId);
+              }
+            });
           });
         };
       }).catch(function () { /* text still works */ });
@@ -8507,6 +8624,10 @@
         window.AscendVoice.open({
           page: 'tour, step: ' + step.title,
           source: 'tour',
+          // The scripted tour is not a chat. A real work request during it creates the
+          // first session; the tour's own turns never enter the thread.
+          persistTurns: false,
+          onSession: function (id) { writeStudioSession(id); },
           onState: function (phase, label) { talk.textContent = label; },
           onTurn: function () {},
           onClose: function () { talk.textContent = 'Talk about this'; }
@@ -8577,6 +8698,10 @@
           page: 'welcome',
           source: 'welcome',
           intro: true,
+          // The welcome is a one-off introduction, not a chat. If the user asks for
+          // real work, the server starts the thread and the voice client hands us its id.
+          persistTurns: false,
+          onSession: function (id) { writeStudioSession(id); },
           onClose: after
         });
         return;
