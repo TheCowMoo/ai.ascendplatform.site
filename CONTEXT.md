@@ -597,6 +597,63 @@ names the draft's current kind and `save_deliverable` prefers the kind the promp
 for. Typing an answer to a *voice* question starts a new
 manager turn with the question and the draft, not the original brief.
 
+## Reviews are read-only; publishing is explicit (2026-11-12)
+
+The QA incident is the reason this section exists. A Manager QA request was delegated with
+`start_job(deliverable_id=33)`, which appended "Save the finished document..." to the child
+prompt; the team had no way to fetch the live page, so it wrote a checklist and saved it over
+draft #33. The live page survived only because nobody republished. Four locks now make that
+path impossible:
+
+1. **Intent at the entry point.** `intent.looks_read_only()` is conservative: explicit
+   "do not change/republish" wording, "read-only", or a review verb on a page/site with no
+   edit verb. `POST /api/manager/chat`, `POST /api/voice/tool`'s `delegate_to_team`, and
+   `POST /api/jobs` record the answer in `jobs.read_only` (migration `0026_job_read_only`).
+   `start_job(..., edit=False)` sets it explicitly; a read-only parent forces every child
+   read-only; a strong no-write prompt forces it even when the caller forgot.
+2. **No write tools.** `manager.granted_for()` and `agents.build_team()` filter a read-only
+   turn through `tools.READ_ONLY_TOOLS`; the roster's `CONTENT_RULE` is replaced by
+   `agents.READ_ONLY_RULE`, so no agent is told to "finish by calling save_deliverable".
+   `start_job` no longer appends the save line; it prepends `READ-ONLY REVIEW`, names the
+   target URL, and tells the team to say what it could not check.
+3. **Tool-level refusal.** `save_deliverable`, `publish_page`, `provision_site` and
+   `write_site_content` check the job row and refuse a read-only job even if a stale roster
+   or leaked tool markup reaches them. The Manager's leaked-markup path (`_run_named`) uses
+   the same allowlist as the structured tool list.
+4. **Real verification.** `webcheck.inspect()` + `tools/web.fetch_page()` fetch one page on
+   this client's site (redirect hosts and private IPs checked), and report status,
+   title/meta, H1/H2, links/images with HTTP status, viewport/media-query markup,
+   placeholders, and whether it is the starter page. `rendered: false` is explicit: it does
+   not claim a visual desktop/mobile check. It is granted to the Manager and the Operator,
+   so the Manager no longer says "I can't load the URL".
+
+**Recovery is still layered.** `deliverable_versions` (migration `0027`) snapshots the
+previous title/content/status before every content change; `GET/POST
+/api/deliverables/<id>/versions...` plus History/Restore in the preview put one back. A
+content change to a published page sets it back to `draft` - publishing is only the publish
+route, and the Pages badge says "draft changes" while the old file is still live.
+`site_versions.path` (migration `0028`) now names the file a snapshot came from; a subpage
+publish records that subpage, not the home page, and `versions.restore()` writes the file
+through the provisioner with an approval row instead of only updating `sites.content_html`.
+
+**Publishing names its target.** `publish_deliverable(..., as_home=False, replace=False)`:
+`as_home` writes `index.html` and records the slug as `index`; otherwise the slug decides
+`/<slug>.html`. Before writing it reads the target. A non-empty, non-starter target with
+different content needs `replace=True`; the console's Publish dialog names the URL and is
+the confirmation, while the voice/Manager tool returns "ask the user" and only proceeds
+after a yes. The starter root (`provisioner.is_starter_content`) may be replaced by the first
+home publish. A subpage publish on a starter root warns that the root is still the starter.
+The dialog defaults to Home page when the site root is the starter; the Manager and voice
+must say the exact URL, root or subpage, not just "live".
+
+`repair_deliverable.py --id N --from-live` is the one-off for a draft whose content was
+destroyed after the page was already live: dry-run by default, prints the live title/H1 and
+size, `--apply` puts the live content back (the contaminated content stays in History).
+Tests: `test_read_only_jobs.py` replays the incident; `test_publish_home.py` covers
+home/subpage, replacement and per-file restore; `test_fetch_page.py` runs a local server;
+`tests/publish_state.mjs` pins the console wiring. Migration head is `0028_site_version_path`.
+
+
 ## Usage & credits (2026-11-01, phase 1: meter only)
 
 Every billable call is recorded with the token split the provider actually billed, and

@@ -784,6 +784,18 @@ def render_index(title="New site", tagline="", body_html="", brand_color="#4f46e
     )
 
 
+STARTER_TEXT = "This site is ready. Add content in the Sites tab."
+
+
+def is_starter_content(content):
+    """True for the placeholder a newly provisioned site serves.
+
+    The first home-page publish may replace this without a confirmation: it is not a
+    page the user wrote. A publish over any other existing content needs one.
+    """
+    return STARTER_TEXT in (content or "")
+
+
 def _services_from_profile(profile):
     raw = (profile or {}).get("services")
     if isinstance(raw, str):

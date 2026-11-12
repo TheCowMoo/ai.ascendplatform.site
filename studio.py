@@ -74,10 +74,14 @@ def deliverable_block(item, content_limit=MAX_CONTENT):
 
     return (
         "[Studio context - the user is looking at deliverable #%d \"%s\" "
-        "(kind: %s, status: %s). Change that draft: call save_deliverable with "
+        "(kind: %s, status: %s).\n"
+        "If the user asks you to change it, edit that draft: call save_deliverable with "
         "deliverable_id=%d, kind=%r, title=%r, and content = the complete updated "
         "document. Do not create a new draft, and do not reply with a diff. Only make a "
-        "new draft if the user explicitly asks for a different page.\n\n"
+        "new draft if the user explicitly asks for a different page.\n"
+        "If the user asks you to check, review, verify, audit or report on this page, "
+        "that turn is READ-ONLY: do not call save_deliverable, do not publish, and do "
+        "not change the draft. Use fetch_page/read tools and answer with the findings.\n\n"
         "Current content of #%d:\n%s]"
         % (deliverable_id, title, kind, status, deliverable_id, kind, title,
            deliverable_id, content)

@@ -16,6 +16,25 @@ import os
 
 _REGISTRY = {}
 
+#: Tools that only read. A read-only job is built from this allowlist, so a review
+#: cannot publish, save, email, provision or upload even if a stale roster still lists
+#: the write tool. Adding a new read tool here is deliberate; adding a write tool is not.
+READ_ONLY_TOOLS = frozenset({
+    "ask_user",
+    "check_site_dns",
+    "current_time",
+    "describe_capabilities",
+    "fetch_page",
+    "get_metrics",
+    "list_deliverables",
+    "list_forms",
+    "list_media",
+    "list_sites",
+    "list_templates",
+    "search_photos",
+    "start_job",
+})
+
 
 def safe_filename(name, default="file", suffixes=()):
     """Sanitise a model-supplied filename for use inside the artifacts directory.
@@ -109,3 +128,4 @@ from . import mail as _mail_tools  # noqa: E402,F401
 from . import deliverable as _deliverable_tools  # noqa: E402,F401
 from . import library as _library_tools  # noqa: E402,F401
 from . import manager as _manager_tools  # noqa: E402,F401
+from . import web as _web_tools  # noqa: E402,F401

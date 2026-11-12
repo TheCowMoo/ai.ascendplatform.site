@@ -239,15 +239,89 @@ def create_deliverable(data, org_id=None, created_by=None):
             ),
         )
         deliverable_id = cur.lastrowid
-    return get_deliverable(deliverable_id)
+    item = get_deliverable(deliverable_id)
+    _record_version(item, job_id=data.get("job_id"))
+    return item
+
+
+def _record_version(item, job_id=None):
+    """Keep the content being replaced, before it is replaced."""
+    if not item:
+        return None
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO deliverable_versions (deliverable_id, org_id, title, content, "
+            "status, job_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (item["id"], item.get("org_id"), item.get("title") or "",
+             item.get("content") or "", item.get("status") or "draft",
+             job_id or item.get("job_id")),
+        )
+        return cur.lastrowid
+
+
+def versions(deliverable_id, limit=20):
+    """Snapshots of this draft, newest first, without the full content."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, deliverable_id, org_id, title, status, job_id, created_at, "
+            "length(content) AS bytes FROM deliverable_versions "
+            "WHERE deliverable_id = ? ORDER BY id DESC LIMIT ?",
+            (deliverable_id, max(1, int(limit))),
+        ).fetchall()
+    return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def get_version(version_id):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM deliverable_versions WHERE id = ?", (version_id,)
+        ).fetchone()
+    return {key: row[key] for key in row.keys()} if row else None
+
+
+def restore_version(deliverable_id, version_id):
+    """Put a stored draft back. The current content is snapshotted first, so this is
+    itself undoable."""
+    item = get_deliverable(deliverable_id)
+    if not item:
+        raise DeliverableError("Deliverable not found")
+    version = get_version(version_id)
+    if not version or version["deliverable_id"] != item["id"]:
+        raise DeliverableError("That version does not belong to this draft.")
+    if (version.get("org_id") is not None
+            and item.get("org_id") is not None
+            and version.get("org_id") != item.get("org_id")):
+        raise DeliverableError("That version belongs to another client.")
+    return update_deliverable(item["id"], {
+        "content": version.get("content") or "",
+        "title": version.get("title") or item.get("title") or "",
+        "status": "draft",
+    })
 
 
 def update_deliverable(deliverable_id, data):
-    """Patch a deliverable. Only the keys present are touched."""
+    """Patch a deliverable. Only the keys present are touched.
+
+    A content change is snapshotted first, and a published page whose content changed is
+    put back to ``draft``: its live file still holds the previous version, and a
+    ``published`` badge on unpublished content is exactly how a QA report came to look
+    live. Publishing sets it back to published after the write.
+    """
     existing = get_deliverable(deliverable_id)
     if not existing:
         return None
     data = data or {}
+    content_changed = (
+        "content" in data
+        and (data.get("content") or "") != (existing.get("content") or "")
+    )
+    if content_changed:
+        _record_version(existing, job_id=data.get("job_id"))
+        if (existing.get("status") or "") == "published":
+            # Publishing is the dedicated route that writes the live file. A content
+            # edit, from any caller, is unpublished until that route runs.
+            data = dict(data)
+            data["status"] = "draft"
     merged = dict(existing)
     merged.update({k: v for k, v in data.items() if k in TEXT_FIELDS or k in ("kind", "site_id")})
     kind, status, title = _clean(merged, partial=True)
@@ -283,6 +357,8 @@ def update_deliverable(deliverable_id, data):
 
 def delete_deliverable(deliverable_id):
     with get_connection() as conn:
+        conn.execute("DELETE FROM deliverable_versions WHERE deliverable_id = ?",
+                     (deliverable_id,))
         conn.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
     return True
 
@@ -334,13 +410,13 @@ def _resolve_site(item, site_id):
     return candidates[0]
 
 
-def _slug_conflict(item, site):
+def _slug_conflict(item, site, relative=None):
     """Another published page already occupying the same file on the same site.
 
     Two drafts can share a slug while they are drafts; only publishing collides, and
     overwriting someone else's live page silently is exactly what this prevents.
     """
-    wanted = page_path(item.get("slug"))
+    wanted = relative or page_path(item.get("slug"))
     for other in list_deliverables("website", item.get("org_id")):
         if other["id"] == item["id"] or other["status"] != "published":
             continue
@@ -351,12 +427,21 @@ def _slug_conflict(item, site):
     return None
 
 
-def publish_deliverable(deliverable_id, site_id=None, actor=""):
+def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
+                        replace=False):
     """Write a ``website`` deliverable to a site's docroot and mark it published.
 
-    Returns ``{ok, url, path, dry_run, output, deliverable}`` and raises
-    ``DeliverableError`` for anything the operator can fix (wrong kind, no site, a
-    slug already live).
+    ``as_home`` publishes the page as the site's front page (``index.html``) and records
+    that choice in the draft's slug. Without it the slug decides the path, so a page
+    named "Cow Barn Tour - Home" used to publish to ``/cow-barn-tour-home.html`` and
+    leave the root on the starter page.
+
+    ``replace`` is the user's confirmation for writing over a non-empty, non-starter
+    target. The console asks before setting it; the voice/Manager tool is expected to
+    ask the user first. A subpage publish can no longer silently replace a live page.
+
+    Returns ``{ok, url, path, relative, as_home, dry_run, output, warning, deliverable}``
+    and raises ``DeliverableError`` for anything the operator can fix.
     """
     import actions
     import provisioner
@@ -372,8 +457,9 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
     if not (item.get("content") or "").strip():
         raise DeliverableError("This page has no content to publish yet.")
 
+    relative = "index.html" if as_home else page_path(item.get("slug"))
     site = _resolve_site(item, site_id)
-    conflict = _slug_conflict(item, site)
+    conflict = _slug_conflict(item, site, relative=relative)
     if conflict:
         raise DeliverableError(
             "%r is already published at that address on %s. Change the slug, or unpublish "
@@ -381,8 +467,19 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
         )
 
     target, docroot = provisioner.target_docroot(site)
-    path = provisioner.join_path(docroot, page_path(item.get("slug")))
-    summary = "publish %r to %s" % (item["title"], site["domain"])
+    path = provisioner.join_path(docroot, relative)
+    url = "https://%s/%s" % (site["domain"], "" if relative == "index.html" else relative)
+    current = target.read_file(path)
+    content = item.get("content") or ""
+    if (current.strip()
+            and not provisioner.is_starter_content(current)
+            and current.strip() != content.strip()
+            and not replace):
+        raise DeliverableError(
+            "The live page at %s already has content. Publishing this page will replace "
+            "it. Ask the user to confirm, then publish again with replace=True." % url)
+    summary = "publish %r to %s%s" % (item["title"], site["domain"],
+                                      " as the home page" if as_home else "")
 
     # The person clicking Publish *is* the operator the gate would wait for. Record the
     # decision, then pass preapproved so the write neither asks a second question nor
@@ -394,14 +491,14 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
     approval_id = None
     if live:
         approval_id = actions.request_approval(
-            "file_write", summary, {"path": path, "bytes": len(item["content"])}, None
+            "file_write", summary, {"path": path, "bytes": len(content)}, None
         )
         decided = actions.decide_approval(approval_id, "approved", actor or "operator")
         if not decided or decided.get("status") != "approved":
             raise DeliverableError(
                 "This publish could not be recorded as approved (approval #%s)." % approval_id)
 
-    result = target.write_file(path, item["content"], None, None, summary=summary,
+    result = target.write_file(path, content, None, None, summary=summary,
                                preapproved=live)
     if approval_id:
         actions.set_result(approval_id, result.get("output")
@@ -414,40 +511,48 @@ def publish_deliverable(deliverable_id, site_id=None, actor=""):
             "ok": True,
             "dry_run": True,
             "path": path,
+            "relative": relative,
+            "as_home": bool(as_home),
             "url": "",
             "output": result.get("output") or "",
             "warning": "",
             "deliverable": item,
         }
 
-    relative = page_path(item.get("slug"))
-    url = "https://%s/%s" % (site["domain"], "" if relative == "index.html" else relative)
-    # Snapshot before the write lands: an autonomous edit needs an undo, and the row
-    # records what the page said immediately before this publish.
+    # Snapshot the file this publish is about to replace, with its path. Recording the
+    # home page's content for an about.html publish made the undo restore the wrong page.
     import versions as versions_mod
 
     versions_mod.record(
-        site["id"], site.get("content_html") or "", source="publish",
-        deliverable_id=item["id"], org_id=item.get("org_id"),
+        site["id"], current, source="publish",
+        deliverable_id=item["id"], org_id=item.get("org_id"), path=relative,
     )
-    updated = update_deliverable(
-        item["id"], {"status": "published", "url": url, "site_id": site["id"]}
-    )
+    update_data = {"status": "published", "url": url, "site_id": site["id"]}
+    if as_home:
+        # Make the choice stick: a later publish of this draft is still the home page.
+        update_data["slug"] = "index"
+    updated = update_deliverable(item["id"], update_data)
     if relative == "index.html":
         # Mirror what write_site_content does, so the site row and the page agree.
         import sites as sites_service
 
-        sites_service.update_site(site["id"], {"content_html": item["content"]})
+        sites_service.update_site(site["id"], {"content_html": content})
     # A page written into a docroot nobody serves looks exactly like a publish that did
     # nothing. Say it in the response so the toast can, instead of leaving it to the domain.
     warning = ""
     if (site.get("status") or "") != "live":
         warning = ("The domain is not live yet - provision it from the Domains tab, then "
                    "this page will appear at %s." % url)
+    elif relative != "index.html" and provisioner.is_starter_content(site.get("content_html")):
+        warning = ("The site's home page still shows the starter page; this page is live "
+                   "at %s. Publish it as the home page if it is meant to be the front page."
+                   % url)
     return {
         "ok": True,
         "dry_run": False,
         "path": path,
+        "relative": relative,
+        "as_home": bool(as_home),
         "url": url,
         "output": result.get("output") or "",
         "warning": warning,

@@ -102,7 +102,8 @@ def test_start_job_records_the_child_job():
             job_id=parent)[0]
         reply = asyncio.run(tool.run_json(
             {"prompt": "review the site", "title": "Review"}, CancellationToken()))
-        assert "Started job #" in reply, reply
+        assert "Started" in reply and "job #" in reply, reply
+        assert "read-only" in reply.lower(), reply
         child_id = int(reply.split("#", 1)[1].split(".", 1)[0])
         links = [json.loads(content) for src, kind, content in seen
                  if src == "Manager" and kind == "child_job"]

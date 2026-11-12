@@ -126,9 +126,9 @@ def test_every_turn_gets_it():
     manager_source = open(os.path.join(ROOT, "manager.py"), encoding="utf-8").read()
     agents_source = open(os.path.join(ROOT, "agents.py"), encoding="utf-8").read()
     check("the chat task uses the client's system prompt",
-          'system_message=system_for(job.get("org_id"))' in manager_source, True)
+          'system_for(job.get("org_id"))' in manager_source, True)
     check("the team hands the brief to every agent",
-          "system_message_for(row, client_brief)" in agents_source, True)
+          "system_message_for(row, client_brief" in agents_source, True)
 
 
 def test_the_tool_writes_to_the_jobs_client():

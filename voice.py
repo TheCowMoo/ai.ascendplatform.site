@@ -242,16 +242,27 @@ def publish_declaration():
         "name": "publish_page",
         "description": (
             "Publish the website page currently on the canvas to the client's site. Only "
-            "call this after you have said which page and which domain will go live and the "
-            "user has explicitly agreed. If the client has more than one site, ask which "
-            "domain first and pass it as site_domain."),
+            "call this after you have said which page and which domain will go live, "
+            "whether it is the home page or a subpage, and the user has explicitly agreed. "
+            "If the client has more than one site, ask which domain first and pass it as "
+            "site_domain. If the live page already has content, the tool asks for "
+            "confirmation; tell the user it will replace the live page, then call again "
+            "with replace true only after they agree."),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "site_domain": {
                     "type": "STRING",
                     "description": ("The domain to publish to, when the client has several. "
-                                    "Leave empty when there is only one.")}},
+                                    "Leave empty when there is only one.")},
+                "as_home": {
+                    "type": "BOOLEAN",
+                    "description": ("True when the page should be the site's front page at "
+                                    "/; false or omitted puts it at /<slug>.html.")},
+                "replace": {
+                    "type": "BOOLEAN",
+                    "description": ("True only after the user agrees to replace an existing "
+                                    "live page at that address.")}},
             "required": []},
     }
 
@@ -332,8 +343,11 @@ def instruction(org_name="", page="", intro=False, role=""):
         "to be built, changed or sent, call it with one clear sentence, then say you are on "
         "it. Never claim work is done until a team update says it is. "
         "publish_page is the one action you take yourself, and only after an explicit yes: "
-        "say which page and which domain will go live, ask shall I publish it now, and wait. "
-        "Never call it in the same turn as the question, or because the user asked what "
+        "say which page and which domain will go live, and whether it is the home page at "
+        "the root or a subpage at /<slug>.html; ask shall I publish it now, and wait. If "
+        "the live page already has content, say that publishing will replace it and ask "
+        "again before passing replace. Never call it in the same turn as the question, or "
+        "because the user asked what "
         "publishing would do. If no page is on the canvas, ask them to open it in the "
         "Studio first. "
         "Internal messages beginning \"[Team update\" come from the team, not the user: do not "

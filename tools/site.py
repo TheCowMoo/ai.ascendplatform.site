@@ -27,6 +27,14 @@ def _requester(job_id):
     return row["requester_id"] if row else None
 
 
+def _read_only(job_id):
+    """A review job cannot provision or write a site, even if the tool slips through."""
+    if not job_id:
+        return False
+    job = jobs.get_job(job_id)
+    return bool(job and job.get("read_only"))
+
+
 def _profile_for(owner_id):
     try:
         import profile as profile_mod
@@ -54,6 +62,8 @@ def _summarise(result):
 def _build_provision_site(emit, job_id=None):
     async def provision_site(domain: str) -> str:
         """Create or update the website for a domain and return its URL."""
+        if _read_only(job_id):
+            return "This job is read-only; provisioning a site is disabled."
         owner_id = _requester(job_id)
         site = sites_service.upsert_for_agent(domain, owner_id)
         if not site:
@@ -92,6 +102,8 @@ def _build_check_site_dns(emit, job_id=None):
 def _build_write_site_content(emit, job_id=None):
     async def write_site_content(domain: str, html: str) -> str:
         """Replace a site's index.html with the given HTML (goes through the approval gate)."""
+        if _read_only(job_id):
+            return "This job is read-only; writing site content is disabled."
         site = sites_service.get_site_by_domain(domain)
         if not site:
             return "No site record for %r. Create it first with provision_site." % domain
@@ -130,14 +142,23 @@ def _build_list_sites(emit, job_id=None):
 
 def _build_publish_page(emit, job_id=None):
     async def publish_page(deliverable_id: int = 0, title: str = "",
-                           site_id: int = 0) -> str:
+                           site_id: int = 0, as_home: bool = False,
+                           replace: bool = False) -> str:
         """Publish a website page to this client's site and return its URL.
 
         The page is the one this run is bound to, an explicit id, or the newest website
         draft (optionally matched by ``title``). With one site it publishes there; with
         several it asks which domain rather than guessing.
+
+        ``as_home=True`` puts the page at the site root (``index.html``); otherwise it
+        lands at ``/<slug>.html``. If the target already has content, the first call
+        returns a request to confirm with the user; call again with ``replace=True``
+        only after they say yes. Always report the exact URL to the user.
         """
         job = (jobs.get_job(job_id) if job_id else None) or {}
+        if job.get("read_only"):
+            return ("This job is read-only; publishing is disabled. Report the findings "
+                    "in chat instead of changing the live page.")
         org_id = job.get("org_id")
         if org_id is None:
             return ("This run is not attached to a client, so there is no site to publish "
@@ -195,7 +216,8 @@ def _build_publish_page(emit, job_id=None):
                 actor = row["email"] or row["name"] or actor
         try:
             result = deliverables_service.publish_deliverable(
-                item["id"], site_id=site["id"], actor=actor)
+                item["id"], site_id=site["id"], actor=actor,
+                as_home=bool(as_home), replace=bool(replace))
         except deliverables_service.DeliverableError as exc:
             return "Not published: %s" % exc
         if result.get("dry_run"):

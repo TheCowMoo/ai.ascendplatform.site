@@ -61,19 +61,24 @@ def _as_dict(row):
 
 
 def create_job(title, prompt, requester_id=None, team_mode="selector",
-               task_name=DEFAULT_TASK, org_id=None, deliverable_id=None):
+               task_name=DEFAULT_TASK, org_id=None, deliverable_id=None,
+               read_only=False):
     """Create a job. ``org_id`` is the tenant that owns it, and scopes who can see it.
 
     ``deliverable_id`` binds the run to the draft it is meant to change. Tools read it
     from the job row, so an agent that forgets to repeat the id still edits the right
     page instead of saving a sibling.
+
+    ``read_only`` is the difference between a review and an edit. The team build uses
+    it to withhold every write tool, and the write tools themselves check it. A review
+    job cannot overwrite the page it was asked to inspect.
     """
     with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO jobs (title, prompt, requester_id, team_mode, task, org_id, "
-            "deliverable_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "deliverable_id, read_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (title or "", prompt or "", requester_id, team_mode, task_name, org_id,
-             deliverable_id or None),
+             deliverable_id or None, 1 if read_only else 0),
         )
         return cur.lastrowid
 

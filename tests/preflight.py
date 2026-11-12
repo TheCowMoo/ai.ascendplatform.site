@@ -39,8 +39,11 @@ FAST_SUITES = (
     "smoke_provisioner",
     "smoke_profile",
     "test_client_brief",
+    "test_read_only_jobs",
     "test_publish_live",
+    "test_publish_home",
     "test_publish_tool",
+    "test_fetch_page",
     "test_site_extras",
     "test_client_ghl",
     "smoke_onboarding",
@@ -294,6 +297,16 @@ def check_js():
             raise AssertionError("the domains state harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("domains state harness OK")
+
+    # The server can protect a publish; the console must also show the target, the
+    # draft-changes state and the undo, or the person is still guessing.
+    harness = os.path.join(ROOT, "tests", "publish_state.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the publish state harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("publish state harness OK")
 
 
 def check_suites():

@@ -30,16 +30,17 @@ DESCRIPTION = (
 
 
 def _job_context(job_id):
-    """(org_id, requester_id) for the job, so the draft belongs to the right client."""
+    """(org_id, requester_id, read_only) for the job, so ownership and intent both come
+    from the row and never from the model's wording."""
     if not job_id:
-        return None, None
+        return None, None, False
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT org_id, requester_id FROM jobs WHERE id = ?", (job_id,)
+            "SELECT org_id, requester_id, read_only FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
     if not row:
-        return None, None
-    return row["org_id"], row["requester_id"]
+        return None, None, False
+    return row["org_id"], row["requester_id"], bool(row["read_only"])
 
 
 def _job_requested_kind(job_id):
@@ -149,7 +150,16 @@ def _build_save_deliverable(emit, job_id=None):
                 "download_url, or remove that <img> entirely, then save again."
                 % ", ".join(placeholders[:4])
             )
-        org_id, requester = _job_context(job_id)
+        org_id, requester, read_only = _job_context(job_id)
+        if read_only:
+            # The team build never grants this tool to a read-only job. This is the
+            # second lock: a stale roster, a leaked markup call or a future tool path
+            # still cannot replace the page a review was asked to inspect.
+            message = ("This job is read-only. Do not save a report over the page; "
+                       "report the findings in chat instead.")
+            if emit is not None:
+                emit("tool", "tool_error", "save_deliverable: " + message)
+            return message
         if org_id is None:
             # A draft with no owner appears in no client's tab, so it is worse than a
             # refusal: it looks saved and is unreachable. Say so instead.

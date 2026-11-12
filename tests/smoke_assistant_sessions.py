@@ -149,7 +149,8 @@ def test_api_and_manager():
     captured = {}
 
     def fake_create(title, prompt, requester=None, team_mode="selector",
-                    task_name="echo", org_id=None, deliverable_id=None):
+                    task_name="echo", org_id=None, deliverable_id=None,
+                    read_only=False):
         captured["prompt"] = prompt
         captured["org"] = org_id
         captured["deliverable_id"] = deliverable_id

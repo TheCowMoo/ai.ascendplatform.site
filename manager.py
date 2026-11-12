@@ -25,12 +25,17 @@ SYSTEM = (
     "The only things you may not create are credentials and domains: SMTP settings, API "
     "keys, and the domain a site lives on are the user's to give. If one of those is "
     "missing, say exactly which setting and why, once, at the end.\n"
-    "When the prompt starts with [Studio context ...] naming an existing deliverable, you "
-    "are editing that draft, not writing a new one: call save_deliverable with "
-    "deliverable_id=<that id> and the complete updated document. Never save a second "
-    "draft unless the user explicitly asks for a different page. If you hand the edit to "
-    "the team with start_job, pass deliverable_id too, or the team will save a duplicate "
-    "and leave the page the user is looking at unchanged.\n"
+    "When the prompt starts with [Studio context ...] naming an existing deliverable, "
+    "that is the page the user is looking at. If they ask you to change it, edit that "
+    "draft: call save_deliverable with deliverable_id=<that id> and the complete updated "
+    "document. Never save a second draft unless the user explicitly asks for a different "
+    "page. If you hand an edit to the team with start_job, pass deliverable_id too, or "
+    "the team will save a duplicate and leave the page the user is looking at unchanged.\n"
+    "A request to check, review, verify, audit or report on a page is READ-ONLY. Do not "
+    "save, edit, publish or add anything to that page. Use fetch_page and the other read "
+    "tools, answer with the findings, and if you delegate it with start_job, pass "
+    "edit=False so the team gets read-only tools. Never save a review or QA report over "
+    "the page it is describing.\n"
     "Learn this client's preferences as you go. When the user states a lasting rule about "
     "how work should be done - tone, length, structure, wording, a sign-off, something to "
     "always or never include - call remember_preference once per rule, in your own words, "
@@ -38,9 +43,11 @@ SYSTEM = (
     "requests for the current draft, and do not repeat a rule already in the client "
     "context. If they correct the same thing twice, save the correction.\n"
     "You can publish a website page. When the user asks, call publish_page; if the "
-    "client has more than one site, ask which domain first, and say the page and the "
-    "domain in your reply. Publishing is a live write with the user's name on the "
-    "approval row.\n"
+    "client has more than one site, ask which domain first. If the page is meant to be "
+    "the site's front page, pass as_home=True; otherwise it lands at /<slug>.html. If "
+    "the tool says the live page already has content, ask before calling again with "
+    "replace=True. Always give the user the exact URL, including whether it is the root "
+    "or a subpage. Publishing is a live write with the user's name on the approval row.\n"
     "When you have just built a NEW website, offer the pieces that usually go around "
     "it - a contact form with a link on the page, a follow-up email template, and an "
     "automation that sends it - as one short question. Build them only when the user "
@@ -54,9 +61,10 @@ SYSTEM = (
     "and what it offers; for a funnel, the entry offer and the steps; for a website, its "
     "purpose and sections; for an automation, its trigger and whether sending needs "
     "approval. If the brief already covers those, do not ask - build it.\n"
-    "You cannot send email, publish, or touch servers - those are jobs with approvals, "
-    "so delegate them with start_job and say that they await approval. Never claim "
-    "something is published or sent.\n"
+    "You cannot send email or touch servers directly - those are jobs with approvals, "
+    "so delegate them with start_job and say that they await approval. Publishing goes "
+    "through publish_page, which records the approval row. Never claim something is "
+    "published or sent unless the tool returned a URL or a send result.\n"
     "Report what blocks the work. describe_capabilities tells you whether email is "
     "configured and which templates exist; if templates is empty or email_ready is false, "
     "say so plainly before or alongside any draft, because a send step cannot work yet. "
@@ -70,7 +78,30 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
            "create_form", "list_forms", "remember_preference", "publish_page",
-           "add_form_link", "apply_automation")
+           "add_form_link", "apply_automation", "fetch_page")
+
+READ_ONLY_PREFIX = (
+    "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "
+    "anything. You have only read tools. Do not claim a write happened. Use fetch_page "
+    "for a live page and answer with what you actually verified. If you delegate, "
+    "start_job will keep the child read-only.\n\n"
+)
+
+
+def granted_for(job):
+    """The tool names this turn may use.
+
+    A read-only turn is built from the registry's read allowlist rather than from the
+    full GRANTED tuple, so a missing prompt sentence cannot leave save_deliverable or
+    publish_page in the model's hands. ``start_job`` stays: it is how a read-only turn
+    asks the team to inspect something, and it forces its child read-only too.
+    """
+    import tools as tool_registry
+
+    names = list(GRANTED)
+    if not (job or {}).get("read_only"):
+        return names
+    return [name for name in names if name in tool_registry.READ_ONLY_TOOLS]
 
 
 import json
@@ -197,11 +228,18 @@ async def chat_task(job, emit):
         # from the configured model having answered.
         emit("system", "system",
              "DeepSeek is not configured; using %s for this turn." % provider)
-    tools = tool_registry.resolve(list(GRANTED), emit, job_id=job.get("id"))
+    granted = granted_for(job)
+    read_only = bool(job.get("read_only"))
+    tools = tool_registry.resolve(granted, emit, job_id=job.get("id"))
+    system_message = system_for(job.get("org_id"))
+    if read_only:
+        system_message = READ_ONLY_PREFIX + system_message
+        emit("system", "system",
+             "Read-only turn: %d write tool(s) withheld." % (len(GRANTED) - len(granted)))
     agent = AssistantAgent(
         name="Manager",
         model_client=llm.get_model_client(provider, usage_label="manager"),
-        system_message=system_for(job.get("org_id")),
+        system_message=system_message,
         tools=tools,
         # Without this AutoGen returns the tool's result and stops, so a turn that needed
         # two calls (capabilities, then a draft) ended in silence - the job "finished" with
@@ -231,7 +269,8 @@ async def chat_task(job, emit):
         for name, args in calls:
             ran.append(name)
             emit("Manager", "tool", name)
-            notes.append("%s -> %s" % (name, await _run_named(name, args, emit, job.get("id"))))
+            notes.append("%s -> %s" % (name, await _run_named(
+                name, args, emit, job.get("id"), allowed=granted)))
         emit("system", "system",
              "Ran %d call(s) the model wrote as text instead of sending." % len(calls))
         result = await agent.run(task=_follow_up(notes))
@@ -268,12 +307,19 @@ def _follow_up(notes):
             "into your reply." % "\n".join(notes))
 
 
-async def _run_named(name, args, emit, job_id):
-    """Run one tool by name with dict arguments, and turn any failure into a sentence."""
+async def _run_named(name, args, emit, job_id, allowed=None):
+    """Run one tool by name with dict arguments, and turn any failure into a sentence.
+
+    ``allowed`` closes the markup path: a model that writes a tool call as text must not
+    be able to reach a tool this turn was not granted. The structured tool list and the
+    leaked-markup path use the same allowlist.
+    """
     from autogen_core import CancellationToken
 
     import tools as tool_registry
 
+    if allowed is not None and name not in allowed:
+        return "disabled: this turn is read-only and %r is not a read tool" % name
     resolved = tool_registry.resolve([name], emit, job_id=job_id)
     if not resolved:
         return "no such tool"

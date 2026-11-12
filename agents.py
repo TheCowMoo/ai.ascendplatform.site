@@ -117,7 +117,8 @@ DEFAULT_ROSTER = [
         ),
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
                   "search_photos", "import_photo_to_media", "fetch_photo", "generate_image",
-                  "send_email", "save_deliverable", "list_media", "save_note", "current_time"],
+                  "send_email", "save_deliverable", "list_media", "save_note", "current_time",
+                  "fetch_page"],
         "turn_order": 7,
     },
 ]
@@ -377,7 +378,18 @@ CONTENT_RULE = (
     "returns); a local disk path or a remote Pexels URL in content is not the imported "
     "asset. Never leave a placeholder such as [INSERT IMAGE URL] or [Your Name] in "
     "content the user will receive - search, import and use a real media URL, or leave "
-    "the image out."
+    "the image out. "
+    "Never save a review, audit or QA report over the page it describes: findings belong "
+    "in the chat. If this job is a review, the write tools are not available."
+)
+
+READ_ONLY_RULE = (
+    "\n\nThis job is a READ-ONLY review. You cannot save, edit, publish, send, provision, "
+    "upload or change anything. Use only the read tools you were given, inspect the live "
+    "page with fetch_page when one is named, and report findings in chat. If a check "
+    "cannot be performed with those tools, say exactly what was not checked and why. "
+    "Never present an unverified check as passed, and never write a QA report into a "
+    "deliverable."
 )
 
 
@@ -390,17 +402,28 @@ MEDIA_RULE = (
 )
 
 
-def system_message_for(row, client_brief=""):
+def read_only_grants(granted):
+    """The subset of a roster row's tools a read-only job may actually hold."""
+    return [name for name in (granted or []) if name in tool_registry.READ_ONLY_TOOLS]
+
+
+def system_message_for(row, client_brief="", read_only=False):
     """An agent's instructions, plus the rules that come with the tools it holds.
 
     ``client_brief`` is the client's tone and learned preferences. Every participant gets
     it, because a Copywriter writing an email and a Reviewer judging it must agree about
     what "on brand" means for this client.
+
+    In a read-only job the content/media rules are not appended: they tell a writer to
+    finish by calling save_deliverable, which is exactly the instruction that turned a QA
+    report into a replacement page. The read-only rule is appended instead.
     """
     message = row.get("system_prompt") or row.get("role") or "You are a helpful assistant."
-    if "save_deliverable" in (row.get("tools") or []):
+    if read_only:
+        message += READ_ONLY_RULE
+    elif "save_deliverable" in (row.get("tools") or []):
         message += CONTENT_RULE
-    if "import_photo_to_media" in (row.get("tools") or []):
+    if not read_only and "import_photo_to_media" in (row.get("tools") or []):
         message += MEDIA_RULE
     if client_brief:
         message += "\n\n" + client_brief
@@ -489,10 +512,18 @@ async def build_team(job, emit, factory):
     max_messages = int(os.environ.get("AGENT_MAX_MESSAGES", "20"))
     participants = []
     taken = set()
+    read_only = bool(job.get("read_only"))
 
     for row in roster:
         granted = row["tools"] or []
         missing = tool_registry.unknown(granted)
+        if read_only:
+            withheld = [name for name in granted if name not in tool_registry.READ_ONLY_TOOLS]
+            if withheld:
+                emit("system", "system",
+                     "Read-only job: withheld %s from %s."
+                     % (", ".join(withheld), row["name"]))
+            granted = read_only_grants(granted)
         if missing:
             emit("system", "system", "Agent '%s' references unknown tools: %s" % (row["name"], ", ".join(missing)))
         # The label is what makes a usage event say which agent spent it.
@@ -514,7 +545,7 @@ async def build_team(job, emit, factory):
         options = {
             "name": participant_name,
             "model_client": model_client,
-            "system_message": system_message_for(row, client_brief),
+            "system_message": system_message_for(row, client_brief, read_only=read_only),
         }
         if tools:
             options["tools"] = tools

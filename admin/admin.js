@@ -2321,6 +2321,16 @@
     return '<span class="badge ' + (STATUS_CLASS[status] || 'badge-status') + '">' + esc(status) + '</span>';
   }
 
+  // "published" must never describe content the live page does not have. A draft with a
+  // URL is the honest state after an edit: the old version is still live, and this one
+  // needs Publish.
+  function deliverableBadge(item) {
+    if (item.status === 'draft' && item.url) {
+      return '<span class="badge badge-warn">draft changes</span>';
+    }
+    return statusBadge(item.status);
+  }
+
   function viewJobs() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -2557,7 +2567,7 @@
   // ---------- Shared form modal ----------
   // fields: [{name, label, type, value, options, placeholder, help}]. onSubmit gets
   // (data, fail, ok), so a rejected save shows the server's message in place.
-  function formModal(title, fields, onSubmit) {
+  function formModal(title, fields, onSubmit, submitLabel) {
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal');
     modal.appendChild(el('h3', null, title));
@@ -2596,7 +2606,7 @@
     var cancel = el('button', 'btn btn-ghost', 'Cancel');
     cancel.type = 'button';
     cancel.onclick = function () { backdrop.remove(); };
-    var save = el('button', 'btn btn-primary', 'Save');
+    var save = el('button', 'btn btn-primary', submitLabel || 'Save');
     save.type = 'submit';
     actions.appendChild(cancel);
     actions.appendChild(save);
@@ -2962,6 +2972,12 @@
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal modal-wide');
     modal.appendChild(el('h3', null, item.title || 'Preview'));
+    if (item.status === 'draft' && item.url) {
+      var banner = el('p', 'fine-print');
+      banner.textContent = 'Unpublished changes. The live page at ' + item.url +
+        ' still has the previous version until you Publish.';
+      modal.appendChild(banner);
+    }
     // sandbox="" - no scripts, no forms, no same-origin access. This markup came from
     // a model, so the console renders it without trusting or executing any of it.
     var frame = el('iframe', 'preview-frame');
@@ -2972,6 +2988,8 @@
     var actions = el('div', 'row-actions');
     var copy = el('button', 'btn btn-ghost', 'Copy HTML');
     copy.onclick = function () { copyText(item.content, copy); };
+    var history = el('button', 'btn btn-ghost', 'History');
+    history.onclick = function () { showDeliverableHistory(item, frame); };
     var studio = el('button', 'btn btn-ghost', 'Open in Studio');
     studio.onclick = function () {
       document.body.removeChild(backdrop);
@@ -2980,6 +2998,7 @@
     var close = el('button', 'btn btn-primary', 'Close');
     close.onclick = function () { document.body.removeChild(backdrop); };
     actions.appendChild(copy);
+    actions.appendChild(history);
     actions.appendChild(studio);
     actions.appendChild(close);
     modal.appendChild(actions);
@@ -3021,9 +3040,73 @@
     document.body.appendChild(backdrop);
   }
 
-  function sendPublish(item, siteId, onDone, button) {
+  // The undo a review job cannot bypass. Every content change is snapshotted server-side;
+  // this is the human way to put one back without touching a database.
+  function showDeliverableHistory(item, frame) {
+    api('GET', '/api/deliverables/' + item.id + '/versions').then(function (d) {
+      var versions = d.versions || [];
+      var backdrop = el('div', 'modal-backdrop');
+      var modal = el('div', 'modal modal-wide');
+      modal.appendChild(el('h3', null, 'History - ' + (item.title || 'page')));
+      if (!versions.length) {
+        modal.appendChild(el('p', 'muted',
+          'No earlier versions yet. Every change from now on is kept here.'));
+      } else {
+        modal.appendChild(el('p', 'fine-print',
+          'Restoring keeps the current content in this list too, so the undo is itself undoable.'));
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Saved</th><th>Status</th><th>Job</th><th>Size</th><th></th></tr></thead>';
+        var tbody = el('tbody');
+        versions.forEach(function (version) {
+          var tr = el('tr');
+          tr.innerHTML = '<td>' + esc((version.created_at || '').slice(0, 16)) + '</td>' +
+            '<td>' + esc(version.status || '') + '</td>' +
+            '<td class="muted">' + (version.job_id ? '#' + esc(version.job_id) : '') + '</td>' +
+            '<td class="muted">' + esc(version.bytes || 0) + ' chars</td>';
+          var td = el('td', 'row-actions');
+          var restore = el('button', 'btn btn-ghost btn-sm', 'Restore');
+          restore.onclick = function () {
+            if (!confirm('Restore the version from ' + (version.created_at || 'that save') +
+                         '? The current content is kept in History first.')) return;
+            restore.disabled = true;
+            api('POST', '/api/deliverables/' + item.id + '/versions/' + version.id + '/restore', {})
+              .then(function (res) {
+                var restored = res.deliverable || {};
+                item.content = restored.content || item.content;
+                item.status = restored.status || 'draft';
+                if (frame) frame.srcdoc = item.content;
+                backdrop.remove();
+                toast('Restored. The page is a draft until you publish it.', true);
+              })
+              .catch(function (e) { restore.disabled = false; toast(e.message, false); });
+          };
+          td.appendChild(restore);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        modal.appendChild(table);
+      }
+      var actions = el('div', 'row-actions');
+      var close = el('button', 'btn btn-primary', 'Close');
+      close.onclick = function () { backdrop.remove(); };
+      actions.appendChild(close);
+      modal.appendChild(actions);
+      backdrop.appendChild(modal);
+      backdrop.onclick = function (e) { if (e.target === backdrop) backdrop.remove(); };
+      document.body.appendChild(backdrop);
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function sendPublish(item, siteId, onDone, button, asHome) {
     if (button) button.disabled = true;
-    api('POST', '/api/deliverables/' + item.id + '/publish', { site_id: siteId })
+    api('POST', '/api/deliverables/' + item.id + '/publish', {
+      site_id: siteId,
+      as_home: !!asHome,
+      // The publish dialog names the exact target and is the confirmation. The server
+      // still refuses a replacement that no dialog confirmed.
+      replace: true
+    })
       .then(function (res) {
         if (res.dry_run) {
           toast('Dry-run: would write ' + res.path + ' (set ALLOW_LIVE_ACTIONS=1)', true);
@@ -3041,25 +3124,45 @@
     api('GET', '/api/sites').then(function (d) {
       var sites = d.sites || [];
       if (!sites.length) {
+        if (button) button.disabled = false;
         toast('Add a domain in the Websites tab first - a page needs somewhere to live', false);
         return;
       }
-      if (sites.length === 1) {
-        sendPublish(item, sites[0].id, onDone, button);
-        return;
+      var slug = (item.slug || 'page').trim();
+      var subpath = '/' + slug + '.html';
+      var slugIsHome = !slug || slug === 'home' || slug === 'index';
+      var first = sites[0];
+      var starter = /This site is ready/i.test(first.content_html || '');
+      var defaultWhere = (slugIsHome || starter) ? 'home' : 'subpage';
+      var fields = [];
+      if (sites.length > 1) {
+        fields.push({
+          name: 'site', label: 'Site', type: 'select',
+          options: sites.map(function (s) { return { label: s.domain, value: String(s.id) }; })
+        });
       }
-      // The API refuses to guess when a client owns several sites.
-      formModal('Publish "' + (item.title || 'page') + '"', [
-        { name: 'domain', label: 'Site', type: 'select', options: sites.map(function (s) { return s.domain; }) }
-      ], function (data, fail, ok) {
-        var chosen = sites.filter(function (s) { return s.domain === data.domain; })[0];
-        if (!chosen) { fail('Choose a site'); return; }
-        // One publish, not two: this used to POST here and again inside sendPublish, which
-        // wrote the page twice and asked for two approvals.
-        ok();
-        sendPublish(item, chosen.id, onDone, button);
+      fields.push({
+        name: 'where', label: 'Where should it go?', type: 'select', value: defaultWhere,
+        options: slugIsHome
+          ? [{ label: 'Home page (/)', value: 'home' }]
+          : [{ label: 'Home page (/) - the site front page', value: 'home' },
+             { label: 'Subpage (' + subpath + ')', value: 'subpage' }],
+        help: 'Publishes to ' + first.domain + '. The exact URL appears in the toast. ' +
+              'A live page with different content is replaced only after this confirmation.'
       });
-    }).catch(function (e) { toast(e.message, false); });
+      // One publish, not two: this used to POST here and again inside sendPublish, which
+      // wrote the page twice and asked for two approvals.
+      formModal('Publish "' + (item.title || 'page') + '"', fields, function (data, fail, ok) {
+        var chosen = sites.filter(function (s) {
+          return String(s.id) === String(data.site || first.id);
+        })[0] || first;
+        ok();
+        sendPublish(item, chosen.id, onDone, button, data.where === 'home');
+      }, 'Publish');
+    }).catch(function (e) {
+      if (button) button.disabled = false;
+      toast(e.message, false);
+    });
   }
 
   function pagesCard() {
@@ -3098,7 +3201,7 @@
           tr.innerHTML = '<td>' + esc(item.title) +
             (item.url ? '<div class="muted">' + esc(item.url) + '</div>' : '') +
             '</td><td class="muted">' + esc(item.slug || '') + '</td>' +
-            '<td>' + statusBadge(item.status) + '</td>';
+            '<td>' + deliverableBadge(item) + '</td>';
           var td = el('td', 'row-actions');
           var prev = el('button', 'btn btn-ghost btn-sm', 'Preview');
           prev.onclick = function () { previewDeliverable(item); };
@@ -3358,8 +3461,7 @@
             (item.slug ? '<div class="muted">/' + esc(item.slug) + '</div>' : '') +
             (item.job_id ? '<div class="muted">from job #' + esc(item.job_id) + '</div>' : '') + '</td>' +
             '<td><span class="badge">' + esc(item.kind) + '</span></td>' +
-            '<td><span class="badge badge-' + (item.status === 'published' ? 'admin' : 'member') + '">' +
-            esc(item.status) + '</span></td>' +
+            '<td>' + deliverableBadge(item) + '</td>' +
             '<td class="muted">' + esc((item.updated_at || '').slice(0, 16)) + '</td>';
           var td = el('td', 'row-actions');
           var preview = el('button', 'btn btn-ghost btn-sm', 'Preview');
@@ -3397,18 +3499,29 @@
 
   function showDeliverableForm(kind, item, done) {
     var isNew = !item;
-    formModal(isNew ? 'New ' + kind : item.title, [
+    var fields = [
       { name: 'title', label: 'Title', value: item ? item.title : '' },
       { name: 'kind', label: 'Kind', type: 'select', options: ['blog', 'funnel', 'email', 'website', 'asset'],
-        value: item ? item.kind : kind },
-      { name: 'status', label: 'Status', type: 'select',
-        options: ['draft', 'scheduled', 'published', 'failed'], value: item ? item.status : 'draft' },
+        value: item ? item.kind : kind }
+    ];
+    // A website page becomes published only through Publish, which writes the file and
+    // records the approval. Letting the edit form set "published" on changed content
+    // is how a draft report came to look live while the old page was still served.
+    if (isNew || (item.kind !== 'website' && kind !== 'website')) {
+      fields.push({
+        name: 'status', label: 'Status', type: 'select',
+        options: ['draft', 'scheduled', 'published', 'failed'],
+        value: item ? item.status : 'draft'
+      });
+    }
+    fields.push(
       { name: 'slug', label: 'Slug', value: item ? item.slug : '' },
       { name: 'summary', label: 'Summary', type: 'textarea', value: item ? item.summary : '' },
       { name: 'content', label: 'Content', type: 'textarea', value: item ? item.content : '' },
       { name: 'url', label: 'Published URL', value: item ? item.url : '',
         placeholder: 'https://acme.com/blog/post' }
-    ], function (data, fail, ok) {
+    );
+    formModal(isNew ? 'New ' + kind : item.title, fields, function (data, fail, ok) {
       var request = isNew
         ? api('POST', '/api/deliverables', data)
         : api('PUT', '/api/deliverables/' + item.id, data);

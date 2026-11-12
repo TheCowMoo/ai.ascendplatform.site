@@ -58,7 +58,8 @@ def cleanup():
         conn.execute("DELETE FROM job_events WHERE job_id IN "
                      "(SELECT id FROM jobs WHERE org_id = ?)", (org_id,))
         conn.execute("DELETE FROM jobs WHERE org_id = ?", (org_id,))
-        for table in ("automations", "automation_runs", "deliverables", "site_versions",
+        for table in ("automations", "automation_runs", "deliverables",
+                      "deliverable_versions", "site_versions",
                       "sites", "users", "client_settings", "business_profiles",
                       "data_sources", "invites", "site_snapshots", "forms", "form_responses"):
             try:

@@ -233,6 +233,10 @@ jobs = Table(
     # turn names one) and inherited by delegated child jobs, so save_deliverable can
     # default to it instead of trusting the model to repeat the id.
     Column("deliverable_id", Integer),
+    # A review, QA or audit run is read-only: the team gets only inspection tools and
+    # the write tools refuse even if one is granted by a stale roster. The instruction
+    # is not the guard; this column is.
+    Column("read_only", Integer, nullable=False, server_default=_literal("0")),
     Column("status", Text, nullable=False, server_default=_literal("queued")),
     Column("result", Text, nullable=False, server_default=_literal("")),
     Column("error", Text, nullable=False, server_default=_literal("")),
@@ -584,6 +588,24 @@ deliverables = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
+# The previous content of a draft, written before every change. The live page is not
+# an undo: a QA or review run can replace the only copy of a draft, and the next reader
+# sees a report instead of the page. One row per save is cheap; restoring one is a
+# single update.
+deliverable_versions = Table(
+    "deliverable_versions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("deliverable_id", Integer, nullable=False),
+    Column("org_id", Integer),
+    Column("title", Text, nullable=False, server_default=_literal("")),
+    Column("content", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("draft")),
+    Column("job_id", Integer),
+    _created_at(),
+    Index("ix_deliverable_versions_deliverable", "deliverable_id"),
+)
+
 # Uploaded media for a client: the images, videos and PDFs the team can use in
 # emails and pages. The file bytes live under artifacts/media/<org_id>/; this row is
 # the index, and the public URL is built from the id plus the unguessable filename.
@@ -721,6 +743,9 @@ site_versions = Table(
     Column("content_html", Text, nullable=False, server_default=_literal("")),
     Column("source", Text, nullable=False, server_default=_literal("")),
     Column("deliverable_id", Integer),
+    # Which file this snapshot belongs to. Before this, publishing about.html recorded
+    # the home page's content, so restoring it did not undo the subpage at all.
+    Column("path", Text, nullable=False, server_default=_literal("index.html")),
     _created_at(),
     Index("ix_site_versions_site", "site_id"),
 )

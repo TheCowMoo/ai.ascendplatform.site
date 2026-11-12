@@ -136,13 +136,20 @@ def _build_get_metrics(emit, job_id=None):
 
 
 def _build_start_job(emit, job_id=None):
-    async def start_job(prompt: str, title: str = "", deliverable_id: int = 0) -> str:
+    async def start_job(prompt: str, title: str = "", deliverable_id: int = 0,
+                        edit: bool = True) -> str:
         """Hand work to the agent team: writing, reviewing a site, building a page.
 
         ``deliverable_id`` names an existing draft the work must update. Without it the
         team saves a new draft, so a Studio edit delegated to the team would leave the
         page the user is looking at untouched and put a duplicate beside it.
+
+        Set ``edit=False`` for a review, QA, audit or verification request. That child
+        job is read-only: it gets inspection tools only, its prompt does not tell it to
+        save, and save_deliverable/publish_page refuse. The parent's read-only state and
+        explicit "do not change/republish" wording force the same answer.
         """
+        import intent
         import jobs
 
         if not (prompt or "").strip():
@@ -162,7 +169,29 @@ def _build_start_job(emit, job_id=None):
         # The model is asked to pass the id, but a delegated edit must not depend on it:
         # when none is given, the child inherits the draft its parent job was bound to.
         target_id = target_id or _job_target(job_id)
-        if target_id:
+        parent = jobs.get_job(job_id) if job_id else None
+        parent_read_only = bool((parent or {}).get("read_only"))
+        read_only = (not edit) or parent_read_only or intent.looks_read_only(task)
+        if read_only:
+            # Do not ask for a document here. A review produces findings in the
+            # transcript, not a replacement for the page it was asked to inspect.
+            task = (
+                "READ-ONLY REVIEW - do not save, edit, publish, send, provision, or "
+                "change anything. Inspect what you can and report findings in chat. "
+                "If a check needs a tool you do not have, say exactly what was not "
+                "checked and why.\n\n" + task
+            )
+            if target_id:
+                target = deliverables_service.get_deliverable(target_id)
+                if target:
+                    where = target.get("url") or "not published yet"
+                    task += (
+                        "\n\nThe target is draft #%d %r (%s, %s), live at: %s"
+                        % (target_id, target.get("title") or "(untitled)",
+                           target.get("kind") or "draft", target.get("status") or "draft",
+                           where)
+                    )
+        elif target_id:
             # The child job's save_deliverable call must land on the same row. Ownership
             # is still checked there against the child job's own org, never this text.
             task += (
@@ -178,6 +207,7 @@ def _build_start_job(emit, job_id=None):
             task_name="agent_team",
             org_id=org_id,
             deliverable_id=target_id or None,
+            read_only=read_only,
         )
         jobs.submit(new_id)      # a created job that is never submitted queues forever
         title_text = title.strip() or prompt.strip()[:60]
@@ -186,7 +216,10 @@ def _build_start_job(emit, job_id=None):
             # to the team. The parent transcript is the durable link: no job schema change,
             # and a later viewer can see exactly which background run was started here.
             emit("Manager", "child_job", json.dumps(
-                {"job_id": new_id, "title": title_text}))
+                {"job_id": new_id, "title": title_text, "read_only": read_only}))
+        if read_only:
+            return ("Started read-only job #%d. It can inspect the site and report back; "
+                    "it cannot change, save or publish anything." % new_id)
         return "Started job #%d. Open it in Jobs to follow along." % new_id
 
     return start_job
@@ -732,7 +765,8 @@ register("get_metrics",
          _build_get_metrics)
 register("start_job",
          "Hand work to the agent team - writing, reviewing a site, building a page. "
-         "Returns the new job id.",
+         "Returns the new job id. For a review, QA or audit, pass edit=False: the child "
+         "gets read-only tools and cannot save or publish.",
          _build_start_job)
 register("remember_preference",
          "Save a lasting rule about how this client's work should be done - tone, length, "

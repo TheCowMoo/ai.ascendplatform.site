@@ -90,13 +90,14 @@ def _stub_prompt(captured):
     """Capture the prompt the route builds, without running a job or calling a model."""
     def fake_create(title, prompt, requester=None, team_mode="selector",
                     task_name="echo", org_id=None, requester_id=None,
-                    deliverable_id=None):
+                    deliverable_id=None, read_only=False):
         captured["title"] = title
         captured["prompt"] = prompt
         captured["org"] = org_id
         captured["task"] = task_name
         captured["requester"] = requester if requester is not None else requester_id
         captured["deliverable_id"] = deliverable_id
+        captured["read_only"] = read_only
         return 424242
 
     return fake_create

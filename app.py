@@ -1815,6 +1815,31 @@ def delete_deliverable(deliverable_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/deliverables/<int:deliverable_id>/versions", methods=["GET"])
+@client_admin_required
+def list_deliverable_versions(deliverable_id):
+    """The content this draft had before its recent saves. It is the undo a review job
+    cannot bypass."""
+    if not _deliverable_for_request(deliverable_id):
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"versions": deliverables_service.versions(deliverable_id)})
+
+
+@app.route("/api/deliverables/<int:deliverable_id>/versions/<int:version_id>/restore",
+           methods=["POST"])
+@client_admin_required
+def restore_deliverable_version(deliverable_id, version_id):
+    if not _deliverable_for_request(deliverable_id):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        item = deliverables_service.restore_version(deliverable_id, version_id)
+    except deliverables_service.DeliverableError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not item:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"ok": True, "deliverable": item})
+
+
 @app.route("/api/deliverables/<int:deliverable_id>/publish", methods=["POST"])
 @client_admin_required
 def publish_deliverable(deliverable_id):
@@ -1832,6 +1857,9 @@ def publish_deliverable(deliverable_id):
             deliverable_id,
             site_id=data.get("site_id"),
             actor=session.get("email") or session.get("name") or "operator",
+            as_home=bool(data.get("as_home")),
+            # The console's publish dialog names the target and is the confirmation.
+            replace=bool(data.get("replace")),
         )
     except deliverables_service.DeliverableError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -2631,9 +2659,12 @@ def voice_tool():
             return jsonify({"error": "This client has no site yet. Add a domain in the "
                                      "Domains tab first."}), 400
         actor = session.get("email") or session.get("name") or "operator"
+        as_home = bool(args.get("as_home") or args.get("home"))
+        replace = bool(args.get("replace"))
         try:
             result = deliverables_service.publish_deliverable(
-                item["id"], site_id=site["id"], actor=actor)
+                item["id"], site_id=site["id"], actor=actor,
+                as_home=as_home, replace=replace)
         except deliverables_service.DeliverableError as exc:
             return jsonify({"error": str(exc)}), 400
         if turn:
@@ -2642,7 +2673,8 @@ def voice_tool():
             message = "[dry-run] would publish %r to %s" % (item.get("title"),
                                                             site["domain"])
         else:
-            message = "Published %r to %s" % (item.get("title"), site["domain"])
+            message = "Published %r to %s: %s" % (item.get("title"), site["domain"],
+                                                  result.get("url") or "")
         if result.get("warning"):
             message += ". " + result["warning"]
         return jsonify({"ok": True, "url": result.get("url") or "",
@@ -2719,7 +2751,8 @@ def voice_tool():
         job_id = jobs.create_job(
             "Voice follow-up", prompt, session.get("user_id"), "selector", "chat",
             org_id=previous.get("org_id"),
-            deliverable_id=previous.get("deliverable_id"))
+            deliverable_id=previous.get("deliverable_id"),
+            read_only=bool(previous.get("read_only")))
         jobs.submit(job_id)
         session["voice_job_id"] = job_id
         if turn:
@@ -2738,9 +2771,12 @@ def voice_tool():
         voice_prompt = "%s\n\n%s" % (
             studio_service.deliverable_block(artifact_item, content_limit=2600),
             instruction_text)
+    import intent
+
     job_id = jobs.create_job("Voice request", voice_prompt, session.get("user_id"),
                              "selector", "chat", org_id=current_org(),
-                             deliverable_id=(artifact_item["id"] if artifact_item else None))
+                             deliverable_id=(artifact_item["id"] if artifact_item else None),
+                             read_only=intent.looks_read_only(instruction_text))
     jobs.submit(job_id)
     session["voice_job_id"] = job_id
     if turn:
@@ -2963,9 +2999,11 @@ def create_job():
     if task_name not in jobs.TASKS:
         return jsonify({"error": "Unknown task: %s" % task_name}), 400
     team_mode = (data.get("team_mode") or "selector").strip()
+    import intent
+
     job_id = jobs.create_job(
         title, prompt, session.get("user_id"), team_mode, task_name,
-        org_id=current_org(),
+        org_id=current_org(), read_only=intent.looks_read_only(prompt),
     )
     jobs.submit(job_id)
     return jsonify({"job": jobs.get_job(job_id)}), 201
@@ -3907,9 +3945,15 @@ def manager_chat():
     target_id = artifact_item["id"] if artifact_item else None
     if target_id is None and assistant_session:
         target_id = assistant_session.get("deliverable_id") or None
+    # A review is decided here, from what the user actually asked, not from what a
+    # downstream agent later writes in a prompt. The job row carries it and the tool
+    # registry enforces it.
+    import intent
+
+    read_only = intent.looks_read_only(message)
     job_id = jobs.create_job(
         "Manager chat", prompt, session.get("user_id"), "selector", "chat",
-        org_id=current_org(), deliverable_id=target_id,
+        org_id=current_org(), deliverable_id=target_id, read_only=read_only,
     )
     if assistant_session:
         try:
@@ -4011,7 +4055,8 @@ def restore_site_version(version_id):
     if not version or not can_access_org(version.get("org_id")):
         return jsonify({"error": "Not found"}), 404
     try:
-        site = versions_mod.restore(version_id)
+        site = versions_mod.restore(
+            version_id, actor=session.get("email") or session.get("name") or "operator")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True, "site": site})
