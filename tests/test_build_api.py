@@ -21,6 +21,7 @@ import builds  # noqa: E402
 import db  # noqa: E402
 import jobs  # noqa: E402
 import orgs as orgs_service  # noqa: E402
+import templates_service  # noqa: E402
 
 db.init_db()
 FAILED = []
@@ -96,6 +97,22 @@ def test_the_interview_advances_and_a_job_starts():
           builds._row(build_id)["status"], "building")
 
 
+def test_a_designed_template_preview_is_not_escaped():
+    org = orgs_service.create_org({"name": "API Template"})["id"]
+    html = templates_service.save_template({
+        "name": "Newsletter", "subject": "Hello",
+        "body": "<!DOCTYPE html><html><body><h1>Hi there</h1></body></html>",
+    }, org)
+    plain = templates_service.save_template({
+        "name": "Plain", "subject": "Plain", "body": "Hello <b>world</b>",
+    }, org)
+    c = client(org)
+    designed = c.get("/api/templates/%d/preview" % html["id"]).get_json()
+    check("HTML is kept as a document", "<h1>Hi there</h1>" in designed["html"], True)
+    legacy = c.get("/api/templates/%d/preview" % plain["id"]).get_json()
+    check("plain template text is still escaped", "&lt;b&gt;world&lt;/b&gt;" in legacy["html"], True)
+
+
 def test_another_client_cannot_see_it():
     first = orgs_service.create_org({"name": "API First"})["id"]
     second = orgs_service.create_org({"name": "API Second"})["id"]
@@ -109,6 +126,7 @@ def test_another_client_cannot_see_it():
 if __name__ == "__main__":
     test_requires_login_and_a_client()
     test_the_interview_advances_and_a_job_starts()
+    test_a_designed_template_preview_is_not_escaped()
     test_another_client_cannot_see_it()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

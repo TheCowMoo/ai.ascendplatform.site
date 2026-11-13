@@ -384,8 +384,24 @@ a result with Open in Studio, Publish, Open/Copy form link, Open emails and Revi
 automation. `tests/test_build_guides.py`, `test_build_service.py`, `test_build_api.py`,
 `test_build_tool.py` and `build_card.mjs` are in preflight.
 
-Phase 2 still to come: multi-page site templates/navigation, a blog index, nested blog
-paths, one-approval batch publishing, and a nurture sequence with HTML email.
+Phase 2 adds the full-site path. The website guide now asks "How much do you need?"
+(one page or Home/About/Services/Contact/Blog) and, when multi-page, which pages.
+`site_builder.render_site_page` adds a consistent navigation bar and page-specific
+content; the build creates one website draft per page. The result offers **Publish site**
+(`POST /api/builds/<id>/publish`), which writes every page under **one** approved audit row
+using `publish_deliverable(..., preapproved=True)`, with the normal per-page version
+snapshots. A **blog index** (`blog.html`) lists published blog posts and has a **Refresh blog
+page** action (`POST /api/builds/<id>/refresh-blog`) for after a new post is published.
+Blog URLs remain flat (`/<slug>.html`) in this release; nested `/blog/<slug>` paths are not
+yet used.
+
+The newsletter guide can now build a three-email welcome series (welcome + two follow-ups,
+3- or 7-day spacing) as a single automation saved **switched off**, with a gate before each
+send. Newsletter templates are now designed HTML; `tools/mail` sends multipart
+(text + HTML) for SMTP and raw HTML through GHL, while the template preview renders HTML in
+the existing sandboxed iframe. Plain-text templates keep their previous `<pre>` preview.
+Mass broadcast to an entire contact list, a drag-and-drop editor, multilingual copy and
+voice-driven build answers are still deliberately out of scope.
 
 ## Media - uploaded images, video and PDFs (2026-10-30)
 

@@ -470,15 +470,45 @@
         };
         actions.appendChild(open);
         if (result.site_id) {
-          var publish = el('button', 'btn', 'Publish');
+          var manyPages = (result.page_ids || []).length > 1;
+          var publish = el('button', 'btn', manyPages ? 'Publish site' : 'Publish');
           publish.type = 'button';
-          publish.onclick = function () { publishBuildResult(build, result, publish); };
+          publish.onclick = function () {
+            if (manyPages) publishBuildSite(build, result, publish);
+            else publishBuildResult(build, result, publish);
+          };
           actions.appendChild(publish);
         }
       }
+      (result.pages || []).forEach(function (page) {
+        if (!page.deliverable_id) return;
+        var pageOpen = el('button', 'btn btn-ghost', 'Open ' + (page.title || 'page'));
+        pageOpen.type = 'button';
+        pageOpen.onclick = function () {
+          buildCloseHost(card);
+          openInStudio('deliverable', page.deliverable_id);
+        };
+        actions.appendChild(pageOpen);
+      });
+      if ((result.pages || []).some(function (page) { return page.page === 'blog'; })) {
+        var refreshBlog = el('button', 'btn btn-ghost', 'Refresh blog page');
+        refreshBlog.type = 'button';
+        refreshBlog.onclick = function () {
+          refreshBlog.disabled = true;
+          api('POST', '/api/builds/' + build.id + "/refresh-blog").then(function (res) {
+            toast('Blog page refreshed' + (res.url ? ' - ' + res.url : ''), true);
+            refreshBlog.disabled = false;
+          }).catch(function (e) {
+            refreshBlog.disabled = false;
+            toast(e.message, false);
+          });
+        };
+        actions.appendChild(refreshBlog);
+      }
       (result.form_links || []).forEach(function (link) {
-        actions.appendChild(buildLinkButton('Open ' + link.label, link.url));
-        actions.appendChild(buildCopyButton(link.url));
+        var url = link.public_url || link.url;
+        actions.appendChild(buildLinkButton('Open ' + link.label, url));
+        actions.appendChild(buildCopyButton(url));
       });
       if (result.form_url) {
         actions.appendChild(buildLinkButton('Open the form', result.form_url));
@@ -608,6 +638,22 @@
         .catch(function () { toast('Copy failed', false); });
     };
     return button;
+  }
+
+  function publishBuildSite(build, result, button) {
+    var domain = result.site_domain || 'the site';
+    if (!window.confirm('Publish all pages to ' + domain + '? Existing pages with the ' +
+                        'same names will be replaced.')) return;
+    button.disabled = true;
+    api('POST', '/api/builds/' + build.id + "/publish").then(function (res) {
+      toast(res.dry_run
+        ? 'Dry-run: the pages are ready, but nothing was written'
+        : 'Published to ' + (res.urls || []).join(', '), true);
+      button.disabled = false;
+    }).catch(function (e) {
+      button.disabled = false;
+      toast(e.message, false);
+    });
   }
 
   function publishBuildResult(build, result, button) {

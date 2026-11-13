@@ -20,6 +20,7 @@ os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 os.environ.pop("JOB_BACKEND", None)
 os.environ.pop("REDIS_URL", None)
 
+import actions  # noqa: E402
 import automations  # noqa: E402
 import build_service  # noqa: E402
 import builds  # noqa: E402
@@ -29,7 +30,10 @@ import forms as forms_service  # noqa: E402
 import jobs  # noqa: E402
 import orgs as orgs_service  # noqa: E402
 import profile as profile_mod  # noqa: E402
+import provisioner  # noqa: E402
+import sites as sites_service  # noqa: E402
 import templates_service  # noqa: E402
+from tools import mail as mail_tool  # noqa: E402
 
 db.init_db()
 FAILED = []
@@ -143,11 +147,128 @@ def test_a_newsletter_builds_a_template_and_signup_without_sending():
     template = templates_service.get_template(result["template_id"], org)
     check("a newsletter template exists", bool(template), True)
     check("with the subject", template["subject"], "This week at the bakery")
+    check("the template is a designed HTML email", "<html" in template["body"].lower(), True)
     check("nothing was sent", "nothing has been sent" in
           " ".join(result.get("notes") or []).lower(), True)
     check("a sign-up form exists", bool(result.get("form_id")), True)
     automation = automations.get(result["automation_id"], org)
     check("the welcome automation is switched off", automation["enabled"], 0)
+
+
+def test_a_newsletter_can_be_a_three_email_series():
+    org = orgs_service.create_org({"name": "Build Series"})["id"]
+    build = make_build(org, "newsletter", {
+        "audience": "Regulars",
+        "goal": "Welcome people",
+        "subject": "Hello",
+        "story": "Here is the news.",
+        "tone": "friendly",
+        "length": "short",
+        "need_form": "yes",
+        "form_fields": ["email"],
+        "welcome": "yes",
+        "welcome_message": "Thanks for joining.",
+        "sequence": "series",
+        "followup": "Share one useful tip.",
+        "cadence": "3_days",
+    })
+    result = build_service.execute(build["id"])
+    check("three welcome templates exist", len(result.get("welcome_template_ids") or []), 3)
+    automation = automations.get(result["automation_id"], org)
+    check("the series is switched off", automation["enabled"], 0)
+    check("it has three approvals and three sends and two waits",
+          len(automation["steps"]), 8)
+    check("the trigger is a form submission",
+          automation["trigger_config"].get("event"), "form.submitted")
+
+
+def test_a_multi_page_site_publishes_with_one_approval():
+    org = orgs_service.create_org({"name": "Build Multi"})["id"]
+    docroot = os.path.join(tempfile.mkdtemp(prefix="build-multi-"), "public_html")
+    sites_service.create_site(
+        {"domain": "multi.test", "docroot": docroot}, org_id=org)
+    build = make_build(org, "website", {
+        "business_name": "Acme",
+        "what_you_do": "Bread and cakes",
+        "goal": "contact",
+        "services": "Bread\nCakes",
+        "email": "hi@acme.test",
+        "style": "clean",
+        "want_form": "no",
+        "want_newsletter": "no",
+        "has_domain": "yes",
+        "domain_name": "multi.test",
+        "site_size": "multi_page",
+        "pages": ["about", "services", "contact", "blog"],
+    })
+    result = build_service.execute(build["id"])
+    builds.finish(build["id"], result)
+    check("it is a multi-page build", result["mode"], "multi_page")
+    check("home plus four pages were made", len(result["page_ids"]), 5)
+    home = deliverables.get_deliverable(result["page_ids"][0])
+    check("the home page has navigation", "/about.html" in home["content"], True)
+    check("a page is still a draft", home["status"], "draft")
+    original = actions.is_dry_run
+    original_root = provisioner.SITES_ROOT
+    actions.is_dry_run = lambda: False
+    provisioner.SITES_ROOT = os.path.dirname(docroot)
+    try:
+        published = build_service.publish_site_build(build["id"], org, "tester")
+    finally:
+        actions.is_dry_run = original
+        provisioner.SITES_ROOT = original_root
+    check("every page has a URL", len(published["urls"]), 5)
+    for name in ("index.html", "about.html", "services.html", "contact.html", "blog.html"):
+        check("%s was written" % name, os.path.exists(os.path.join(docroot, name)), True)
+    statuses = [deliverables.get_deliverable(page)["status"]
+                for page in result["page_ids"]]
+    check("all pages are published", statuses, ["published"] * 5)
+    batch = [row for row in actions.list_approvals(limit=20)
+             if "build #%d" % build["id"] in (row.get("summary") or "")]
+    check("the batch has one approval", len(batch), 1)
+
+    post = deliverables.create_deliverable({
+        "kind": "blog", "title": "A new post", "slug": "a-new-post",
+        "summary": "Fresh from the bakery", "content": "<html><body>post</body></html>",
+        "site_id": sites_service.get_site_by_domain("multi.test", org)["id"],
+        "status": "published",
+    }, org_id=org)
+    actions.is_dry_run = lambda: False
+    provisioner.SITES_ROOT = os.path.dirname(docroot)
+    try:
+        refreshed = build_service.refresh_blog_page(build["id"], org, "tester")
+    finally:
+        actions.is_dry_run = original
+        provisioner.SITES_ROOT = original_root
+    check("the blog page refresh reports the post", refreshed["posts"], 1)
+    with open(os.path.join(docroot, "blog.html"), encoding="utf-8") as handle:
+        check("the index now links the post", "A new post" in handle.read(), True)
+    deliverables.delete_deliverable(post["id"])
+
+
+def test_a_blog_post_publishes_through_the_same_path():
+    org = orgs_service.create_org({"name": "Build Blog Publish"})["id"]
+    docroot = os.path.join(tempfile.mkdtemp(prefix="build-blog-publish-"), "public_html")
+    site = sites_service.create_site({"domain": "blog.test", "docroot": docroot}, org_id=org)
+    post = deliverables.create_deliverable({
+        "kind": "blog", "title": "A post", "slug": "a-post",
+        "summary": "Read this", "content": "<html><body>A post</body></html>",
+        "site_id": site["id"],
+    }, org_id=org)
+    original = actions.is_dry_run
+    original_root = provisioner.SITES_ROOT
+    actions.is_dry_run = lambda: False
+    provisioner.SITES_ROOT = os.path.dirname(docroot)
+    try:
+        published = deliverables.publish_deliverable(
+            post["id"], site_id=site["id"], actor="tester")
+    finally:
+        actions.is_dry_run = original
+        provisioner.SITES_ROOT = original_root
+    check("a blog post can be published", published["url"], "https://blog.test/a-post.html")
+    check("the file exists", os.path.exists(os.path.join(docroot, "a-post.html")), True)
+    check("the post is marked published",
+          deliverables.get_deliverable(post["id"])["status"], "published")
 
 
 def test_the_worker_task_finishes_and_records_the_result():
@@ -167,6 +288,14 @@ def test_the_worker_task_finishes_and_records_the_result():
           any(kind == "step" for source, kind, content in events), True)
 
 
+def test_html_email_is_detected_and_has_a_text_fallback():
+    check("an HTML document is recognised",
+          mail_tool._looks_html("<!DOCTYPE html><html><body>Hi</body></html>"), True)
+    check("plain text is not", mail_tool._looks_html("Hi there"), False)
+    check("the text fallback is readable", mail_tool._plain_text(
+        "<html><body><h1>Hello</h1><p>World</p></body></html>"), "Hello World")
+
+
 def test_another_clients_build_is_invisible():
     first = orgs_service.create_org({"name": "Build First"})["id"]
     second = orgs_service.create_org({"name": "Build Second"})["id"]
@@ -180,6 +309,10 @@ if __name__ == "__main__":
     test_a_form_builds_a_working_form_and_a_switched_off_welcome()
     test_a_blog_post_is_a_draft_and_can_be_published_later()
     test_a_newsletter_builds_a_template_and_signup_without_sending()
+    test_a_newsletter_can_be_a_three_email_series()
+    test_a_multi_page_site_publishes_with_one_approval()
+    test_a_blog_post_publishes_through_the_same_path()
+    test_html_email_is_detected_and_has_a_text_fallback()
     test_the_worker_task_finishes_and_records_the_result()
     test_another_clients_build_is_invisible()
     if FAILED:

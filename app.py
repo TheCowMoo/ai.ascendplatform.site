@@ -3742,6 +3742,44 @@ def api_build_start(build_id):
                     "job_id": job_id}), 201
 
 
+@app.route("/api/builds/<int:build_id>/publish", methods=["POST"])
+@client_admin_required
+def api_build_publish(build_id):
+    import build_service
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    if not builds_service._row(build_id, org):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        result = build_service.publish_site_build(
+            build_id, org, actor=session.get("email") or session.get("name") or "operator")
+    except build_service.BuildError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
+@app.route("/api/builds/<int:build_id>/refresh-blog", methods=["POST"])
+@client_admin_required
+def api_build_refresh_blog(build_id):
+    import build_service
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    if not builds_service._row(build_id, org):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        result = build_service.refresh_blog_page(
+            build_id, org, actor=session.get("email") or session.get("name") or "operator")
+    except build_service.BuildError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
 @app.route("/api/builds/<int:build_id>/cancel", methods=["POST"])
 @login_required
 def api_build_cancel(build_id):
@@ -3837,11 +3875,18 @@ def api_template_preview(template_id):
               "id": "0", "status": "new", "tags": "sample", "company": "Example Ltd"}
     subject = templates_service.render(item.get("subject") or "", sample)
     body = templates_service.render(item.get("body") or "", sample)
-    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    html = ("<!doctype html><html><head><meta charset='utf-8'>"
-            "<style>body{margin:0;padding:20px;font:15px/1.6 system-ui,-apple-system,"
-            "'Segoe UI',Roboto,sans-serif;color:#111827}pre{white-space:pre-wrap;"
-            "font:inherit;margin:0}</style></head><body><pre>" + safe + "</pre></body></html>")
+    looks_html = any(token in body.lower() for token in ("<html", "<!doctype", "<body"))
+    if looks_html:
+        # The console puts this in a sandboxed iframe. A generated newsletter is a
+        # document, not text to escape; a plain template still gets the readable pre.
+        html = body
+    else:
+        safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        html = ("<!doctype html><html><head><meta charset='utf-8'>"
+                "<style>body{margin:0;padding:20px;font:15px/1.6 system-ui,-apple-system,"
+                "'Segoe UI',Roboto,sans-serif;color:#111827}pre{white-space:pre-wrap;"
+                "font:inherit;margin:0}</style></head><body><pre>" + safe +
+                "</pre></body></html>")
     return jsonify({"template": item, "subject": subject, "body": body, "html": html,
                     "sample": json.dumps(sample)})
 

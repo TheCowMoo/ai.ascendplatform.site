@@ -417,7 +417,8 @@ def _slug_conflict(item, site, relative=None):
     overwriting someone else's live page silently is exactly what this prevents.
     """
     wanted = relative or page_path(item.get("slug"))
-    for other in list_deliverables("website", item.get("org_id")):
+    for other in (list_deliverables("website", item.get("org_id"))
+                  + list_deliverables("blog", item.get("org_id"))):
         if other["id"] == item["id"] or other["status"] != "published":
             continue
         if page_path(other.get("slug")) != wanted:
@@ -428,7 +429,7 @@ def _slug_conflict(item, site, relative=None):
 
 
 def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
-                        replace=False):
+                        replace=False, preapproved=False):
     """Write a ``website`` deliverable to a site's docroot and mark it published.
 
     ``as_home`` publishes the page as the site's front page (``index.html``) and records
@@ -489,7 +490,7 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
     # The audit row is still the same shape as an agent-initiated write, with this user on it.
     live = not actions.is_dry_run()
     approval_id = None
-    if live:
+    if live and not preapproved:
         approval_id = actions.request_approval(
             "file_write", summary, {"path": path, "bytes": len(content)}, None
         )

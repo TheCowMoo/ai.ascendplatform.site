@@ -172,6 +172,14 @@ def finish(build_id, result):
             (json.dumps(result or {}), now_str(), build_id))
 
 
+def record_result(build_id, result):
+    """Update the result of a finished build without changing its status."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE build_sessions SET result_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(result or {}), now_str(), build_id))
+
+
 def fail(build_id, error):
     with get_connection() as conn:
         conn.execute(

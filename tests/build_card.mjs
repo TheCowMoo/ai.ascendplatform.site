@@ -37,6 +37,8 @@ assert.ok(source.split("ev.type === 'build'").length - 1 >= 2,
 assert.ok(source.includes('build-required'), 'required questions are marked');
 assert.ok(source.includes('Change an answer'), 'the review can be edited');
 assert.ok(source.includes('Publish'), 'a built page can be published from the result');
+assert.ok(source.includes('Publish site'), 'a multi-page site publishes in one action');
+assert.ok(source.includes('Refresh blog page'), 'the blog index can be refreshed after a post');
 
 const start = source.indexOf('function showBuildCard');
 const end = source.indexOf('function buildQuestion');

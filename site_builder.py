@@ -180,6 +180,138 @@ def render_blog(answers, profile=None, cta_links=None):
        html.escape(audience or "your readers"))
 
 
+def _nav(answers, current):
+    labels = {"home": "Home", "about": "About", "services": "Services",
+              "contact": "Contact", "blog": "Blog"}
+    pages = ["home"]
+    for page in answers.get("pages") or []:
+        if page in labels and page != "home" and page not in pages:
+            pages.append(page)
+    links = []
+    for page in pages:
+        href = "/" if page == "home" else "/%s.html" % page
+        if page == current:
+            links.append('<span class="site-nav-current">%s</span>' % labels[page])
+        else:
+            links.append('<a href="%s">%s</a>' % (href, labels[page]))
+    return ('<style>.site-nav{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 28px;'
+            'padding:0 0 14px;border-bottom:1px solid #e6e8ec;font-size:14px;'
+            'font-weight:650}.site-nav a{text-decoration:none}.site-nav-current{'
+            'opacity:.6}.blog-list{display:grid;gap:16px}.blog-list article{'
+            'padding:16px;border:1px solid #e6e8ec;border-radius:12px}'
+            '.blog-list h2{margin:0 0 6px;font-size:20px}</style>'
+            '<nav class="site-nav" aria-label="Site">%s</nav>' % "".join(links))
+
+
+def _contact_html(answers, profile):
+    email = answers.get("email") or profile.get("support_email") or ""
+    phone = answers.get("phone") or profile.get("support_phone") or ""
+    address = answers.get("address") or profile.get("address") or ""
+    hours = answers.get("hours") or profile.get("business_hours") or ""
+    parts = []
+    if email:
+        parts.append('<p>Email: <a href="mailto:%s">%s</a></p>' %
+                     (_href(email), html.escape(email)))
+    if phone:
+        parts.append('<p>Phone: <a href="tel:%s">%s</a></p>' %
+                     (_href(re.sub(r"[^0-9+]", "", phone)), html.escape(phone)))
+    if address:
+        parts.append("<p>%s</p>" % html.escape(address))
+    if hours:
+        parts.append("<p>%s</p>" % html.escape(hours))
+    return "".join(parts)
+
+
+def _services_html(answers):
+    services = _lines(answers.get("services"))
+    return ("<ul>%s</ul>" %
+            "".join("<li>%s</li>" % html.escape(item) for item in services)
+            if services else "")
+
+
+def _cta_html(form_links, color):
+    parts = []
+    for link in form_links or []:
+        if link.get("url"):
+            parts.append(_button(link["url"], link.get("label") or "Get in touch", color))
+    return "".join(parts)
+
+
+def render_site_page(answers, page="home", profile=None, form_links=None, blog_posts=None):
+    """One page of a multi-page starter site, with a consistent navigation bar."""
+    answers = answers or {}
+    profile = profile or {}
+    name = answers.get("business_name") or profile.get("name") or "Your business"
+    intro = answers.get("what_you_do") or profile.get("description") or ""
+    audience = answers.get("audience") or profile.get("target_audience") or ""
+    different = _text(answers.get("different"))
+    color = answers.get("brand_color") or profile.get("brand_color") or "#4f46e5"
+    nav = _nav(answers, page)
+    contact = _contact_html(answers, profile)
+    services = _services_html(answers)
+    cta = _cta_html(form_links, color)
+    titles = {
+        "home": name,
+        "about": "About %s" % name,
+        "services": "What we do",
+        "contact": "Contact",
+        "blog": "Blog",
+    }
+    taglines = {
+        "home": intro or "Welcome",
+        "about": audience or "A little about us",
+        "services": "A few ways we can help.",
+        "contact": "We would love to hear from you.",
+        "blog": "News and useful reads.",
+    }
+    body = [nav]
+    if page == "home":
+        if services:
+            body.append("<h2>What we do</h2>%s" % services)
+        if different:
+            body.append("<h2>Why choose us</h2>%s" % _paragraphs(different))
+        if contact:
+            body.append("<h2>Contact</h2>%s" % contact)
+        body.append(cta)
+    elif page == "about":
+        if intro:
+            body.append("<p>%s</p>" % html.escape(intro))
+        if audience:
+            body.append("<h2>Who we help</h2><p>%s</p>" % html.escape(audience))
+        if different:
+            body.append("<h2>What makes us different</h2>%s" % _paragraphs(different))
+        body.append(cta)
+    elif page == "services":
+        body.append("<h2>What we offer</h2>%s" % (services or "<p>Details coming soon.</p>"))
+        if different:
+            body.append("<h2>Why us</h2>%s" % _paragraphs(different))
+        body.append(cta)
+    elif page == "contact":
+        body.append("<h2>Get in touch</h2>%s" % (contact or
+                    "<p>Add your contact details in the Business Profile.</p>"))
+        body.append(cta)
+    elif page == "blog":
+        posts = list(blog_posts or [])
+        if not posts:
+            body.append("<p>Our first post is on its way.</p>")
+        else:
+            cards = []
+            for post in posts:
+                slug = post.get("slug") or ""
+                href = "/%s.html" % slug
+                cards.append('<article><h2><a href="%s">%s</a></h2><p>%s</p></article>'
+                             % (_href(href), html.escape(post.get("title") or "Post"),
+                                html.escape(post.get("summary") or "")))
+            body.append('<div class="blog-list">%s</div>' % "".join(cards))
+    return provisioner.render_index(
+        title=titles.get(page, name),
+        tagline=taglines.get(page, ""),
+        body_html="".join(body),
+        brand_color=color,
+        font_family=_style_font(answers.get("style")),
+    )
+
+
 def render_newsletter(answers, profile=None):
     """Subject and plain-text body for the newsletter template.
 
@@ -202,6 +334,61 @@ def render_newsletter(answers, profile=None):
         parts += ["", "Links:"] + links
     parts += ["", "Speak soon,", name or "The team"]
     return {"subject": subject, "body": "\n".join(parts).strip()}
+
+
+def _safe_url(value):
+    text = str(value or "").strip()
+    if re.match(r"^(https?://|mailto:|tel:|/)", text, re.I):
+        return _href(text)
+    return ""
+
+
+def render_newsletter_html(answers, profile=None):
+    """A brand-wrapped HTML email for the newsletter template.
+
+    Inline styles only: mail clients strip stylesheets. Every answer is escaped, and a
+    link is only emitted when it is http(s), mailto, tel or relative.
+    """
+    answers = answers or {}
+    profile = profile or {}
+    name = profile.get("name") or answers.get("business_name") or "Our newsletter"
+    color = answers.get("brand_color") or profile.get("brand_color") or "#4f46e5"
+    intro = _text(answers.get("story"))
+    offer = _text(answers.get("offer"))
+    links = [link for link in _lines(answers.get("links")) if _safe_url(link)]
+    parts = [
+        '<div style="max-width:640px;margin:0 auto;background:#ffffff;'
+        'border:1px solid #e6e8ec;border-radius:14px;overflow:hidden;'
+        'font-family:system-ui,-apple-system,\'Segoe UI\',Roboto,Arial,sans-serif;'
+        'color:#1f2937;line-height:1.65">',
+        '<div style="background:%s;color:#ffffff;padding:28px 30px">'
+        '<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;'
+        'opacity:.85">%s</div>'
+        '<h1 style="margin:6px 0 0;font-size:26px;line-height:1.2">%s</h1></div>'
+        % (html.escape(color), html.escape(name), html.escape(answers.get("subject") or name)),
+        '<div style="padding:28px 30px">',
+    ]
+    if intro:
+        parts.append("<p style='margin:0 0 16px'>%s</p>" % html.escape(intro).replace("\n", "<br>"))
+    if offer:
+        parts.append('<p style="margin:0 0 16px;padding:12px 14px;background:#f7f7fb;'
+                     'border-radius:10px">%s</p>' % html.escape(offer).replace("\n", "<br>"))
+    if links:
+        parts.append("<p style='margin:0 0 8px;font-weight:650'>Links</p><ul style='margin:0;"
+                     "padding-left:20px'>")
+        for link in links:
+            parts.append('<li><a href="%s" style="color:%s">%s</a></li>'
+                         % (_safe_url(link), html.escape(color), html.escape(link)))
+        parts.append("</ul>")
+    parts.append("</div>")
+    parts.append('<div style="padding:18px 30px;background:#fbfbfd;color:#6b7280;'
+                 'font-size:12px">Sent by %s.</div>' % html.escape(name))
+    parts.append("</div>")
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>%s</title></head><body style="margin:0;padding:24px;'
+            'background:#f3f4f6">%s</body></html>'
+            % (html.escape(answers.get("subject") or name), "".join(parts)))
 
 
 def render_welcome(answers, profile=None):

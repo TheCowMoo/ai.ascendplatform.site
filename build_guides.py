@@ -107,6 +107,19 @@ QUESTIONS = {
         _q("brand_color", 2, "Pick a main colour", kind="color", default="#4f46e5",
            help="Used for buttons and small accents."),
 
+        _q("site_size", 3, "How many pages do you need?", kind="choice",
+           options=[{"value": "one_page", "label": "One simple page"},
+                    {"value": "multi_page", "label": "A few pages (Home, About, Services, Contact)"}],
+           default="one_page", required=True,
+           help="Start with one page if you are not sure. You can add pages later."),
+        _q("pages", 3, "Which pages should I make?", kind="multi",
+           options=[{"value": "about", "label": "About"},
+                    {"value": "services", "label": "Services or offers"},
+                    {"value": "contact", "label": "Contact"},
+                    {"value": "blog", "label": "Blog"}],
+           default=["about", "services", "contact"],
+           show_if={"id": "site_size", "eq": "multi_page"}, required=True,
+           help="Home is always included."),
         _q("want_form", 3, "Should the site have a contact form?", kind="yes_no",
            default="yes", help="People can send you a message without opening their email."),
         _q("want_newsletter", 3, "Should the site collect newsletter sign-ups?", kind="yes_no",
@@ -216,6 +229,20 @@ QUESTIONS = {
         _q("welcome", 2, "Should I draft a welcome email and a follow-up automation?",
            kind="yes_no", default="yes",
            help="The automation is saved switched off. You review it before enabling."),
+        _q("sequence", 2, "How much follow-up do you want?", kind="choice",
+           options=[{"value": "welcome", "label": "Just a welcome email"},
+                    {"value": "series", "label": "A short welcome series (3 emails)"}],
+           default="welcome", show_if={"id": "welcome", "eq": "yes"}, required=True,
+           help="A series is three short emails spaced a few days apart."),
+        _q("followup", 2, "What should the follow-up emails talk about?",
+           kind="long_text", show_if={"id": "sequence", "eq": "series"},
+           default="Share one useful tip and invite them back.",
+           help="We will turn this into two short follow-ups."),
+        _q("cadence", 2, "How often should the series send?", kind="choice",
+           options=[{"value": "3_days", "label": "Every 3 days"},
+                    {"value": "7_days", "label": "Every week"}],
+           default="3_days", show_if={"id": "sequence", "eq": "series"},
+           required=True),
         _q("welcome_message", 2, "What should the welcome email say?",
            kind="long_text", show_if={"id": "welcome", "eq": "yes"},
            default="Thanks for joining us. Here is what to expect from our newsletter.",
@@ -373,7 +400,10 @@ def first_missing_step(kind, answers):
     """The first step with a visible required question that has no answer, or None."""
     for index in range(len(STEPS.get(normalise_kind(kind), ()))):
         for question in questions_for(kind, index, answers):
-            if question.get("required") and _empty((answers or {}).get(question["id"])):
+            if not question.get("required"):
+                continue
+            if _empty((answers or {}).get(question["id"])) and \
+                    question.get("default") in (None, ""):
                 return index
     return None
 
@@ -420,8 +450,14 @@ def summary(kind, answers):
     assumed = []
     missing = []
     if kind == "website":
-        will.append("A one-page website for %s" %
-                    (answers.get("business_name") or "your business"))
+        if answers.get("site_size") == "multi_page":
+            pages = answers.get("pages") or ["about", "services", "contact"]
+            will.append("A website for %s with Home, %s" %
+                        (answers.get("business_name") or "your business",
+                         ", ".join(page.title() for page in pages)))
+        else:
+            will.append("A one-page website for %s" %
+                        (answers.get("business_name") or "your business"))
         if answers.get("services"):
             will.append("A section for what you offer")
         if answers.get("email") or answers.get("phone"):
@@ -459,7 +495,8 @@ def summary(kind, answers):
             will.append("A welcome email for you to review")
         assumed.append("The message: %s" %
                        (answers.get("success_message") or "Thanks - we have your message."))
-        missing.append("A sender address before a welcome email can be sent.")
+        if answers.get("welcome_email") == "yes":
+            missing.append("A sender address before the welcome email can be sent.")
     elif kind == "newsletter":
         will.append("A newsletter template called %r" %
                     (answers.get("subject") or "your first issue"))
@@ -467,6 +504,8 @@ def summary(kind, answers):
             will.append("A sign-up form that adds people to your contacts")
         if answers.get("welcome") == "yes":
             will.append("A welcome email and an automation saved switched off")
+            if answers.get("sequence") == "series":
+                will.append("Two follow-up emails in the same switched-off series")
         assumed.append("A %s email in a %s voice" %
                        (answers.get("length") or "standard",
                         answers.get("tone") or "friendly"))

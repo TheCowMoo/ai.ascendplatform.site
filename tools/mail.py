@@ -5,6 +5,8 @@ Uses the standard library's ``smtplib``, matching the ``urllib``-only HTTP alrea
 used in ``meta.py`` — no extra dependency. In dry-run nothing is sent.
 """
 
+import html as html_mod
+import re
 import smtplib
 from email.message import EmailMessage
 
@@ -63,6 +65,18 @@ def parse_recipients(to):
     return [addr.strip() for addr in (to or "").replace(";", ",").split(",") if addr.strip()]
 
 
+def _looks_html(body):
+    lowered = str(body or "").lower()
+    return "<html" in lowered or "<!doctype" in lowered or "<body" in lowered
+
+
+def _plain_text(body):
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", str(body or ""),
+                  flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(html_mod.unescape(text).split())
+
+
 def _build_send_email(emit, job_id=None):
     async def send_email(to: str = "", subject: str = "", body: str = "",
                         template_id: int = 0, contact_id: int = 0) -> str:
@@ -111,10 +125,10 @@ def _build_send_email(emit, job_id=None):
         # identity would be the operator's mailbox, which is a worse bug than a failure.
         import platform_mail
 
+        looks_html = _looks_html(body)
         if org is not None and platform_mail.is_configured(org):
-            import html as html_mod
-
-            body_html = "<p>%s</p>" % html_mod.escape(body).replace("\n", "<br>")
+            body_html = body if looks_html else (
+                "<p>%s</p>" % html_mod.escape(body).replace("\n", "<br>"))
             try:
                 for address in recipients:
                     platform_mail.send(address, subject or "(no subject)", body_html,
@@ -130,7 +144,11 @@ def _build_send_email(emit, job_id=None):
         message["From"] = sender(org)
         message["To"] = ", ".join(recipients)
         message["Subject"] = subject or "(no subject)"
-        message.set_content(body)
+        if looks_html:
+            message.set_content(_plain_text(body))
+            message.add_alternative(body, subtype="html")
+        else:
+            message.set_content(body)
         try:
             with smtplib.SMTP(host(org), port(org), timeout=20) as server:
                 if use_tls(org):
