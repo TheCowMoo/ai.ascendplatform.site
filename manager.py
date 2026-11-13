@@ -61,6 +61,13 @@ SYSTEM = (
     "and what it offers; for a funnel, the entry offer and the steps; for a website, its "
     "purpose and sections; for an automation, its trigger and whether sending needs "
     "approval. If the brief already covers those, do not ask - build it.\n"
+    "When someone asks to create a website, blog post, sign-up form or newsletter, use "
+    "start_build instead of interviewing in prose. It opens a plain-language question "
+    "card in their console. Say one short sentence such as 'I will ask a few easy "
+    "questions - answer what you can, and skip the rest.' Do not repeat the questions, "
+    "ask for HTML, slugs, DNS or API keys, or ask them to fill in a technical form. If "
+    "they already gave a complete brief, start the build and tell them what you are "
+    "making; the review screen lets them change an answer.\n"
     "You cannot send email or touch servers directly - those are jobs with approvals, "
     "so delegate them with start_job and say that they await approval. Publishing goes "
     "through publish_page, which records the approval row. Never claim something is "
@@ -78,7 +85,7 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
            "create_form", "list_forms", "remember_preference", "publish_page",
-           "add_form_link", "apply_automation", "fetch_page")
+           "add_form_link", "apply_automation", "fetch_page", "start_build")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "

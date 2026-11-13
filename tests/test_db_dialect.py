@@ -116,7 +116,7 @@ def test_sqlite_schema():
         "jobs", "job_events", "job_artifacts", "business_profiles", "agents",
         "ssh_hosts", "sites", "action_approvals", "settings", "settings_events",
         "orgs", "client_settings", "deliverables", "deliverable_versions",
-        "mail_senders", "invites",
+        "build_sessions", "mail_senders", "invites",
         "data_sources", "metrics_daily", "sync_runs", "site_versions",
         "automations", "automation_runs", "automation_proposals", "contacts", "email_templates", "agent_tools",
         "forms", "form_responses", "media", "assistant_sessions", "assistant_messages",

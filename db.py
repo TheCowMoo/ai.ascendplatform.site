@@ -588,6 +588,31 @@ deliverables = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
+# A guided build in progress: the questions the console is showing, the answers so far,
+# and what the build produced. Kept server-side so a reload (or another device) resumes
+# the same interview instead of starting over. answers_json is user-authored business
+# information, scoped by org_id like every other client row.
+build_sessions = Table(
+    "build_sessions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer),
+    Column("user_id", Integer),
+    Column("job_id", Integer),
+    Column("kind", Text, nullable=False, server_default=_literal("website")),
+    Column("title", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("asking")),
+    Column("step", Integer, nullable=False, server_default=text("0")),
+    Column("answers_json", Text, nullable=False, server_default=_literal("{}")),
+    Column("result_json", Text, nullable=False, server_default=_literal("{}")),
+    Column("error", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+Index("idx_build_sessions_org", build_sessions.c.org_id)
+
+
 # The previous content of a draft, written before every change. The live page is not
 # an undo: a QA or review run can replace the only copy of a draft, and the next reader
 # sees a report instead of the page. One row per save is cheap; restoring one is a

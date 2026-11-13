@@ -235,6 +235,391 @@
     setTimeout(function () { expiring = false; }, 1500);
   }
 
+  // ---------- Guided builds: plain questions, then a safe draft ----------
+  // The card is shared by the Studio, the floating sheet and the Create button. The
+  // server owns the questions and validation; this code only paints them.
+  var BUILD_KINDS = [
+    { value: 'website', label: 'Website', blurb: 'A simple one-page site with your services and contact details.' },
+    { value: 'blog', label: 'Blog post', blurb: 'An article for your audience, ready to review and publish.' },
+    { value: 'form', label: 'Sign-up form', blurb: 'Collect names and emails, and get a link to share.' },
+    { value: 'newsletter', label: 'Newsletter', blurb: 'An email template, with an optional sign-up form.' }
+  ];
+
+  function buildCloseHost(host) {
+    var backdrop = host.closest ? host.closest('.modal-backdrop') : null;
+    if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+  }
+
+  function buildGo(hash, host) {
+    buildCloseHost(host);
+    location.hash = hash;
+  }
+
+  function openBuildPicker() {
+    var backdrop = el('div', 'modal-backdrop');
+    var panel = el('div', 'modal');
+    var opened = false;
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+
+    function showKinds() {
+      panel.innerHTML = '';
+      var close = el('button', 'btn btn-ghost btn-sm', '\u00d7');
+      close.type = 'button';
+      close.setAttribute('aria-label', 'Close');
+      close.onclick = function () { backdrop.remove(); };
+      panel.appendChild(close);
+      var head = el('div', 'build-head');
+      head.innerHTML = '<div class="build-kicker">Build with me</div>' +
+        '<h3>What would you like to make?</h3>' +
+        '<p class="muted">A few easy questions. You can skip what you are not sure about.</p>';
+      panel.appendChild(head);
+      var grid = el('div', 'build-kinds');
+      BUILD_KINDS.forEach(function (kind) {
+        var button = el('button', 'build-kind');
+        button.type = 'button';
+        button.innerHTML = '<strong>' + esc(kind.label) + '</strong>' +
+          '<span>' + esc(kind.blurb) + '</span>';
+        button.onclick = function () {
+          opened = true;
+          button.disabled = true;
+          api('POST', '/api/builds', { kind: kind.value }).then(function (d) {
+            panel.innerHTML = '';
+            var x = el('button', 'btn btn-ghost btn-sm', '\u00d7');
+            x.type = 'button';
+            x.setAttribute('aria-label', 'Close');
+            x.onclick = function () { backdrop.remove(); };
+            panel.appendChild(x);
+            showBuildCard(panel, d.build.id);
+          }).catch(function (e) {
+            button.disabled = false;
+            toast(e.message, false);
+          });
+        };
+        grid.appendChild(button);
+      });
+      panel.appendChild(grid);
+    }
+
+    api('GET', '/api/builds').then(function (d) {
+      if (opened) return;
+      var rows = (d.builds || []).filter(function (row) {
+        return row.status !== 'cancelled';
+      }).slice(0, 5);
+      if (!rows.length) return;
+      var resume = el('div', 'build-resume');
+      resume.appendChild(el('div', 'build-kicker', 'Continue where you left off'));
+      rows.forEach(function (row) {
+        var button = el('button', 'build-resume-row');
+        button.type = 'button';
+        button.innerHTML = '<span><strong>' + esc(row.title || 'Untitled build') +
+          '</strong><small>' + esc(row.status) + ' \u00b7 ' + (row.step + 1) + ' of ' +
+          row.total_steps + '</small></span><span>Continue \u203a</span>';
+        button.onclick = function () {
+          opened = true;
+          panel.innerHTML = '';
+          var x = el('button', 'btn btn-ghost btn-sm', '\u00d7');
+          x.type = 'button';
+          x.setAttribute('aria-label', 'Close');
+          x.onclick = function () { backdrop.remove(); };
+          panel.appendChild(x);
+          showBuildCard(panel, row.id);
+        };
+        resume.appendChild(button);
+      });
+      panel.appendChild(resume);
+    }).catch(function () { /* the picker still works without the resume list */ });
+
+    showKinds();
+  }
+
+  function showBuildCard(host, buildId) {
+    var card = el('div', 'panel-card build-card');
+    host.appendChild(card);
+    var watching = false;
+
+    function load(step) {
+      var url = '/api/builds/' + buildId + (step == null ? '' : '?step=' + step);
+      api('GET', url).then(function (d) {
+        paint(d.build);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function paint(build) {
+      card.innerHTML = '';
+      var head = el('div', 'build-head');
+      var progress = build.total_steps
+        ? '<div class="build-progress"><span style="width:' +
+          Math.round(100 * (build.progress.step / build.progress.total)) + '%"></span></div>'
+        : '';
+      head.innerHTML = '<div class="build-kicker">Build with me \u00b7 ' +
+        esc(build.label || '') + '</div><h3>' + esc(build.title || 'Your build') +
+        '</h3><p class="muted">' + esc(build.step_label || '') + '</p>' + progress;
+      card.appendChild(head);
+      if (build.status === 'asking') paintStep(build);
+      else if (build.status === 'ready') paintReview(build);
+      else if (build.status === 'building') paintBuilding(build);
+      else if (build.status === 'done') paintResult(build);
+      else paintBuildError(build);
+    }
+
+    function submitStep(build, button) {
+      var answers = {};
+      (build.questions || []).forEach(function (question) {
+        var field = card.querySelector('[data-build-q="' + question.id + '"]');
+        if (field && field._buildValue) answers[question.id] = field._buildValue();
+      });
+      button.disabled = true;
+      api('POST', '/api/builds/' + buildId + '/answers',
+          { step: build.step, answers: answers }).then(function (d) {
+        paint(d.build);
+      }).catch(function (e) {
+        button.disabled = false;
+        toast(e.message, false);
+      });
+    }
+
+    function startBuild(build, button) {
+      button.disabled = true;
+      api('POST', '/api/builds/' + buildId + '/build').then(function () {
+        load();
+      }).catch(function (e) {
+        button.disabled = false;
+        toast(e.message, false);
+      });
+    }
+
+    function paintStep(build) {
+      var body = el('div', 'build-questions');
+      (build.questions || []).forEach(function (question) {
+        body.appendChild(buildQuestion(question));
+      });
+      card.appendChild(body);
+      var actions = el('div', 'build-actions');
+      if (build.step > 0) {
+        var back = el('button', 'btn btn-ghost', 'Back');
+        back.type = 'button';
+        back.onclick = function () { load(build.step - 1); };
+        actions.appendChild(back);
+      }
+      var next = el('button', 'btn btn-primary', 'Next');
+      next.type = 'button';
+      next.onclick = function () { submitStep(build, next); };
+      actions.appendChild(next);
+      card.appendChild(actions);
+      card.appendChild(el('p', 'fine-print',
+        'Leave anything you are not sure about blank - we will use a sensible default.'));
+    }
+
+    function paintReview(build) {
+      var summary = build.summary || {};
+      var box = el('div', 'build-review');
+      function block(title, rows, cls) {
+        if (!rows || !rows.length) return;
+        var section = el('div', 'build-review-block' + (cls ? ' ' + cls : ''));
+        section.appendChild(el('strong', null, title));
+        var list = el('ul');
+        rows.forEach(function (row) { list.appendChild(el('li', null, row)); });
+        section.appendChild(list);
+        box.appendChild(section);
+      }
+      block('I will build', summary.will_build);
+      block('I will assume', summary.assumptions);
+      block('Still useful later', summary.missing, 'build-missing');
+      if (summary.publish_note) box.appendChild(el('p', 'fine-print', summary.publish_note));
+      card.appendChild(box);
+      var actions = el('div', 'build-actions');
+      var change = el('button', 'btn btn-ghost', 'Change an answer');
+      change.type = 'button';
+      change.onclick = function () { load(0); };
+      actions.appendChild(change);
+      var buildBtn = el('button', 'btn btn-primary', 'Build it');
+      buildBtn.type = 'button';
+      buildBtn.onclick = function () { startBuild(build, buildBtn); };
+      actions.appendChild(buildBtn);
+      card.appendChild(actions);
+    }
+
+    function paintBuilding(build) {
+      var status = el('span', 'activity running');
+      card.appendChild(status);
+      if (!watching && build.job_id) {
+        watching = true;
+        watchJob(build.job_id, status, function () { load(); });
+      } else if (!build.job_id) {
+        card.appendChild(el('p', 'muted', 'The build is queued.'));
+      }
+    }
+
+    function paintResult(build) {
+      var result = build.result || {};
+      var box = el('div', 'build-result');
+      box.appendChild(el('p', 'muted',
+        'Saved. Nothing is public until you publish or send.'));
+      (result.notes || []).forEach(function (note) {
+        box.appendChild(el('p', 'fine-print', note));
+      });
+      card.appendChild(box);
+      var actions = el('div', 'build-actions');
+      if (result.deliverable_id) {
+        var open = el('button', 'btn btn-primary', 'Open in Studio');
+        open.type = 'button';
+        open.onclick = function () {
+          buildCloseHost(card);
+          openInStudio('deliverable', result.deliverable_id);
+        };
+        actions.appendChild(open);
+        if (result.site_id) {
+          var publish = el('button', 'btn', 'Publish');
+          publish.type = 'button';
+          publish.onclick = function () { publishBuildResult(build, result, publish); };
+          actions.appendChild(publish);
+        }
+      }
+      (result.form_links || []).forEach(function (link) {
+        actions.appendChild(buildLinkButton('Open ' + link.label, link.url));
+        actions.appendChild(buildCopyButton(link.url));
+      });
+      if (result.form_url) {
+        actions.appendChild(buildLinkButton('Open the form', result.form_url));
+        actions.appendChild(buildCopyButton(result.form_url));
+      }
+      if (result.template_id) {
+        var templates = el('button', 'btn btn-ghost', 'Open emails');
+        templates.type = 'button';
+        templates.onclick = function () { buildGo('#/app/emails', card); };
+        actions.appendChild(templates);
+      }
+      if (result.automation_id) {
+        var automation = el('button', 'btn btn-ghost', 'Review automation');
+        automation.type = 'button';
+        automation.onclick = function () { buildGo('#/app/automations', card); };
+        actions.appendChild(automation);
+      }
+      card.appendChild(actions);
+      var again = el('button', 'btn btn-ghost btn-sm', 'Create something else');
+      again.type = 'button';
+      again.onclick = function () {
+        buildCloseHost(card);
+        openBuildPicker();
+      };
+      card.appendChild(again);
+    }
+
+    function paintBuildError(build) {
+      card.appendChild(el('p', 'form-error', build.error || 'The build could not finish.'));
+      var actions = el('div', 'build-actions');
+      var change = el('button', 'btn btn-ghost', 'Change an answer');
+      change.type = 'button';
+      change.onclick = function () { load(0); };
+      actions.appendChild(change);
+      var retry = el('button', 'btn btn-primary', 'Try again');
+      retry.type = 'button';
+      retry.onclick = function () { startBuild(build, retry); };
+      actions.appendChild(retry);
+      card.appendChild(actions);
+    }
+
+    load();
+    return card;
+  }
+
+  function buildQuestion(question) {
+    var box = el('div', 'build-question');
+    box.setAttribute('data-build-q', question.id);
+    var label = el('label', 'build-label');
+    label.appendChild(el('span', null, question.label));
+    if (question.required) label.appendChild(el('em', 'build-required', 'required'));
+    box.appendChild(label);
+    if (question.help) box.appendChild(el('p', 'build-help', question.help));
+
+    var type = question.type || 'text';
+    var value = question.value;
+    if (type === 'choice' || type === 'yes_no') {
+      var group = el('div', 'build-choices');
+      var options = type === 'yes_no'
+        ? [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]
+        : (question.options || []);
+      options.forEach(function (option) {
+        var choice = el('label', 'build-choice');
+        var radio = el('input');
+        radio.type = 'radio';
+        radio.name = 'b-' + question.id;
+        radio.value = option.value;
+        if (String(value == null ? '' : value) === String(option.value)) radio.checked = true;
+        choice.appendChild(radio);
+        choice.appendChild(el('span', null, option.label || option.value));
+        group.appendChild(choice);
+      });
+      box.appendChild(group);
+      box._buildValue = function () {
+        var checked = group.querySelector('input:checked');
+        return checked ? checked.value : '';
+      };
+    } else if (type === 'multi') {
+      var multi = el('div', 'build-choices');
+      var selected = Array.isArray(value) ? value : [];
+      (question.options || []).forEach(function (option) {
+        var choice = el('label', 'build-choice');
+        var input = el('input');
+        input.type = 'checkbox';
+        input.value = option.value;
+        if (selected.indexOf(option.value) !== -1) input.checked = true;
+        choice.appendChild(input);
+        choice.appendChild(el('span', null, option.label || option.value));
+        multi.appendChild(choice);
+      });
+      box.appendChild(multi);
+      box._buildValue = function () {
+        return Array.prototype.slice.call(multi.querySelectorAll('input:checked'))
+          .map(function (input) { return input.value; });
+      };
+    } else {
+      var input = el(type === 'long_text' ? 'textarea' : 'input', 'build-input');
+      if (type !== 'long_text') {
+        input.type = type === 'color' ? 'color'
+          : (type === 'number' ? 'number' : (type === 'email' ? 'email' : 'text'));
+      }
+      input.value = value == null ? '' : String(value);
+      if (question.example) input.placeholder = question.example;
+      if (question.example) {
+        box.appendChild(el('p', 'build-example', 'e.g. ' + question.example));
+      }
+      box.appendChild(input);
+      box._buildValue = function () { return input.value; };
+    }
+    return box;
+  }
+
+  function buildLinkButton(label, url) {
+    var link = el('a', 'btn btn-ghost', label);
+    link.href = absoluteLink(url);
+    link.target = '_blank';
+    link.rel = 'noopener';
+    return link;
+  }
+
+  function buildCopyButton(url) {
+    var button = el('button', 'btn btn-ghost', 'Copy link');
+    button.type = 'button';
+    button.onclick = function () {
+      navigator.clipboard.writeText(absoluteLink(url))
+        .then(function () { toast('Link copied', true); })
+        .catch(function () { toast('Copy failed', false); });
+    };
+    return button;
+  }
+
+  function publishBuildResult(build, result, button) {
+    var domain = result.site_domain || 'the site';
+    if (!window.confirm('Publish this to ' + domain + '? If a page is already there, ' +
+                        'it will be replaced.')) return;
+    // One publish call site: the existing helper sends as_home/replace exactly as the
+    // publish dialog does, so the two doors cannot drift apart.
+    sendPublish({ id: result.deliverable_id }, result.site_id, null, button,
+                result.kind === 'website');
+  }
+
   function initials(name) {
     var parts = (name || '?').trim().split(/\s+/);
     return ((parts[0] || '?')[0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
@@ -3327,7 +3712,11 @@
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>' + esc(meta.title) + '</h2>' +
       '<p class="muted">' + esc(meta.blurb) + '</p></div>';
-    var add = el('button', 'btn btn-primary', '+ New draft');
+    var createBuild = el('button', 'btn btn-primary', 'Create with AI');
+    createBuild.type = 'button';
+    createBuild.onclick = function () { openBuildPicker(); };
+    head.appendChild(createBuild);
+    var add = el('button', 'btn btn-ghost', '+ Blank draft');
     add.onclick = function () { showDeliverableForm(meta.kind || 'blog', null, refresh); };
     add.disabled = true;         // enabled once we know there is a client to own the draft
     head.appendChild(add);
@@ -3479,7 +3868,7 @@
           var open = el('button', 'btn btn-ghost btn-sm', 'Open');
           open.onclick = function () { showDeliverableForm(item.kind, item, refresh); };
           td.appendChild(open);
-          if (item.kind === 'website') {
+          if (item.kind === 'website' || item.kind === 'blog') {
             var pub = el('button', 'btn btn-primary btn-sm', 'Publish');
             pub.onclick = function () { publishDeliverable(item, refresh, pub); };
             td.appendChild(pub);
@@ -4737,6 +5126,11 @@
       'while the team works, and as a preview once it saves.</p></div>';
     container.appendChild(head);
 
+    var createBuild = el('button', 'btn btn-primary', 'Create something');
+    createBuild.type = 'button';
+    createBuild.onclick = function () { openBuildPicker(); };
+    head.appendChild(createBuild);
+
     var layout = el('div', 'studio-layout');
     layout.setAttribute('data-pane', 'chat');
     container.appendChild(layout);
@@ -5353,6 +5747,11 @@
         voiceWaiting = voiceOn;
         typedAnswer = false;
         updateComposerState();
+      }
+      if (ev.source === 'Manager' && ev.type === 'build') {
+        var info = {};
+        try { info = JSON.parse(ev.content || '{}'); } catch (e) { info = {}; }
+        if (info.build_id) showBuildCard(thread, info.build_id);
       }
       if (ev.type === 'tool_result' &&
           String(ev.content || '').indexOf('save_deliverable') === 0) {
@@ -8163,6 +8562,14 @@
                   card.appendChild(reply);
                   log.appendChild(card);
                 }
+              }
+              var built = (r.events || []).filter(function (ev) {
+                return ev.source === 'Manager' && ev.type === 'build';
+              }).pop();
+              if (built) {
+                var info = {};
+                try { info = JSON.parse(built.content || '{}'); } catch (e) { info = {}; }
+                if (info.build_id) showBuildCard(log, info.build_id);
               }
               send.disabled = false;
             }).catch(function () { send.disabled = false; });

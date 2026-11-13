@@ -184,8 +184,8 @@ def _build_publish_page(emit, job_id=None):
                 item = pages[0] if pages else None
         if not item:
             return "There is no website page to publish for this client. Build one first."
-        if item.get("kind") != "website":
-            return ("#%d is a %s, not a website page; only website pages are published to a "
+        if item.get("kind") not in ("website", "blog"):
+            return ("#%d is a %s; only website pages and blog posts are published to a "
                     "site." % (item["id"], item.get("kind")))
 
         site = None
@@ -236,12 +236,12 @@ def _build_publish_page(emit, job_id=None):
 
 register(
     "publish_page",
-    "Publish a website page to this client's site and return its URL.",
+    "Publish a website page or blog post to this client's site and return its URL.",
     _build_publish_page,
 )
 register(
     "publish_site",
-    "Publish a website page to this client's site (the same action as publish_page).",
+    "Publish a website page or blog post to this client's site (the same action).",
     _build_publish_page,
 )
 

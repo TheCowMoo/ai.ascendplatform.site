@@ -449,10 +449,10 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
     item = get_deliverable(deliverable_id)
     if not item:
         raise DeliverableError("Deliverable not found")
-    if item["kind"] != "website":
+    if item["kind"] not in ("website", "blog"):
         raise DeliverableError(
-            "Only website pages can be published to a site; %r has kind %r."
-            % (item["title"], item["kind"])
+            "Only website pages and blog posts can be published to a site; %r has "
+            "kind %r." % (item["title"], item["kind"])
         )
     if not (item.get("content") or "").strip():
         raise DeliverableError("This page has no content to publish yet.")

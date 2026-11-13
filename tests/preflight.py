@@ -47,6 +47,10 @@ FAST_SUITES = (
     "test_fetch_page",
     "test_site_extras",
     "test_form_hosting",
+    "test_build_guides",
+    "test_build_service",
+    "test_build_api",
+    "test_build_tool",
     "test_client_ghl",
     "smoke_onboarding",
     "smoke_voice",
@@ -72,8 +76,10 @@ def check_imports():
     import scheduler
     import review  # noqa: F401
     import automations
+    import build_service  # noqa: F401
 
     assert "site_review" in jobs.TASKS, jobs.TASKS
+    assert "build" in jobs.TASKS, jobs.TASKS
     assert "proposal" in deliverables.KINDS, deliverables.KINDS
     assert callable(scheduler.queue_reviews)
     assert callable(scheduler.verify_pending), "the DNS sweep is what makes SSL automatic"
@@ -92,7 +98,8 @@ def check_worker_tasks():
     """
     if not shutil.which("git") and os.name != "nt":
         pass    # keep going: this check needs no git
-    expected = {"agent_team", "automation", "chat", "echo", "site_provision", "site_review"}
+    expected = {"agent_team", "automation", "build", "chat", "echo", "site_provision",
+                "site_review"}
     code = (
         "import json, os\n"
         "os.environ.pop('ALLOW_LIVE_ACTIONS', None)\n"
@@ -318,6 +325,16 @@ def check_js():
             raise AssertionError("the publish state harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("publish state harness OK")
+
+    # The build card is the non-technical door. It must offer the four kinds, render
+    # choices and a review, and never expose the raw draft form.
+    harness = os.path.join(ROOT, "tests", "build_card.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the build card harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("build card harness OK")
 
 
 def check_suites():

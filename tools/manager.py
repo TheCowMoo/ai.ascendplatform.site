@@ -333,6 +333,8 @@ def _build_describe_capabilities(emit, job_id=None):
                 "automation": "propose_automation(name, steps) - explain it, get a yes, "
                               "then apply_automation()",
                 "form_link": "add_form_link(deliverable_id, form_id) - a button on the page",
+                "guide": "start_build(kind, goal) - the plain-language website/blog/form/"
+                         "newsletter interview; use it instead of asking technical questions",
                 "publish": "publish_page() - live once the user has asked for it",
                 "never": ["SMTP settings", "API keys", "the domain a site lives on"],
             },
@@ -463,6 +465,44 @@ def _build_ask_user(emit, job_id=None):
                 "before starting any work." % len(cleaned))
 
     return ask_user
+
+
+def _build_start_build(emit, job_id=None):
+    async def start_build(kind: str = "website", goal: str = "") -> str:
+        """Start a short, plain-language interview for a website, blog, form or newsletter.
+
+        Use this instead of asking a non-technical user for HTML, slugs, domains or
+        technical settings. The console shows the questions; the answers arrive in a
+        build card, not in the chat.
+        """
+        import build_guides
+        import builds as builds_service
+        import profile as profile_mod
+
+        org_id, requester = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - a build belongs to a client."
+        wanted = build_guides.normalise_kind(kind)
+        if not wanted:
+            return ("Choose one of: website, blog, form or newsletter.")
+        seed = build_guides.seed_answers(
+            wanted, profile_mod.get_profile(org_id), str(goal or "")[:500])
+        try:
+            build = builds_service.create(org_id, requester, wanted, seed)
+        except builds_service.BuildError as exc:
+            return "Not started: %s" % exc
+        if emit:
+            emit("Manager", "build", json.dumps({
+                "build_id": build["id"],
+                "kind": wanted,
+                "title": build.get("title") or "",
+            }))
+        return ("Started the %s interview (#%d). The user answers in the card on screen; "
+                "do not repeat the questions in prose. Wait for the build result before "
+                "claiming anything was created."
+                % (build_guides.meta(wanted).get("label") or wanted, build["id"]))
+
+    return start_build
 
 
 def _build_create_template(emit, job_id=None):
@@ -729,6 +769,11 @@ register("add_form_link",
          "Put a button on a website page that opens one of this client's forms. "
          "Publish the page afterwards to make it live.",
          _build_add_form_link)
+
+
+register("start_build",
+         "Start a plain-language website, blog, form or newsletter interview on screen.",
+         _build_start_build)
 
 register("apply_automation",
          "Apply a proposed automation after the user has approved it. proposal_id=0 "

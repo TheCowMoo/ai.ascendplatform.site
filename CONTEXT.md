@@ -359,6 +359,34 @@ writes/reloads `preapproved` so a synchronous Flask handler cannot block the eve
 the route and the link choice. The public page remains on the platform too, which is what
 the logged-in `?preview=1` uses.
 
+## Guided builds - plain questions, safe drafts (2026-11-13, phase 1)
+
+The Manager no longer invents a website interview. `build_guides.py` owns four small,
+deterministic playbooks (website, blog post, sign-up form, newsletter) with plain labels,
+examples, choices, "not sure" defaults and conditional questions. `build_sessions`
+(migration 0029) stores the answers server-side, so a half-finished interview survives a
+reload and belongs to one client. The API is `POST/GET /api/builds`, `POST
+/api/builds/<id>/answers`, `/build` and `/cancel`; the build itself runs as the `build` job
+task. `tools.manager.start_build` opens the card from chat; a Create button opens it from
+the Studio and Content tabs.
+
+The executor (`build_service.py`) is template-first: `site_builder.py` renders a safe,
+responsive one-page site, a clean article page and plain-text email. It updates the
+Business Profile, creates published forms, saves email templates and drafts a welcome
+automation **switched off**. It never publishes a site page and never sends email; those
+remain the normal explicit Publish/Send actions. A form build returns its live link; a
+site/blog build returns a draft plus a Publish button on the result card. Blog posts can
+now be published through the same `publish_deliverable` path as website pages.
+
+The console card (`showBuildCard`) renders text, long text, choices, multi-choice,
+yes/no, email/phone/domain and colour inputs, a review of what will be built/assumed, and
+a result with Open in Studio, Publish, Open/Copy form link, Open emails and Review
+automation. `tests/test_build_guides.py`, `test_build_service.py`, `test_build_api.py`,
+`test_build_tool.py` and `build_card.mjs` are in preflight.
+
+Phase 2 still to come: multi-page site templates/navigation, a blog index, nested blog
+paths, one-approval batch publishing, and a nurture sequence with HTML email.
+
 ## Media - uploaded images, video and PDFs (2026-10-30)
 
 A client's own files for emails, pages and posts. The Media tab is in the Workspace

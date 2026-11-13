@@ -3507,6 +3507,20 @@ def _forms_org():
     return org, None
 
 
+def _builds_org():
+    return _forms_org()
+
+
+def _build_for_request(build_id, org_id):
+    """A build belonging to this tenant, or None (never leak another client's id)."""
+    import builds as builds_service
+
+    if not builds_service._row(build_id, org_id):
+        return None
+    return builds_service.get(build_id, org_id,
+                              step=request.args.get("step"))
+
+
 def _forms_public_site(org):
     """The live site whose domain should carry this client's forms, if any."""
     for site in sites_service.list_sites(org):
@@ -3618,6 +3632,131 @@ def api_form_responses_csv(form_id):
     return response
 
 
+
+
+# ---------------------------------------------------------------------------
+# Guided builds: a plain-language interview that becomes drafts, forms and templates.
+# The build session owns the questions; the build job only runs after the user has
+# reviewed every answer. Nothing here publishes or sends by itself.
+# ---------------------------------------------------------------------------
+@app.route("/api/builds", methods=["GET", "POST"])
+@login_required
+def api_builds():
+    import build_guides
+    import builds as builds_service
+    import profile as profile_mod
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    if request.method == "GET":
+        return jsonify({
+            "builds": builds_service.list_for_org(org),
+            "kinds": [{"value": kind,
+                       "label": build_guides.KIND_META[kind]["label"],
+                       "blurb": build_guides.KIND_META[kind]["blurb"]}
+                      for kind in build_guides.KINDS],
+        })
+    data = request.get_json(silent=True) or {}
+    kind = build_guides.normalise_kind(data.get("kind"))
+    if not kind:
+        return jsonify({"error": "Choose a website, blog post, form or newsletter."}), 400
+    seed = build_guides.seed_answers(
+        kind, profile_mod.get_profile(org), str(data.get("goal") or "")[:500])
+    try:
+        build = builds_service.create(org, session.get("user_id"), kind, seed)
+    except builds_service.BuildError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"build": build}), 201
+
+
+@app.route("/api/builds/<int:build_id>", methods=["GET"])
+@login_required
+def api_build_get(build_id):
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    build = _build_for_request(build_id, org)
+    if not build:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"build": build})
+
+
+@app.route("/api/builds/<int:build_id>/answers", methods=["POST"])
+@login_required
+def api_build_answers(build_id):
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    if not builds_service._row(build_id, org):
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        step = int(data.get("step") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "step must be a number"}), 400
+    try:
+        build, errors = builds_service.save_answers(
+            build_id, org, step, data.get("answers") or {})
+    except builds_service.BuildError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if errors:
+        return jsonify({"error": " ".join(errors), "errors": errors}), 400
+    return jsonify({"build": build})
+
+
+@app.route("/api/builds/<int:build_id>/build", methods=["POST"])
+@login_required
+def api_build_start(build_id):
+    import build_guides
+    import build_service  # noqa: F401  - registers the worker task for the local runner
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    row = builds_service._row(build_id, org)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    if row.get("status") == "building" and row.get("job_id"):
+        return jsonify({"build": builds_service.get(build_id, org),
+                        "job_id": row["job_id"], "already": True})
+    if row.get("status") == "done":
+        return jsonify({"build": builds_service.get(build_id, org),
+                        "already": True})
+    answers = build_guides.effective_answers(
+        row.get("kind"), builds_service._json(row.get("answers_json"), {}))
+    if not build_guides.ready(row.get("kind"), answers):
+        return jsonify({"error": "A few answers are still needed before this can be built."}), 400
+    title = build_guides.title_for(row.get("kind"), answers)
+    job_id = jobs.create_job(
+        "Build: %s" % title, "Guided build: %s" % title, session.get("user_id"),
+        "selector", "build", org_id=org)
+    builds_service.mark_building(build_id, job_id)
+    jobs.submit(job_id)
+    return jsonify({"build": builds_service.get(build_id, org),
+                    "job_id": job_id}), 201
+
+
+@app.route("/api/builds/<int:build_id>/cancel", methods=["POST"])
+@login_required
+def api_build_cancel(build_id):
+    import builds as builds_service
+
+    org, problem = _builds_org()
+    if problem:
+        return problem
+    row = builds_service._row(build_id, org)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    if row.get("job_id"):
+        jobs.cancel_job(row["job_id"])
+    builds_service.cancel(build_id, org)
+    return jsonify({"build": builds_service.get(build_id, org)})
 
 
 @app.route("/api/agent-tools", methods=["GET"])
