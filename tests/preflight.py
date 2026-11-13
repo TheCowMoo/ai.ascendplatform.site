@@ -46,6 +46,7 @@ FAST_SUITES = (
     "test_publish_tool",
     "test_fetch_page",
     "test_site_extras",
+    "test_form_hosting",
     "test_client_ghl",
     "smoke_onboarding",
     "smoke_voice",

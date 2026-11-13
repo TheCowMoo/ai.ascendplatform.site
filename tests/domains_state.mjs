@@ -32,5 +32,9 @@ assert.ok(source.includes('Dry-run: DNS checks and certificates'),
   'the tab says when provisioning is simulated');
 assert.ok(source.includes('ERR_SSL_PROTOCOL_ERROR'),
   'the panel explains the failure before provisioning');
+assert.ok(source.includes("'/refresh-config'"),
+  'a live domain can install the form proxy without republishing');
+assert.ok(source.includes("'Refresh web config'"),
+  'the config-only action is named in the row');
 
 console.log('DOMAINS STATE OK - queued, running and failed are distinguishable');

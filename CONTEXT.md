@@ -334,6 +334,31 @@ public submission counts against the ten-a-minute rate limit before validation (
 a distinct X-Forwarded-For in tests), and automation_runs has no org_id column -
 scope through automation_id. Assertion now lives at the end of tests/smoke_forms.py.
 
+## Forms on a client's own domain (2026-11-13)
+
+A published site's vhost used to be only `root` + `file_server`, so `/f/<slug>` 404'd on
+the client's domain while working on the platform. `provisioner.VHOST_TEMPLATE` now wraps
+the static handler in a `handle` block and puts `@forms path /f/* /api/public/forms/*`
+first, proxying those paths to the app (`app:8000` locally; `PLATFORM_URL`/`ADMIN_DOMAIN`
+for a remote target; `FORMS_UPSTREAM` overrides either). Everything else stays static - a
+publishing problem must never take down a client's whole site.
+
+`forms.public_url(form, site)` is the one link decision: the client's live domain first,
+then `PLATFORM_URL`/`ADMIN_DOMAIN`, then relative. The Forms API adds `public_url` to every
+form it returns; the Forms tab, builder, response header, Manager (`create_form`,
+`list_forms`, `add_form_link`) and publish toasts all use it. `add_form_link` prefers the
+page's site, falls back to the client's live site, and treats the old relative `/f/<slug>`
+button as already present.
+
+For a site that is already live, **Domains -> Refresh web config**
+(`POST /api/sites/<id>/refresh-config`) re-renders only `<domain>.caddy` (preserving hosts
+already in the file, including `www`) and reloads Caddy. It never writes `index.html` or
+the page row. The click records one approved `file_write` approval naming the vhost, then
+writes/reloads `preapproved` so a synchronous Flask handler cannot block the event loop.
+`tests/test_form_hosting.py` pins the vhost, the refresh-only behavior, the approval row,
+the route and the link choice. The public page remains on the platform too, which is what
+the logged-in `?preview=1` uses.
+
 ## Media - uploaded images, video and PDFs (2026-10-30)
 
 A client's own files for emails, pages and posts. The Media tab is in the Workspace

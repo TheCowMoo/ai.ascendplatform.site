@@ -8,6 +8,7 @@ gets its answers checked against the rules the server believes in.
 """
 
 import json
+import os
 import re
 
 import forms_engine
@@ -50,6 +51,57 @@ def form_out(row, responses=0):
     out["page_count"] = max([forms_engine.page_of(q) for q in out["questions"]] + [0]) + 1
     out["responses"] = responses
     return out
+
+
+def _platform_base():
+    """The platform's public origin, without a trailing slash ('' when unset)."""
+    try:
+        import settings
+        base = (settings.get("PLATFORM_URL") or "").strip()
+        if not base:
+            domain = (settings.get("ADMIN_DOMAIN")
+                      or os.environ.get("ADMIN_DOMAIN") or "").strip()
+            if domain.lower() in ("localhost", "127.0.0.1", "::1"):
+                domain = ""
+            if domain:
+                base = domain if "://" in domain else "https://" + domain
+        return base.rstrip("/")
+    except Exception:
+        return ""
+
+
+def public_url(form, site=None):
+    """Where a form is reachable: its client's own domain when that site is live.
+
+    A published page links to this, so a visitor who came in through the client's
+    domain never gets bounced to the platform's hostname. The platform URL remains the
+    fallback for a form created before the domain is live (and for previews).
+    """
+    slug = (form or {}).get("slug") or ""
+    domain = ((site or {}).get("domain") or "").strip().lower()
+    if domain and (site or {}).get("status") == "live":
+        return "https://%s/f/%s" % (domain, slug)
+    base = _platform_base()
+    return (base + "/f/" + slug) if base else ("/f/" + slug)
+
+
+def live_site(org_id):
+    """The newest live site for a client, if it has one."""
+    if org_id is None:
+        return None
+    try:
+        import sites as sites_service
+        for site in sites_service.list_sites(org_id):
+            if site.get("status") == "live" and site.get("domain"):
+                return site
+    except Exception:
+        return None
+    return None
+
+
+def link_for_org(form, org_id):
+    """The link the console and the Manager should show for this client's form."""
+    return public_url(form, live_site(org_id))
 
 
 def list_forms(org_id, limit=100):

@@ -52,6 +52,18 @@ def test_render_vhost():
     assert "example.com, www.example.com" in text
     assert "file_server" in text
     assert "/srv/sites/example.com/public_html" in text
+    assert "reverse_proxy" not in text, "a vhost without an upstream stays static"
+
+    proxied = provisioner.render_vhost(
+        "example.com", "/srv/sites/example.com/public_html", ["www.example.com"],
+        forms_upstream="app:8000",
+    )
+    print(proxied.strip())
+    assert "@forms path /f/* /api/public/forms/*" in proxied, proxied
+    assert "reverse_proxy app:8000" in proxied, proxied
+    assert "header_up X-Real-IP {remote_host}" in proxied, proxied
+    assert "handle @forms" in proxied and "file_server" in proxied, proxied
+    assert "handle {" in proxied, "everything that is not a form stays static"
 
 
 def test_index_from_profile_escapes():

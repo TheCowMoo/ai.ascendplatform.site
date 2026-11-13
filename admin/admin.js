@@ -6462,6 +6462,29 @@
       };
       actions.appendChild(check);
 
+      // One action for a site that is already live: install the form proxy without
+      // rewriting the page. Provision would do that too, but it also rewrites index.html
+      // - and "my page is fine, I just want forms on my domain" should not risk it.
+      var refreshConfig = el('button', 'btn btn-ghost btn-sm', 'Refresh web config');
+      refreshConfig.title = 'Serve forms at ' + site.domain + '/f/... without changing ' +
+        'the website content.';
+      refreshConfig.onclick = function () {
+        if (!window.confirm('Refresh the web server config for ' + site.domain + '?\n\n' +
+                            'This makes forms work at ' + site.domain + '/f/... and does ' +
+                            'not change the website content.')) return;
+        refreshConfig.disabled = true;
+        api('POST', '/api/sites/' + site.id + '/refresh-config').then(function (d) {
+          var result = (d && d.result) || {};
+          toast(result.dry_run
+            ? 'Dry-run: the form proxy is ready, but nothing was written'
+            : 'Web config refreshed - forms are served at ' + site.domain,
+            true);
+          refresh();
+        }).catch(function (e) { toast(e.message, false); })
+          .finally(function () { refreshConfig.disabled = false; });
+      };
+      actions.appendChild(refreshConfig);
+
       var provision = el('button', 'btn btn-primary btn-sm', 'Provision');
       provision.onclick = function () {
         provision.disabled = true;
@@ -7481,7 +7504,10 @@
 
     function card(item) {
       var box = el('div', 'panel-card auto-card');
-      var link = location.origin + '/f/' + item.slug;
+      // The API decides: the client's own live domain first, the platform as fallback.
+      // A form shared from here must not send a visitor to the platform when the
+      // client has a perfectly good domain of their own.
+      var link = item.public_url || (location.origin + '/f/' + item.slug);
       var status = item.status === 'published' ? 'Live'
         : (item.status === 'archived' ? 'Archived' : 'Draft');
       box.innerHTML = '<div class="auto-head"><div><div class="auto-name">' + esc(item.name) +
@@ -7515,9 +7541,10 @@
         toggle.disabled = true;
         api('PUT', '/api/forms/' + item.id,
             { status: item.status === 'published' ? 'draft' : 'published' })
-          .then(function () {
+          .then(function (saved) {
+            var updated = (saved && saved.form) || {};
             toast(item.status === 'published' ? 'Unpublished'
-                                              : 'Live at /f/' + item.slug, true);
+                 : 'Live at ' + (updated.public_url || link), true);
             load();
           })
           .catch(function (e) { toggle.disabled = false; toast(e.message, false); });
@@ -7609,7 +7636,8 @@
       var questions = item.questions || [];
       head.innerHTML = '<h2>' + esc(item.name || 'Form') + '</h2><p class="muted">' +
         esc(item.kind || '') + ' · ' + rows.length + ' answer' +
-        (rows.length === 1 ? '' : 's') + ' · /f/' + esc(item.slug || '') + ' · ' +
+        (rows.length === 1 ? '' : 's') + ' · ' +
+        esc(item.public_url || ('/f/' + (item.slug || ''))) + ' · ' +
         esc(item.status || 'draft') + '</p>';
       if (!rows.length) {
         var empty = el('div', 'panel-card empty-state');
@@ -7677,7 +7705,9 @@
       return api('PUT', '/api/forms/' + formId, payload).then(function (d) {
         draft = d.form;
         toast(patch && patch.status
-          ? (patch.status === 'published' ? 'Live at /f/' + draft.slug : 'Unpublished')
+          ? (patch.status === 'published'
+              ? 'Live at ' + (draft.public_url || ('/f/' + draft.slug))
+              : 'Unpublished')
           : 'Saved', true);
         render();
       }).catch(function (e) { toast(e.message, false); });
@@ -7869,8 +7899,8 @@
       head.innerHTML = '<h2>' + esc(draft.name || 'Form') + '</h2><p class="muted">' +
         esc(draft.kind || 'form') + ' · ' + draft.questions.length + ' question' +
         (draft.questions.length === 1 ? '' : 's') + ' · ' + (highestPage() + 1) + ' page' +
-        (highestPage() ? 's' : '') + ' · ' + esc(live) + ' · /f/' + esc(draft.slug || '') +
-        '</p>';
+        (highestPage() ? 's' : '') + ' · ' + esc(live) + ' · ' +
+        esc(draft.public_url || ('/f/' + (draft.slug || ''))) + '</p>';
       body.appendChild(head);
 
       var bar = el('div', 'chip-input');

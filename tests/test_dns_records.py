@@ -152,6 +152,7 @@ def test_the_tab_wires_it_up():
     check("adding a domain creates a site", "'/api/sites', { domain: d.domain" in script, True)
     check("the panel has a Check again", "'Check again'" in script, True)
     check("the sweep is wired to a button", "'/api/domains/audit'" in script, True)
+    check("a live domain can refresh its web config", "'/refresh-config'" in script, True)
 
 
 if __name__ == "__main__":

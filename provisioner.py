@@ -566,10 +566,28 @@ def check_dns(domain, server_ip=None):
 VHOST_TEMPLATE = """# {domain} - managed by CMBGrowthAI (do not edit by hand)
 {hosts} {{
 	encode zstd gzip
-	root * {docroot}
-	file_server
-}}
+{body}}}
 """
+
+# The form page and the two endpoints its script posts to live in the app. Everything
+# else on a client's domain stays a plain static file - publishing a page must never make
+# the whole site depend on the Python process.
+FORMS_HANDLER = """	@forms path /f/* /api/public/forms/*
+	handle @forms {{
+		reverse_proxy {upstream} {{
+			header_up X-Real-IP {{remote_host}}
+		}}
+	}}
+	handle {{
+		root * {docroot}
+		file_server
+	}}
+"""
+
+STATIC_HANDLER = """	root * {docroot}
+	file_server
+"""
+
 
 INDEX_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -746,7 +764,68 @@ def html_escape(value):
     return html.escape(value or "")
 
 
-def render_vhost(domain, docroot, aliases=None):
+def platform_base():
+    """The public origin of the platform, without a trailing slash ('' if unset).
+
+    ``PLATFORM_URL`` is the operator's explicit choice. The compose stack also knows
+    ``ADMIN_DOMAIN`` (Caddy uses it), so it is a useful fallback when the panel value
+    was never filled in. A loopback name is not a public origin for a remote site.
+    """
+    try:
+        import settings as settings_mod
+
+        base = (settings_mod.get("PLATFORM_URL") or "").strip()
+        if not base:
+            domain = (settings_mod.get("ADMIN_DOMAIN")
+                      or os.environ.get("ADMIN_DOMAIN") or "").strip()
+            if domain.lower() in ("localhost", "127.0.0.1", "::1"):
+                domain = ""
+            if domain:
+                base = domain if "://" in domain else "https://" + domain
+        return base.rstrip("/")
+    except Exception:
+        return ""
+
+
+def _safe_upstream(value):
+    """A Caddy upstream address we are willing to write into a site block, or ''.
+
+    ``FORMS_UPSTREAM`` is operator input, but a site block is a config file: a newline
+    or a brace there would let it inject directives. Restricting the alphabet keeps the
+    value to the shapes Caddy actually accepts (host:port, https://host, [v6]:port).
+    """
+    text = (value or "").strip().rstrip("/")
+    if not text or len(text) > 300:
+        return ""
+    if not all(ch.isalnum() or ch in ".:-_/[]" for ch in text):
+        return ""
+    return text
+
+
+def forms_upstream_for(target=None):
+    """Where a client's ``/f/*`` and ``/api/public/forms/*`` requests should go.
+
+    A local site is served by Caddy in the compose network, where the app answers at
+    ``app:8000``. A site on a separate server cannot resolve that name, so it proxies
+    to the platform's public origin instead. An explicit ``FORMS_UPSTREAM`` wins for
+    either (a host install of Caddy usually wants ``127.0.0.1:8000``).
+    """
+    override = _safe_upstream(os.environ.get("FORMS_UPSTREAM") or "")
+    if override:
+        return override
+    if target is not None and getattr(target, "is_remote", False):
+        return _safe_upstream(platform_base())
+    return _safe_upstream("app:8000")
+
+
+def _vhost_body(docroot, upstream=None):
+    """The directives inside a site block: form proxy first, then static files."""
+    if upstream:
+        return FORMS_HANDLER.format(upstream=upstream, docroot=docroot)
+    return STATIC_HANDLER.format(docroot=docroot)
+
+
+def render_vhost(domain, docroot, aliases=None, forms_upstream=None):
     """Caddy site block for a domain plus its aliases.
 
     Duplicates are dropped: the apex block adds ``www`` when it resolves, and a site that
@@ -759,7 +838,8 @@ def render_vhost(domain, docroot, aliases=None):
             hosts.append(host)
     if not hosts:
         raise ProvisionError("no valid host for the site block")
-    return VHOST_TEMPLATE.format(domain=slug(domain), hosts=", ".join(hosts), docroot=docroot)
+    return VHOST_TEMPLATE.format(domain=slug(domain), hosts=", ".join(hosts),
+                                 body=_vhost_body(docroot, forms_upstream))
 
 
 def render_index(title="New site", tagline="", body_html="", brand_color="#4f46e5",
@@ -853,6 +933,32 @@ def _aliases(site):
         except Exception:
             raw = []
     return [a for a in (raw or []) if a]
+
+
+def _vhost_hosts(content):
+    """The host names already in a site block, so a refresh does not drop ``www``.
+
+    The database's ``aliases`` column is the source of truth for new sites, but older
+    rows were created before it existed and their ``www`` lives only in the file. A
+    config-only rewrite must be additive: losing a working host to gain forms is not a
+    refresh, it is a regression.
+    """
+    for line in (content or "").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if not text.endswith("{"):
+            return []
+        hosts = []
+        for part in text[:-1].strip().split(","):
+            host = part.strip().lower()
+            if "://" in host:
+                host = host.split("://", 1)[1]
+            host = host.split("/", 1)[0].strip()
+            if slug(host) and host not in hosts:
+                hosts.append(host)
+        return hosts
+    return []
 
 
 def _authorise(tool, summary, args, job_id, emit, command=None, allow_mutating=True,
@@ -1199,6 +1305,7 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapp
                                         summary="write index.html for %s" % domain,
                                         preapproved=preapproved))
 
+    upstream = forms_upstream_for(target)
     aliases = _aliases(site)
     if is_apex(domain):
         # www is optional, but when it does point here it has to be in the same site
@@ -1208,7 +1315,7 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapp
                           and row["status"] == "ok" for row in report["rows"])
         if points_here:
             aliases.append("www." + domain)
-    vhost = render_vhost(domain, docroot, aliases)
+    vhost = render_vhost(domain, docroot, aliases, forms_upstream=upstream)
     record("vhost", target.write_file(join_path(target.caddy_sites_dir, domain + ".caddy"), vhost,
                                       job_id, emit,
                                       summary="install the web server config for %s" % domain,
@@ -1257,6 +1364,79 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapp
         "docroot": docroot,
         "steps": steps,
         "dns": dns,
+    }
+
+
+def refresh_vhost(site, actor="", job_id=None, emit=None):
+    """Rewrite one site's web-server block without touching its content.
+
+    This is the "make forms work on the domain I already published" action. It reads the
+    existing vhost only to preserve hosts (``www`` on older rows), re-renders the block
+    with the form proxy, writes that one file, and reloads Caddy. ``index.html`` and the
+    database's page content are deliberately absent from this function.
+
+    The click is the approval: in live mode one approved ``file_write`` row names the
+    vhost, and the write and reload run ``preapproved`` so a synchronous Flask handler
+    never blocks the event loop waiting for a second decision.
+    """
+    domain = slug((site or {}).get("domain"))
+    if not domain:
+        return {"ok": False, "error": "invalid or missing domain", "steps": []}
+
+    target, docroot = target_docroot(site)
+    vhost_path = join_path(target.caddy_sites_dir, domain + ".caddy")
+    upstream = forms_upstream_for(target)
+    if not upstream:
+        return {
+            "ok": False, "steps": [],
+            "error": ("Set PLATFORM_URL (or FORMS_UPSTREAM) so forms can be served on "
+                      "%s. Nothing was changed." % domain),
+        }
+
+    aliases = _aliases(site)
+    for host in _vhost_hosts(target.read_file(vhost_path)):
+        if host != domain and host not in aliases:
+            aliases.append(host)
+    vhost = render_vhost(domain, docroot, aliases, forms_upstream=upstream)
+    summary = "refresh the web server config for %s (forms on /f/*)" % domain
+
+    live = not actions.is_dry_run()
+    approval_id = None
+    if live:
+        approval_id = actions.request_approval(
+            "file_write", summary,
+            {"path": vhost_path, "forms_upstream": upstream}, None)
+        decided = actions.decide_approval(approval_id, "approved", actor or "operator")
+        if not decided or decided.get("status") != "approved":
+            return {"ok": False, "steps": [],
+                    "error": ("This refresh could not be recorded as approved "
+                              "(approval #%s)." % approval_id)}
+
+    steps = []
+    written = target.write_file(vhost_path, vhost, None, emit, summary=summary,
+                                preapproved=live)
+    steps.append({"step": "vhost", "ok": bool(written.get("ok")),
+                  "detail": written.get("output", "")})
+    if approval_id:
+        actions.set_result(approval_id, written.get("output")
+                           or ("wrote to %s" % vhost_path if written.get("ok")
+                               else "the write failed"))
+
+    reloaded = {"ok": False, "output": "not attempted"}
+    if written.get("ok"):
+        reloaded = reload_web_server(target, None, emit, preapproved=live)
+    steps.append({"step": "reload", "ok": bool(reloaded.get("ok")),
+                  "detail": reloaded.get("output", "")})
+
+    return {
+        "ok": all(step["ok"] for step in steps),
+        "dry_run": actions.is_dry_run(),
+        "target": target.name,
+        "path": vhost_path,
+        "url": "https://" + domain,
+        "forms_url": "https://%s/f/" % domain,
+        "upstream": upstream,
+        "steps": steps,
     }
 
 

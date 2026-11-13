@@ -8,6 +8,7 @@ you can watch.
 """
 
 import json
+import re
 
 import deliverables as deliverables_service
 import sites as sites_service
@@ -43,16 +44,11 @@ def _job_target(job_id):
         return 0
 
 
-def _platform_url():
-    """Where the public form pages live, without a trailing slash."""
-    import settings as settings_mod
+def _form_link(form, site=None):
+    """The public link for a form, preferring the client's own live domain."""
+    import forms as forms_service
 
-    return (settings_mod.get("PLATFORM_URL") or "").rstrip("/")
-
-
-def _form_link(form):
-    base = _platform_url()
-    return (base + "/f/" + form["slug"]) if base else ("/f/" + form["slug"])
+    return forms_service.public_url(form, site)
 
 
 def _insert_cta(content, href, label):
@@ -609,7 +605,7 @@ def _build_create_form(emit, job_id=None):
             except forms_service.FormServiceError as exc:
                 return ("Created #%d, but it could not be published: %s"
                         % (form["id"], exc))
-        link = _form_link(form)
+        link = _form_link(form, forms_service.live_site(org_id))
         return ("Created the %s '%s' (#%d) at %s. It is %s; a submission creates a "
                 "contact and fires form.submitted."
                 % (form["kind"], form["name"], form["id"], link,
@@ -640,9 +636,23 @@ def _build_add_form_link(emit, job_id=None):
                                                 {"status": "published"})
             if updated:
                 form = updated
-        link = _form_link(form)
+        # Prefer the domain this page is actually published on. Falling back to the
+        # client's live site keeps a page that has not been bound yet from producing a
+        # platform link on a client-owned page.
+        site = sites_service.get_site(item["site_id"]) if item.get("site_id") else None
+        if site and site.get("org_id") != org_id:
+            # A page can carry a stale/cross-client site_id (the publish path refuses
+            # that later); never put another client's domain in this page's button.
+            site = None
+        if not site or site.get("status") != "live":
+            site = forms_service.live_site(org_id)
+        link = _form_link(form, site)
         content = item.get("content") or ""
-        if link in content:
+        # A page published before this change already carries the relative /f/<slug>
+        # button. Match it, with a boundary, so adding the CTA again does not duplicate
+        # it just because the absolute client-domain URL is now preferred.
+        relative = "/f/" + form["slug"]
+        if link in content or re.search(re.escape(relative) + r"(?![A-Za-z0-9_-])", content):
             return "The page already links to %s." % link
         text = label or form.get("name") or "Get in touch"
         deliverables_service.update_deliverable(item["id"],
@@ -697,8 +707,10 @@ def _build_list_forms(emit, job_id=None):
         rows = forms_service.list_forms(org_id)
         if not rows:
             return "No forms yet."
+        site = forms_service.live_site(org_id)
         return json.dumps([{"id": row["id"], "name": row["name"], "kind": row["kind"],
                             "status": row["status"], "slug": row["slug"],
+                            "link": _form_link(row, site),
                             "questions": row["question_count"],
                             "responses": row["responses"]} for row in rows])
 

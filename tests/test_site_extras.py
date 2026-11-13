@@ -24,6 +24,7 @@ import deliverables  # noqa: E402
 import forms as forms_service  # noqa: E402
 import jobs  # noqa: E402
 import orgs as orgs_service  # noqa: E402
+import sites as sites_service  # noqa: E402
 import tools.manager as manager_tools  # noqa: E402
 
 db.init_db()
@@ -67,6 +68,14 @@ def test_a_form_is_published_and_gets_a_button():
     check("exactly one form was created", len(rows), 1)
     check("a published form exists", rows[0]["status"], "published")
     form = rows[0]
+
+    # Once the client has a live domain, every link the Manager hands back belongs to
+    # that domain - not to the platform the console happens to be served from.
+    site = sites_service.create_site({"domain": "extras.test"}, org_id=ORG)
+    sites_service.update_site(site["id"], {"status": "live"})
+    reply = run(manager_tools._build_create_form, name="Callback",
+                questions=[{"label": "Phone", "type": "phone"}])
+    check("the Manager uses the client's live domain", "https://extras.test/f/" in reply, True)
 
     page = deliverables.create_deliverable(
         {"kind": "website", "title": "Home", "slug": "home",

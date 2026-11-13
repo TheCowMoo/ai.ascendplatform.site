@@ -2984,6 +2984,35 @@ def provision_site(site_id):
     return jsonify({"job": job, "site": site}), 201
 
 
+@app.route("/api/sites/<int:site_id>/refresh-config", methods=["POST"])
+@client_admin_required
+def refresh_site_config(site_id):
+    """Re-write a site's web-server block so its domain also serves its forms.
+
+    This is deliberately not "provision again": it does not touch ``index.html`` or the
+    page row. A client who already has a published site presses this once after the
+    platform starts proxying ``/f/*``; the page content stays exactly as it is.
+    """
+    site = _site_for_request(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    try:
+        result = provisioner.refresh_vhost(
+            site, actor=session.get("email") or session.get("name") or "operator")
+    except provisioner.ProvisionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not result.get("ok"):
+        error = result.get("error")
+        if not error:
+            for step in result.get("steps") or []:
+                if not step.get("ok"):
+                    error = "%s: %s" % (step.get("step"), step.get("detail") or "failed")
+                    break
+        return jsonify({"error": error or "The web config was not refreshed.",
+                        "result": result}), 400
+    return jsonify({"ok": True, "site": site, "result": result})
+
+
 # ---------------------------------------------------------------------------
 # Approvals (the action gate in live mode)
 # ---------------------------------------------------------------------------
@@ -3478,6 +3507,23 @@ def _forms_org():
     return org, None
 
 
+def _forms_public_site(org):
+    """The live site whose domain should carry this client's forms, if any."""
+    for site in sites_service.list_sites(org):
+        if site.get("status") == "live" and site.get("domain"):
+            return site
+    return None
+
+
+def _form_with_url(form, site):
+    """Attach the link a published page, the Forms tab and the Manager should use."""
+    import forms as forms_service
+
+    if form:
+        form["public_url"] = forms_service.public_url(form, site)
+    return form
+
+
 @app.route("/api/forms", methods=["GET"])
 @client_admin_required
 def api_forms_index():
@@ -3487,7 +3533,9 @@ def api_forms_index():
     org, problem = _forms_org()
     if problem:
         return problem
-    return jsonify({"forms": forms_service.list_forms(org),
+    site = _forms_public_site(org)
+    rows = [_form_with_url(row, site) for row in forms_service.list_forms(org)]
+    return jsonify({"forms": rows,
                     "kinds": list(forms_engine.KINDS),
                     "types": list(forms_engine.QUESTION_TYPES)})
 
@@ -3505,7 +3553,7 @@ def api_forms_create():
         item = forms_service.create_form(data, org, owner_id=session.get("user_id"))
     except forms_service.FormServiceError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"form": item}), 201
+    return jsonify({"form": _form_with_url(item, _forms_public_site(org))}), 201
 
 
 @app.route("/api/forms/<int:form_id>", methods=["GET", "PUT", "DELETE"])
@@ -3520,7 +3568,7 @@ def api_form(form_id):
         item = forms_service.get_form(form_id, org)
         if not item:
             return jsonify({"error": "No such form"}), 404
-        return jsonify({"form": item})
+        return jsonify({"form": _form_with_url(item, _forms_public_site(org))})
     if request.method == "DELETE":
         result = forms_service.delete_form(form_id, org)
         if not result:
@@ -3533,7 +3581,7 @@ def api_form(form_id):
         return jsonify({"error": str(exc)}), 400
     if not item:
         return jsonify({"error": "No such form"}), 404
-    return jsonify({"form": item})
+    return jsonify({"form": _form_with_url(item, _forms_public_site(org))})
 
 
 @app.route("/api/forms/<int:form_id>/responses", methods=["GET"])
@@ -3547,7 +3595,7 @@ def api_form_responses(form_id):
     item = forms_service.get_form(form_id, org)
     if not item:
         return jsonify({"error": "No such form"}), 404
-    return jsonify({"form": item,
+    return jsonify({"form": _form_with_url(item, _forms_public_site(org)),
                     "responses": forms_service.list_responses(form_id, org)})
 
 
