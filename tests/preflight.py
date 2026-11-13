@@ -257,6 +257,15 @@ def check_js():
     if not paths:
         return
     for path in paths:
+        # node --check proves syntax, not that the file's first expression exists. A
+        # stray identifier before a header comment parses fine and only fails in the
+        # browser at line 1, blanking every screen. Both JS files intentionally start
+        # with a block comment; keep it that way.
+        with open(path, encoding="utf-8") as handle:
+            header = handle.read(80)
+        if not header.lstrip().startswith("/*"):
+            raise AssertionError("%s starts with executable text before its header: %r"
+                                 % (os.path.basename(path), header.lstrip()[:40]))
         result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
         if result.returncode != 0:
             raise AssertionError("%s does not parse:\n%s"

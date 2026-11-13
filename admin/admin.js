@@ -1,4 +1,4 @@
-kl/* CMBGrowthAI — admin single-page app (no build step). */
+/* CMBGrowthAI — admin single-page app (no build step). */
 (function () {
   'use strict';
 
