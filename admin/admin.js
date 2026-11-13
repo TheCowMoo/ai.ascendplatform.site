@@ -174,6 +174,12 @@
     });
   }
 
+  // A relative form link is still useful in the console (it opens on whichever origin
+  // served the page), but a link someone copies should be absolute.
+  function absoluteLink(link) {
+    return String(link || '').charAt(0) === '/' ? location.origin + link : String(link || '');
+  }
+
   // Credits are stored in milli-credits; the console shows credits with three decimals.
   function fmtCredits(value) {
     if (value === null || value === undefined) return '-';
@@ -7507,7 +7513,7 @@
       // The API decides: the client's own live domain first, the platform as fallback.
       // A form shared from here must not send a visitor to the platform when the
       // client has a perfectly good domain of their own.
-      var link = item.public_url || (location.origin + '/f/' + item.slug);
+      var link = absoluteLink(item.public_url || ('/f/' + item.slug));
       var status = item.status === 'published' ? 'Live'
         : (item.status === 'archived' ? 'Archived' : 'Draft');
       box.innerHTML = '<div class="auto-head"><div><div class="auto-name">' + esc(item.name) +
@@ -7544,7 +7550,7 @@
           .then(function (saved) {
             var updated = (saved && saved.form) || {};
             toast(item.status === 'published' ? 'Unpublished'
-                 : 'Live at ' + (updated.public_url || link), true);
+                 : 'Live at ' + absoluteLink(updated.public_url || link), true);
             load();
           })
           .catch(function (e) { toggle.disabled = false; toast(e.message, false); });
@@ -7637,7 +7643,7 @@
       head.innerHTML = '<h2>' + esc(item.name || 'Form') + '</h2><p class="muted">' +
         esc(item.kind || '') + ' · ' + rows.length + ' answer' +
         (rows.length === 1 ? '' : 's') + ' · ' +
-        esc(item.public_url || ('/f/' + (item.slug || ''))) + ' · ' +
+        esc(absoluteLink(item.public_url || ('/f/' + (item.slug || '')))) + ' · ' +
         esc(item.status || 'draft') + '</p>';
       if (!rows.length) {
         var empty = el('div', 'panel-card empty-state');
@@ -7706,7 +7712,7 @@
         draft = d.form;
         toast(patch && patch.status
           ? (patch.status === 'published'
-              ? 'Live at ' + (draft.public_url || ('/f/' + draft.slug))
+              ? 'Live at ' + absoluteLink(draft.public_url || ('/f/' + draft.slug))
               : 'Unpublished')
           : 'Saved', true);
         render();
@@ -7900,7 +7906,7 @@
         esc(draft.kind || 'form') + ' · ' + draft.questions.length + ' question' +
         (draft.questions.length === 1 ? '' : 's') + ' · ' + (highestPage() + 1) + ' page' +
         (highestPage() ? 's' : '') + ' · ' + esc(live) + ' · ' +
-        esc(draft.public_url || ('/f/' + (draft.slug || ''))) + '</p>';
+        esc(absoluteLink(draft.public_url || ('/f/' + (draft.slug || '')))) + '</p>';
       body.appendChild(head);
 
       var bar = el('div', 'chip-input');
