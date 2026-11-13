@@ -193,13 +193,31 @@ def test_the_domains_row_offers_its_actions():
     with open(os.path.join(root, "admin", "admin.js"), encoding="utf-8") as handle:
         script = handle.read()
     block = script.split("function row(site, prov)", 1)[1].split("function panel(site)", 1)[0]
-    for label in ("'Check DNS'", "'Provision'", "'Delete'"):
+    for label in ("'Check DNS'", "'Provision'", "'Remove domain'"):
         assert label in block, "%s is not on the domain row" % label
     assert "'/api/sites/' + site.id + '/check'" in block, "the row re-checks DNS"
     assert "'/api/sites/' + site.id + '/provision'" in block, "the row can publish"
     assert "api('DELETE', '/api/sites/' + site.id)" in block, "the row can remove a typo"
     assert "provisionState(prov)" in block, "the row says whether a run is in flight"
-    print("a domain row checks, provisions and deletes without leaving the tab")
+    assert "canAdmin(state.user)" in block, "members cannot remove a domain"
+    print("a domain row checks, provisions and removes without leaving the tab")
+
+
+def test_the_platform_domains_page_shows_orphans():
+    """Static: a deleted client's domain must remain visible until it is cleaned up."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "admin", "admin.js"), encoding="utf-8") as handle:
+        script = handle.read()
+    block = script.split("function viewPlatformDomains()", 1)[1].split(
+        "// ---------- Clients", 1)[0]
+    for label in ("'Records'", "'Open client'", "'Remove domain'"):
+        assert label in block, "%s is missing from Platform -> Domains" % label
+    assert "'/api/platform/domains'" in block, "the page asks for the owner-wide list"
+    assert "<th>Target</th>" in block, "the page shows which server holds the site"
+    assert "Deleted client" in block, "an orphan is labelled, not hidden"
+    assert "api('DELETE', '/api/sites/' + site.id)" in block, "the page can clean up"
+    assert "d.dry_run" in block, "a dry-run page says so"
+    print("Platform -> Domains lists deleted-client domains and can remove them")
 
 
 def main():

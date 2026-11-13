@@ -62,7 +62,9 @@ assert.deepEqual(account.children.map((child) => child.id), ['profile', 'team', 
 assert.equal(account.children.filter((child) => child.adminOnly).length, 2,
              'Team and Settings stay admin-only');
 
-assert.equal(AREAS.platform.nav.length, 7, 'the console stays flat');
-assert.equal(flattenNav(AREAS.platform.nav).length, 7);
+assert.equal(AREAS.platform.nav.length, 8, 'the console stays flat');
+assert.equal(flattenNav(AREAS.platform.nav).length, 8);
+assert.equal(AREAS.platform.nav.filter((item) => item.id === 'domains').length, 1,
+             'the owner-wide Domains page is one click away');
 
 console.log('NAV GROUPS OK - seven rows, twenty destinations, no broken hashes');

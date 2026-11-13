@@ -146,6 +146,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         # Platform area: the client must be refused, and refused with 403 rather than 500.
         ("Platform     ", "/api/orgs", ["orgs"], "deny"),
         ("Platform     ", "/api/orgs/%d" % org["id"], [], "deny"),
+        ("Platform     ", "/api/platform/domains", ["domains", "counts"], "deny"),
         ("Platform     ", "/api/platform/email", [], "deny"),
         ("Platform     ", "/api/ssh-hosts", [], "deny"),
         ("Platform     ", "/api/agents", ["agents"], "deny"),

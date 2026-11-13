@@ -170,6 +170,16 @@ workers and every request answered 502. The response carries a warning when the 
 live yet, since a page written into a docroot nobody serves looks exactly like a publish
 that did nothing.
 
+Removing a domain is a disconnect, not a row delete. `sites.disconnect_site()` records
+one approved `site_delete` row, removes the Caddy block and reloads the web server
+(`preapproved=True`), and only then deletes the `sites` row. Website files,
+`site_versions`, and `deliverables` are kept; a page attached to the site is detached,
+returned to `draft`, and its stale live URL cleared. A failure leaves the row in place
+for a retry. `GET /api/platform/domains` is owner-only and lists every domain, including
+rows whose `org_id` no longer resolves; those read as **Deleted client**. A client
+delete is refused while any domain remains. The old row-only `delete_site()` stays for
+test cleanup only.
+
 **The rest of a launch.** `publish_page` (and its alias `publish_site`, which was advertised
 in `OUTWARD_TOOLS` but never registered) publishes the run's bound draft, an explicit id, or
 the newest website page to the draft's site, an explicit site, or the client's only site -
@@ -236,7 +246,7 @@ Structural, `.env` only, restart required: `DATABASE_URL`, `SECRET_KEY`, `JOB_BA
 - Tests are `tests/<name>.py` run directly (no pytest), each `main()` printing `X OK` at
   the end, and every suite must be **re-runnable** — generate a per-run suffix rather
   than assuming an empty database.
-- `tests/preflight.py` imports the app and runs the six fast suites. Run it before every
+- `tests/preflight.py` imports the app and runs the fast suites. Run it before every
   push; three startup-breaking commits were pushed without it.
 - Migrations: `metadata.tables[name].create(bind=..., checkfirst=True)`.
 
@@ -519,7 +529,7 @@ open/closed per user in `localStorage["nav:open:<user>"]`. `flattenNav(nav)` fee
 `NAV` that `isSoonTab` / `viewSoon` read, so a child is a first-class tab;
 `tests/nav_groups.mjs` (in preflight) pins seven rows, twenty leaves, unique ids and
 hashes, and the exact Sites/Customers/Account children. The Platform console stays flat
-(seven rows).
+(eight rows; Domains is the owner-wide cleanup page).
 
 ## Provider configuration is the agency's (2026-11-03)
 

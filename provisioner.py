@@ -1440,8 +1440,14 @@ def refresh_vhost(site, actor="", job_id=None, emit=None):
     }
 
 
-def remove_site(site, job_id=None, emit=None):
-    """Remove the web-server config for a site (content is left in place)."""
+def remove_site(site, job_id=None, emit=None, preapproved=False):
+    """Remove the web-server config for a site (content is left in place).
+
+    The document root is deliberately untouched. Disconnecting a domain is reversible
+    at the file level: the client can reconnect it and their pages are still there.
+    ``preapproved`` is set by a console click that already recorded the decision, so a
+    synchronous Flask handler never waits on the approval gate.
+    """
     domain = slug((site or {}).get("domain"))
     if not domain:
         return {"ok": False, "error": "invalid or missing domain", "steps": []}
@@ -1449,11 +1455,16 @@ def remove_site(site, job_id=None, emit=None):
     steps = []
     vhost_path = join_path(target.caddy_sites_dir, domain + ".caddy")
     result = target.run("rm -f %s" % policy.quote(vhost_path), job_id, emit, allow_mutating=True,
-                        summary="remove the web server config for %s" % domain)
+                        summary="remove the web server config for %s" % domain,
+                        preapproved=preapproved)
     steps.append({"step": "remove_vhost", "ok": result["ok"], "detail": result.get("output", "")})
-    reload_result = reload_web_server(target, job_id, emit)
+    if result["ok"]:
+        reload_result = reload_web_server(target, job_id, emit, preapproved=preapproved)
+    else:
+        reload_result = {"ok": False, "output": "not attempted: the config was not removed"}
     steps.append({"step": "reload", "ok": reload_result["ok"], "detail": reload_result.get("output", "")})
-    return {"ok": all(step["ok"] for step in steps), "steps": steps}
+    return {"ok": all(step["ok"] for step in steps), "dry_run": actions.is_dry_run(),
+            "path": vhost_path, "steps": steps}
 
 
 # ---------------------------------------------------------------------------

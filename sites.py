@@ -42,14 +42,19 @@ def list_sites(org_id=None, limit=100):
     own org - this parameter used to be ignored by the route, which is why every
     logged-in user could list every client's domains. Note the ``is not None``: 0 is
     the "no access" marker and must filter, not fall through to "no filter".
+
+    ``limit=None`` means every row; Platform -> Domains uses it so an old orphan is
+    never pushed off a fixed-size page.
     """
     query = "SELECT * FROM sites"
     params = []
     if org_id is not None:
         query += " WHERE org_id = ?"
         params.append(org_id)
-    query += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY id DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
     return [site_out(r) for r in rows]
@@ -133,9 +138,118 @@ def update_site(site_id, data):
 
 
 def delete_site(site_id):
+    """Row-only delete, used by test cleanup and internal fixtures.
+
+    The console uses :func:`disconnect_site`, which removes the Caddy block first. Keeping
+    this primitive separate means a cleanup helper can never accidentally leave a live
+    vhost behind without the caller seeing a web-server result.
+    """
     with get_connection() as conn:
         conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
     return True
+
+
+def disconnect_site(site_id, actor="", legacy_cleanup=False):
+    """Stop serving a site, then remove its record.
+
+    The person clicking Remove is the approval: one ``site_delete`` row names the domain,
+    and the vhost removal/reload run preapproved so a synchronous Flask request cannot
+    block a worker. A failure leaves the row in place for a retry. The docroot, page
+    drafts and version history are deliberately kept; only the connection is removed.
+
+    ``legacy_cleanup`` exists for an already-orphaned row whose client no longer exists.
+    The platform page may use it; ownership is still checked by the route before this is
+    called.
+    """
+    import provisioner
+
+    site = get_site(site_id)
+    if not site:
+        return {"ok": False, "removed": False, "error": "That domain was not found."}
+    running = open_provision_job(site)
+    if running:
+        return {
+            "ok": False, "removed": False, "busy": True,
+            "error": ("A provisioning run is still active for %s. Wait for it to finish "
+                      "or cancel the job before removing the domain." % site["domain"]),
+        }
+
+    domain = site.get("domain") or ""
+    live = not actions.is_dry_run()
+    approval_id = None
+    if live:
+        approval_id = actions.request_approval(
+            "site_delete", "remove domain %s from the web server" % domain,
+            {"domain": domain, "site_id": site_id, "legacy_cleanup": bool(legacy_cleanup)},
+            None)
+        decided = actions.decide_approval(approval_id, "approved", actor or "operator")
+        if not decided or decided.get("status") != "approved":
+            return {"ok": False, "removed": False,
+                    "error": ("Removing this domain could not be recorded as approved "
+                              "(approval #%s)." % approval_id)}
+
+    try:
+        result = provisioner.remove_site(site, preapproved=live)
+    except provisioner.ProvisionError as exc:
+        result = {"ok": False, "error": str(exc), "steps": []}
+
+    if approval_id:
+        detail = (result.get("output") or result.get("error") or
+                  _first_failure(result) or "the removal failed")
+        actions.set_result(approval_id, detail)
+    if not result.get("ok"):
+        return dict(result, removed=False,
+                    error=result.get("error") or _first_failure(result) or
+                    "The web server config could not be removed.")
+    if result.get("dry_run"):
+        return dict(result, removed=False,
+                    message=("Dry-run: would remove %s; the record and files were kept."
+                             % domain))
+
+    with get_connection() as conn:
+        detached = conn.execute(
+            "UPDATE deliverables SET site_id = NULL, url = '', "
+            "status = CASE WHEN status IN ('published', 'scheduled') THEN 'draft' "
+            "ELSE status END WHERE site_id = ?", (site_id,)).rowcount
+        conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+    return dict(result, removed=True, detached=detached, domain=domain,
+                message=("Removed %s from the web server. DNS records and website files "
+                         "were left in place." % domain))
+
+
+def _first_failure(result):
+    for step in (result or {}).get("steps") or []:
+        if not step.get("ok"):
+            return "%s: %s" % (step.get("step"), step.get("detail") or "failed")
+    return ""
+
+
+def platform_domains(limit=None):
+    """Every connected domain with its client, including orphaned rows."""
+    import orgs as orgs_service
+
+    orgs = {org["id"]: org for org in orgs_service.list_orgs(limit=None)}
+    rows = []
+    for site in list_sites(limit=limit):
+        org = orgs.get(site.get("org_id"))
+        item = dict(site)
+        # The console shows the badge, but the API is also used by support scripts:
+        # an orphan should never look like a client whose name happens to be blank.
+        item["org_name"] = (org or {}).get("name") or ("Deleted client" if org is None else "")
+        item["org_exists"] = bool(org)
+        item["orphaned"] = org is None
+        rows.append(item)
+    counts = {"total": len(rows), "live": 0, "pending": 0, "orphaned": 0, "error": 0}
+    for row in rows:
+        if row.get("orphaned"):
+            counts["orphaned"] += 1
+        if row.get("status") == "live":
+            counts["live"] += 1
+        elif row.get("status") == "error":
+            counts["error"] += 1
+        else:
+            counts["pending"] += 1
+    return rows, counts
 
 
 def upsert_for_agent(domain, owner_id=None, org_id=None):

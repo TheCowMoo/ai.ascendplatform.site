@@ -2339,6 +2339,19 @@ def list_sites():
     })
 
 
+@app.route("/api/platform/domains", methods=["GET"])
+@owner_required
+def platform_domains():
+    """Every connected domain, with deleted-client rows called out for cleanup."""
+    rows, counts = sites_service.platform_domains()
+    return jsonify({
+        "domains": rows,
+        "counts": counts,
+        "dry_run": actions.is_dry_run(),
+        "server_ip": provisioner.SERVER_IP,
+    })
+
+
 @app.route("/api/sites", methods=["POST"])
 @client_admin_required
 def create_site():
@@ -2386,10 +2399,23 @@ def update_site(site_id):
 @app.route("/api/sites/<int:site_id>", methods=["DELETE"])
 @client_admin_required
 def delete_site(site_id):
-    if not _site_for_request(site_id):
+    """Disconnect a domain, then remove its record.
+
+    This is intentionally not a row-only delete: doing that left the Caddy site block in
+    place and the domain kept serving. The vhost is removed and Caddy reloaded first; the
+    row is kept on failure so the operator can retry. Website files and history stay.
+    """
+    site = _site_for_request(site_id)
+    if not site:
         return jsonify({"error": "Not found"}), 404
-    sites_service.delete_site(site_id)
-    return jsonify({"ok": True})
+    legacy = site.get("org_id") is None or orgs_service.get_org(site.get("org_id")) is None
+    result = sites_service.disconnect_site(
+        site_id, actor=session.get("email") or session.get("name") or "operator",
+        legacy_cleanup=legacy)
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error") or "The domain could not be removed.",
+                        "result": result}), 409 if result.get("busy") else 400
+    return jsonify(result)
 
 
 @app.route("/api/sites/<int:site_id>/dns", methods=["GET"])

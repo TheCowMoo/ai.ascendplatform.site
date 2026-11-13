@@ -41,11 +41,14 @@ def org_out(row):
 
 
 def list_orgs(limit=200):
-    """Every client, newest first."""
+    """Every client, newest first; ``limit=None`` for the owner-wide domain view."""
+    query = "SELECT * FROM orgs ORDER BY id DESC"
+    params = []
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(max(1, int(limit)))
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM orgs ORDER BY id DESC LIMIT %d" % max(1, int(limit))
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [org_out(row) for row in rows]
 
 
@@ -165,7 +168,11 @@ def update_org(org_id, data):
 
 
 def delete_org(org_id):
-    """Remove a client. Refuses while it still has users, so nothing is orphaned."""
+    """Remove a client. Refuses while it still has users or connected domains.
+
+    A row-only site delete used to leave the vhost serving after the client was gone, so
+    the domain now has to be disconnected explicitly from Platform -> Domains first.
+    """
     if not get_org(org_id):
         return False
     with get_connection() as conn:
@@ -175,6 +182,15 @@ def delete_org(org_id):
     if users:
         raise OrgError(
             "This client still has %d user(s). Move or delete them first." % users
+        )
+    with get_connection() as conn:
+        sites = conn.execute(
+            "SELECT COUNT(*) FROM sites WHERE org_id = ?", (org_id,)
+        ).fetchone()[0]
+    if sites:
+        raise OrgError(
+            "This client still has %d connected domain(s). Remove them in "
+            "Platform -> Domains first." % sites
         )
     with get_connection() as conn:
         conn.execute("DELETE FROM orgs WHERE id = ?", (org_id,))

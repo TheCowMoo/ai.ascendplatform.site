@@ -1,4 +1,4 @@
-/* CMBGrowthAI — admin single-page app (no build step). */
+kl/* CMBGrowthAI — admin single-page app (no build step). */
 (function () {
   'use strict';
 
@@ -62,6 +62,7 @@
       home: '#/platform/clients',
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
+        { id: 'domains', label: 'Domains', icon: 'globe', hash: '#/platform/domains' },
         { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/platform/usage' },
         { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
         { id: 'sources', label: 'Data sources', icon: 'dashboard', hash: '#/platform/sources' },
@@ -2466,18 +2467,29 @@
     };
     var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
     edit.onclick = function () { siteEditor(site, refresh); };
-    var del = el('button', 'btn btn-danger btn-sm', 'Delete');
-    del.onclick = function () {
-      if (!confirm('Delete ' + site.domain + '?')) return;
-      api('DELETE', '/api/sites/' + site.id)
-        .then(function () { toast('Deleted', true); refresh(); })
-        .catch(function (e) { toast(e.message, false); });
-    };
     actions.appendChild(dns);
     actions.appendChild(check);
     actions.appendChild(provision);
     actions.appendChild(edit);
-    actions.appendChild(del);
+    if (canAdmin(state.user)) {
+      var del = el('button', 'btn btn-danger btn-sm', 'Remove domain');
+      del.onclick = function () {
+        if (!confirm('Remove ' + site.domain + '? ' +
+                     'The website will stop being served. Your DNS records are ' +
+                     'unchanged, and the website files and history are kept.')) return;
+        del.disabled = true;
+        api('DELETE', '/api/sites/' + site.id).then(function (res) {
+          toast(res.dry_run
+            ? (res.message || 'Dry-run: nothing was removed')
+            : (res.message || 'Removed ' + site.domain), true);
+          refresh();
+        }).catch(function (e) {
+          del.disabled = false;
+          toast(e.message, false);
+        });
+      };
+      actions.appendChild(del);
+    }
     card.appendChild(actions);
     return card;
   }
@@ -3067,6 +3079,122 @@
     return backdrop;
   }
 
+  // ---------- Platform: every connected domain, including deleted clients ----------
+  function viewPlatformDomains() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Domains</h2><p class="muted">Every connected domain, ' +
+      'who owns it, and whether it is still being served. Domains whose client was ' +
+      'deleted stay here so their web-server config can be cleaned up.</p></div>';
+    var reload = el('button', 'btn btn-ghost', 'Refresh');
+    reload.onclick = function () { load(); };
+    head.appendChild(reload);
+    container.appendChild(head);
+
+    var banner = el('div', 'panel-card mt');
+    container.appendChild(banner);
+    var search = el('input');
+    search.type = 'search';
+    search.placeholder = 'Search domain or client';
+    search.className = 'search-input';
+    var bar = el('div', 'chip-input');
+    bar.appendChild(search);
+    container.appendChild(bar);
+    var body = el('div', 'mt');
+    container.appendChild(body);
+    var all = [];
+
+    function remove(site, button) {
+      if (!confirm('Remove ' + site.domain + '? ' +
+                   'The website will stop being served. DNS records at the registrar are ' +
+                   'unchanged, and website files and history are kept.')) return;
+      button.disabled = true;
+      api('DELETE', '/api/sites/' + site.id).then(function (res) {
+        toast(res.dry_run ? (res.message || 'Dry-run: nothing was removed')
+                          : (res.message || 'Removed ' + site.domain), true);
+        load();
+      }).catch(function (e) {
+        button.disabled = false;
+        toast(e.message, false);
+      });
+    }
+
+    function render() {
+      body.innerHTML = '';
+      var needle = (search.value || '').trim().toLowerCase();
+      var rows = all.filter(function (site) {
+        if (!needle) return true;
+        return (site.domain || '').toLowerCase().indexOf(needle) >= 0 ||
+          (site.org_name || '').toLowerCase().indexOf(needle) >= 0;
+      });
+      if (!rows.length) {
+        body.appendChild(el('p', 'muted', all.length
+          ? 'No domains match that search.'
+          : 'No domains are connected yet.'));
+        return;
+      }
+      var table = el('table', 'table');
+      table.innerHTML = '<thead><tr><th>Domain</th><th>Client</th><th>Status</th>' +
+        '<th>SSL</th><th>Target</th><th>Points at</th><th>Website</th><th></th></tr></thead>';
+      var tbody = el('tbody');
+      rows.forEach(function (site) {
+        var tr = el('tr');
+        var client = site.orphaned
+          ? '<span class="badge badge-failed">Deleted client</span>' +
+            '<div class="muted">org #' + esc(site.org_id == null ? '-' : site.org_id) + '</div>'
+          : '<a href="#/platform/clients/' + site.org_id + '">' + esc(site.org_name) +
+            '</a>';
+        var url = site.url
+          ? '<a href="' + esc(site.url) + '" target="_blank" rel="noopener">Open</a>'
+          : '<span class="muted">not live</span>';
+        tr.innerHTML = '<td><strong>' + esc(site.domain || '(missing)') + '</strong></td>' +
+          '<td>' + client + '</td>' +
+          '<td>' + siteStatusBadge(site.status) + '</td>' +
+          '<td class="fine-print">' + esc(site.ssl_status || 'not issued') + '</td>' +
+          '<td><code>' + esc(site.target || 'local') + '</code></td>' +
+          '<td><code>' + esc(site.dns_last_ip || 'not checked') + '</code></td>' +
+          '<td>' + url + '</td>';
+        var actions = el('td', 'row-actions');
+        if (!site.orphaned) {
+          var openClient = el('a', 'btn btn-ghost btn-sm', 'Open client');
+          openClient.href = '#/platform/clients/' + site.org_id;
+          actions.appendChild(openClient);
+        }
+        var records = el('a', 'btn btn-ghost btn-sm', 'Records');
+        records.href = '#/app/domains/' + site.id;
+        actions.appendChild(records);
+        var removeButton = el('button', 'btn btn-danger btn-sm', 'Remove domain');
+        removeButton.onclick = function () { remove(site, removeButton); };
+        actions.appendChild(removeButton);
+        tr.appendChild(actions);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      body.appendChild(table);
+    }
+
+    function load() {
+      api('GET', '/api/platform/domains').then(function (d) {
+        all = d.domains || [];
+        var counts = d.counts || {};
+        banner.innerHTML = '<h3 class="card-title">' + (counts.total || 0) + ' domain' +
+          (counts.total === 1 ? '' : 's') + '</h3>' +
+          '<p class="muted">' + (counts.live || 0) + ' live · ' +
+          (counts.pending || 0) + ' waiting · ' + (counts.error || 0) + ' with errors · ' +
+          '<strong>' + (counts.orphaned || 0) + ' deleted-client</strong></p>' +
+          (d.dry_run ? '<p><span class="badge badge-queued">dry run</span> ' +
+            'Removing a domain will only pretend to write the web-server config.</p>' : '') +
+          '<p class="fine-print">Server address ' + esc(d.server_ip || 'unknown') +
+          '. Removing a domain stops the site; it does not change DNS at the registrar.</p>';
+        render();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    search.oninput = render;
+    load();
+    return container;
+  }
+
   // ---------- Clients (platform console: onboarding) ----------
   var PLANS = ['trial', 'standard', 'pro', 'enterprise'];
   var ORG_STATUSES = ['active', 'suspended', 'cancelled'];
@@ -3111,7 +3239,9 @@
           td.appendChild(edit);
           var del = el('button', 'btn btn-danger btn-sm', 'Delete');
           del.onclick = function () {
-            if (!confirm('Delete "' + org.name + '"? Their logins must be removed first.')) return;
+            if (!confirm('Delete "' + org.name + '"? Their logins must be removed first. ' +
+                         'Connected domains must be disconnected in Platform → Domains ' +
+                         'before the client can be deleted.')) return;
             api('DELETE', '/api/orgs/' + org.id)
               .then(function () { toast('Deleted', true); refresh(); })
               .catch(function (e) { toast(e.message, false); });
@@ -6948,21 +7078,30 @@
       };
       actions.appendChild(provision);
 
-      var remove = el('button', 'btn btn-danger btn-sm', 'Delete');
-      remove.onclick = function () {
-        if (!confirm('Delete ' + site.domain + '? DNS records are not touched.')) return;
-        remove.disabled = true;
-        api('DELETE', '/api/sites/' + site.id).then(function () {
-          toast('Deleted ' + site.domain, true);
-          // Do not leave a Records panel open under an id that no longer exists.
-          if (String(openId) === String(site.id)) location.hash = '#/app/domains';
-          else refresh();
-        }).catch(function (e) {
-          toast(e.message, false);
-          remove.disabled = false;
-        });
-      };
-      actions.appendChild(remove);
+      if (canAdmin(state.user)) {
+        var remove = el('button', 'btn btn-danger btn-sm', 'Remove domain');
+        remove.onclick = function () {
+          if (!confirm('Remove ' + site.domain + '? ' +
+                       'The website will stop being served. Your DNS records are ' +
+                       'unchanged, and the website files and history are kept.')) return;
+          remove.disabled = true;
+          api('DELETE', '/api/sites/' + site.id).then(function (res) {
+            toast(res.dry_run
+              ? (res.message || 'Dry-run: nothing was removed')
+              : (res.message || 'Removed ' + site.domain), true);
+            // Do not leave a Records panel open under an id that no longer exists.
+            if (res.removed && String(openId) === String(site.id)) {
+              location.hash = '#/app/domains';
+            } else {
+              refresh();
+            }
+          }).catch(function (e) {
+            toast(e.message, false);
+            remove.disabled = false;
+          });
+        };
+        actions.appendChild(remove);
+      }
 
       card.appendChild(actions);
       return card;
@@ -8829,6 +8968,7 @@
     var view;
     if (area === 'platform') {
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
+      else if (tab === 'domains') view = viewPlatformDomains();
       else if (tab === 'usage') view = viewPlatformUsage();
       else if (tab === 'servers') view = viewServers();
       else if (tab === 'email') view = viewPlatformEmail();

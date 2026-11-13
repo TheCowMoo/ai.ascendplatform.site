@@ -42,6 +42,7 @@ FAST_SUITES = (
     "test_client_brief",
     "test_read_only_jobs",
     "test_publish_live",
+    "test_domain_removal",
     "test_publish_home",
     "test_publish_tool",
     "test_fetch_page",

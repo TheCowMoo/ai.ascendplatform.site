@@ -259,6 +259,7 @@ input[type=color] {
 .chip button { color: inherit; font-size: 15px; line-height: 1; opacity: .6; transition: opacity var(--dur) var(--ease); }
 .chip button:hover { opacity: 1; }
 .chip-input { display: flex; gap: 8px; }
+.chip-input .search-input { flex: 1; min-width: 220px; }
 
 /* ---------- Stats ---------- */
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(184px, 1fr)); gap: 16px; margin-bottom: 24px; }
