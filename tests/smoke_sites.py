@@ -84,7 +84,7 @@ def test_sites_crud(client):
     dns = client.get("/api/sites/%d/dns" % site["id"]).get_json()
     print("dns records:", json.dumps(dns["records"]))
     assert dns["records"][0]["value"] == "203.0.113.10"
-    assert dns["records"][1]["name"] == "www.demo.test"
+    assert dns["records"][1]["host"] == "www.demo.test"
 
     check = client.post("/api/sites/%d/check" % site["id"]).get_json()["check"]
     print("dns check: ok=%s reason=%s" % (check["ok"], check["reason"]))

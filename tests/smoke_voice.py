@@ -477,8 +477,10 @@ def test_the_browser_half_is_wired():
     check("setupComplete is the gate to listening",
           "setPhase('listening'" in setup_handler, True)
     check("the client has a setup timeout", "SETUP_TIMEOUT" in client_js, True)
-    check("the timeout points at the Voice Test",
+    check("the timeout points at the Voice Test for the operator",
           "Settings -> Voice -> Test" in client_js, True)
+    check("a client's timeout stays plain",
+          "The voice session could not start" in client_js, True)
 
     # Every silent failure now has a visible branch.
     check("the client shows the server's error", "message.error" in client_js, True)

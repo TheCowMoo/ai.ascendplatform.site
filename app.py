@@ -1149,8 +1149,10 @@ def chat():
     try:
         reply, conversation_id, _payload = generate_reply(bot, user_message, history, conversation_id)
     except Exception as exc:
-        app.logger.error("DeepSeek API error: %s", exc)
-        return jsonify({"reply": f"Error connecting to AI: {exc}"}), 500
+        # This is a public widget surface. Log the provider detail; the visitor gets a
+        # sentence they can act on, not the agency's model stack.
+        app.logger.error("Widget reply failed: %s", exc)
+        return jsonify({"reply": "The assistant is unavailable right now. Please try again."}), 500
 
     return jsonify({"reply": reply, "conversation_id": conversation_id})
 
@@ -2118,6 +2120,20 @@ def _settings_scope_or_403(data=None):
     return org, None
 
 
+def _client_settings_keys(org):
+    """Keys a client is allowed to see and change on its own Settings page."""
+    return {field["key"] for group in settings.all_for_ui(org)
+            for field in group.get("fields") or []}
+
+
+def _client_settings_history(rows, org):
+    """Hide audit rows for backend-only groups from a client's own page."""
+    if org is None or is_owner():
+        return rows
+    visible = _client_settings_keys(org)
+    return [row for row in rows if row.get("key") in visible]
+
+
 @app.route("/api/settings", methods=["GET"])
 @client_admin_required
 def get_settings():
@@ -2126,7 +2142,7 @@ def get_settings():
         return error
     payload = {
         "groups": settings.all_for_ui(org),
-        "history": settings.history(25, org),
+        "history": _client_settings_history(settings.history(25, org), org),
         "scoped_to": org,
         "dry_run": actions.is_dry_run(),
     }
@@ -2148,6 +2164,14 @@ def update_settings():
     clear = data.get("clear") or []
     if not isinstance(values, dict) or not isinstance(clear, (list, tuple)):
         return jsonify({"error": "values must be an object and clear a list"}), 400
+    if org is not None and not is_owner():
+        visible = _client_settings_keys(org)
+        hidden = sorted((set(values) | set(clear)) - visible)
+        if hidden:
+            return jsonify({
+                "error": ("%s is managed by your agency, not editable here."
+                          % ", ".join(hidden)),
+            }), 400
 
     actor = session.get("email") or str(session.get("user_id") or "admin")
     if org is not None:
@@ -2483,6 +2507,15 @@ def _voice_public(payload):
     return payload
 
 
+def _client_voice_reason(reason):
+    """Keep the minutes message; replace provider setup errors with plain language."""
+    text = str(reason or "")
+    if "minute" in text.lower():
+        return text
+    return ("Voice is not available right now. Please type your request, or ask your "
+            "agency to check the voice setup.")
+
+
 @app.route("/api/voice/status", methods=["GET"])
 @login_required
 def voice_status():
@@ -2493,9 +2526,8 @@ def voice_status():
     probe = is_owner() and request.args.get("probe") in ("1", "true", "yes")
     payload = voice.status(session.get("user_id"), probe=probe)
     _voice_public(payload)
-    if not is_owner() and "key" in str(payload.get("reason") or "").lower():
-        payload["reason"] = ("Voice is not available here yet. Ask your agency to finish "
-                             "the setup.")
+    if not is_owner() and payload.get("reason"):
+        payload["reason"] = _client_voice_reason(payload["reason"])
     return jsonify(payload)
 
 
@@ -2509,9 +2541,8 @@ def voice_session():
     if not state["available"]:
         expired = "minutes" in state["reason"]
         reason = state["reason"]
-        if not is_owner() and "key" in str(reason).lower():
-            reason = ("Voice is not available here yet. Ask your agency to finish the "
-                      "setup.")
+        if not is_owner():
+            reason = _client_voice_reason(reason)
         payload = {"error": reason, "fallback": "text"}
         if is_owner():
             payload["model"] = state["model"]
@@ -2548,6 +2579,8 @@ def voice_session():
         if is_owner():
             payload["model"] = voice.model()
             payload["api_version"] = voice.api_version()
+        else:
+            payload["error"] = _client_voice_reason(exc)
         return jsonify(payload), 502
     # Counted up front, not on hang-up: a browser that never closes the socket cleanly must
     # not become free minutes. The microphone is opened before this route is called, so a
@@ -3083,12 +3116,52 @@ def _job_for_request(job_id):
     return job
 
 
+_PROVIDER_NAME = re.compile(
+    r"\b(?:deepseek(?:-[\w.]+)?|gemini(?:-[\w.]+)?|anthropic|claude(?:-[\w.]+)?|"
+    r"openai|gpt(?:-[\w.]+)?)\b", re.I)
+
+
+def _client_job(job, owner=None):
+    """A job row safe to show a client: no provider names in the error field."""
+    if owner is None:
+        owner = is_owner()
+    if owner or not job:
+        return job
+    out = dict(job)
+    if out.get("error"):
+        out["error"] = ("That request could not be completed. Please try again, or "
+                        "contact your agency.")
+    if out.get("result"):
+        out["result"] = _PROVIDER_NAME.sub("assistant", str(out["result"]))
+    return out
+
+
+def _client_events(events, owner=None):
+    """Strip provider names from error/system transcript entries for clients."""
+    if owner is None:
+        owner = is_owner()
+    if owner:
+        return events
+    clean = []
+    for event in events or []:
+        item = dict(event)
+        if item.get("type") == "error":
+            item["content"] = ("The request could not be completed. Please try again, "
+                               "or contact your agency.")
+        elif item.get("type") == "system":
+            item["content"] = _PROVIDER_NAME.sub(
+                "assistant", str(item.get("content") or ""))
+        clean.append(item)
+    return clean
+
+
 @app.route("/api/jobs", methods=["GET"])
 @login_required
 def list_jobs():
     # Keyword, not positional: list_jobs(limit, org_id) would read an org id as a
     # row limit and quietly return every client's runs.
-    return jsonify({"jobs": jobs.list_jobs(org_id=list_scope())})
+    rows = jobs.list_jobs(org_id=list_scope())
+    return jsonify({"jobs": [_client_job(job) for job in rows]})
 
 
 @app.route("/api/jobs", methods=["POST"])
@@ -3126,7 +3199,7 @@ def get_job(job_id):
     job = _job_for_request(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    return jsonify({"job": job, "artifacts": jobs.list_artifacts(job_id)})
+    return jsonify({"job": _client_job(job), "artifacts": jobs.list_artifacts(job_id)})
 
 
 @app.route("/api/jobs/<int:job_id>/events", methods=["GET"])
@@ -3137,8 +3210,8 @@ def job_events(job_id):
         return jsonify({"error": "Not found"}), 404
     after = request.args.get("after", type=int) or 0
     return jsonify({
-        "job": job,
-        "events": jobs.get_events(job_id, after),
+        "job": _client_job(job),
+        "events": _client_events(jobs.get_events(job_id, after)),
         "artifacts": jobs.list_artifacts(job_id),
     })
 
@@ -3149,7 +3222,7 @@ def cancel_job(job_id):
     if not _job_for_request(job_id):
         return jsonify({"error": "Not found"}), 404
     jobs.cancel_job(job_id)
-    return jsonify({"job": jobs.get_job(job_id)})
+    return jsonify({"job": _client_job(jobs.get_job(job_id))})
 
 
 # ---------------------------------------------------------------------------

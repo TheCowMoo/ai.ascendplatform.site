@@ -32,7 +32,7 @@
           { id: 'dashboard', label: 'Dashboard', hash: '#/app/dashboard' },
           { id: 'analytics', label: 'Analytics', hash: '#/app/analytics' },
           { id: 'usage', label: 'Usage', hash: '#/app/usage' },
-          { id: 'jobs', label: 'Jobs', hash: '#/app/jobs' }
+          { id: 'jobs', label: 'Jobs', hash: '#/app/jobs', ownerOnly: true }
         ] },
         { id: 'sites-group', label: 'Sites', icon: 'globe', children: [
           { id: 'sites', label: 'Websites', hash: '#/app/sites' },
@@ -53,7 +53,8 @@
         { id: 'account', label: 'Account', icon: 'sliders', children: [
           { id: 'profile', label: 'Business Profile', hash: '#/app/profile' },
           { id: 'team', label: 'Team', hash: '#/app/team', adminOnly: true },
-          { id: 'settings', label: 'Settings', hash: '#/app/settings', adminOnly: true }
+          { id: 'settings', label: 'Settings', clientLabel: 'Email settings',
+            hash: '#/app/settings', adminOnly: true }
         ] }
       ]
     },
@@ -100,7 +101,9 @@
 
   function visibleChildren(item) {
     return (item.children || []).filter(function (child) {
-      return !(child.adminOnly && !canAdmin(state.user));
+      if (child.adminOnly && !canAdmin(state.user)) return false;
+      if (child.ownerOnly && !isOwner(state.user)) return false;
+      return true;
     });
   }
 
@@ -787,8 +790,9 @@
         (item.id === tab ? ' active' : ''));
       link.href = item.hash;
       if (item.id === tab) link.setAttribute('aria-current', 'page');
+      var label = (!isOwner(state.user) && item.clientLabel) ? item.clientLabel : item.label;
       link.innerHTML = (child ? '' : '<span class="side-icon">' + icon(item.icon) + '</span>') +
-        '<span class="side-label">' + esc(item.label) + '</span>' +
+        '<span class="side-label">' + esc(label) + '</span>' +
         (item.ready === false ? '<span class="side-soon">Soon</span>' : '');
       link.onclick = function () { document.body.classList.remove('nav-open'); };
       return link;
@@ -796,6 +800,7 @@
 
     AREAS[area].nav.forEach(function (item) {
       if (item.adminOnly && !canAdmin(state.user)) return;
+      if (item.ownerOnly && !isOwner(state.user)) return;
       if (!item.children || !item.children.length) {
         nav.appendChild(navLeaf(item, false));
         return;
@@ -977,6 +982,7 @@
 
   function viewDashboard() {
     var container = el('div', 'container');
+    var owner = isOwner(state.user);
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Dashboard</h2><p>Your platform at a glance.</p></div>';
     container.appendChild(head);
@@ -988,7 +994,7 @@
     panel.innerHTML = '<h3>Recent jobs</h3>';
     var recent = el('div');
     panel.appendChild(recent);
-    container.appendChild(panel);
+    if (owner) container.appendChild(panel);
 
     Promise.all([api('GET', '/api/bots'), api('GET', '/api/jobs'), api('GET', '/api/profile')])
       .then(function (results) {
@@ -1000,9 +1006,10 @@
         grid.innerHTML = '';
         grid.appendChild(statCard(bots.length, 'Chatbots'));
         grid.appendChild(statCard(messages, 'Messages'));
-        grid.appendChild(statCard(jobs.length, 'Agent jobs'));
+        if (owner) grid.appendChild(statCard(jobs.length, 'Agent jobs'));
         grid.appendChild(statCard(prof.name ? 'Ready' : 'Empty', 'Business Profile'));
 
+        if (!owner) return;
         recent.innerHTML = '';
         if (!jobs.length) {
           recent.appendChild(el('div', 'muted', 'No agent jobs yet.'));
@@ -1089,10 +1096,18 @@
   var PLATFORM_LABELS = { messenger: 'Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
 
   function buildChannelsPanel(botId) {
+    var owner = isOwner(state.user);
     var card = el('div', 'panel-card');
     card.style.marginTop = '20px';
     card.appendChild(el('h3', null, 'Meta channels (Messenger / Instagram / WhatsApp)'));
     card.appendChild(el('div', 'muted', 'Route DMs from a Facebook Page, Instagram professional account, or WhatsApp Business number to this bot.'));
+
+    // Channel credentials are developer setup. Keep them one disclosure away from a
+    // client; the operator can have them open while working.
+    var advanced = el('details', 'channel-advanced');
+    var summary = el('summary', null, 'Advanced channel setup');
+    advanced.appendChild(summary);
+    if (owner) advanced.open = true;
 
     var cbField = el('div', 'field');
     cbField.style.marginTop = '14px';
@@ -1106,7 +1121,7 @@
     cbRow.appendChild(cbInput); cbRow.appendChild(cbCopy);
     cbField.appendChild(cbRow);
     cbField.appendChild(el('div', 'hint', 'Paste this as the Callback URL in your Meta app webhook settings, then subscribe to the "messages" field.'));
-    card.appendChild(cbField);
+    advanced.appendChild(cbField);
 
     var list = el('div');
     card.appendChild(list);
@@ -1147,7 +1162,8 @@
     actions.appendChild(saveBtn);
     actions.appendChild(cancelBtn);
     form.appendChild(actions);
-    card.appendChild(form);
+    advanced.appendChild(form);
+    card.appendChild(advanced);
 
     function resetForm() {
       editingId = null;
@@ -1197,20 +1213,23 @@
         row.style.marginTop = '12px';
         var head = el('div', 'bot-card-meta');
         head.innerHTML = '<span><b>' + esc(PLATFORM_LABELS[ch.platform] || ch.platform) + '</b></span>' +
-          '<span>ID ' + esc(ch.external_id) + '</span>' +
+          (owner ? '<span>ID ' + esc(ch.external_id) + '</span>' : '') +
           '<span class="badge ' + (ch.enabled ? 'badge-admin' : 'badge-member') + '">' + (ch.enabled ? 'enabled' : 'disabled') + '</span>';
         row.appendChild(head);
-        var creds = el('div', 'bot-card-assistant');
-        creds.textContent = 'Token: ' + (ch.has_token ? 'set' : 'missing') + ' · App secret: ' + (ch.has_app_secret ? 'set' : 'missing');
-        row.appendChild(creds);
-        var vt = el('div', 'bot-card-assistant');
-        vt.innerHTML = 'Verify token: <code>' + esc(ch.verify_token) + '</code>';
-        row.appendChild(vt);
+        if (owner) {
+          var creds = el('div', 'bot-card-assistant');
+          creds.textContent = 'Token: ' + (ch.has_token ? 'set' : 'missing') + ' · App secret: ' + (ch.has_app_secret ? 'set' : 'missing');
+          row.appendChild(creds);
+          var vt = el('div', 'bot-card-assistant');
+          vt.innerHTML = 'Verify token: <code>' + esc(ch.verify_token) + '</code>';
+          row.appendChild(vt);
+        }
         var acts = el('div', 'card-actions');
         acts.style.marginTop = '8px';
         var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
         edit.onclick = function () {
           editingId = ch.id;
+          advanced.open = true;
           platform.value = ch.platform;
           extId.value = ch.external_id;
           token.value = ''; appSecret.value = '';
@@ -1699,7 +1718,91 @@
     return input;
   }
 
+  function viewClientSettings() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Email sending</h2><p>Choose the mailbox the platform uses ' +
+      'when it sends email for you. This is optional: leave it blank and we will use the ' +
+      'agency default.</p></div>';
+    container.appendChild(head);
+
+    var note = el('div', 'panel-card');
+    note.innerHTML = '<p class="muted">You only need this if you want messages to come from ' +
+      'your own domain. Your password is stored securely and is never shown again.</p>' +
+      '<p class="fine-print">Need help? Ask your agency to set this up with you.</p>';
+    container.appendChild(note);
+
+    var groupsWrap = el('div', 'mt');
+    container.appendChild(groupsWrap);
+
+    function refresh() {
+      api('GET', '/api/settings').then(function (d) {
+        groupsWrap.innerHTML = '';
+        var groups = d.groups || [];
+        if (!groups.length) {
+          groupsWrap.appendChild(el('p', 'muted',
+            'Email settings are managed by your agency.'));
+          return;
+        }
+        groups.forEach(function (group) {
+          var card = el('div', 'panel-card settings-group');
+          var head = el('div', 'settings-group-head');
+          head.innerHTML = '<span class="settings-icon">' + icon(group.icon || 'mail') +
+            '</span><div><h3>' + esc(group.label) + '</h3><div class="muted">' +
+            esc(group.blurb || '') + '</div></div>';
+          card.appendChild(head);
+
+          var inputs = {};
+          (group.fields || []).forEach(function (field) {
+            var row = el('div', 'settings-row');
+            var label = el('label', 'settings-label');
+            label.setAttribute('for', 'set-' + field.key);
+            label.innerHTML = '<span class="settings-name">' + esc(field.label) + '</span>';
+            row.appendChild(label);
+
+            var right = el('div', 'settings-input');
+            var input = fieldInput(field);
+            input.id = 'set-' + field.key;
+            inputs[field.key] = input;
+            right.appendChild(input);
+            row.appendChild(right);
+            if (field.help) row.appendChild(el('div', 'hint', field.help));
+            card.appendChild(row);
+          });
+
+          var actions = el('div', 'card-actions');
+          var save = el('button', 'btn btn-primary btn-sm', 'Save');
+          save.type = 'button';
+          save.onclick = function () { saveGroup(group, inputs, refresh); };
+          actions.appendChild(save);
+          if (group.test) {
+            var test = el('button', 'btn btn-ghost btn-sm', 'Test connection');
+            test.type = 'button';
+            test.onclick = function () {
+              test.disabled = true;
+              api('POST', '/api/settings/test/' + group.id).then(function (r) {
+                toast(r.output, !!r.ok);
+              }).catch(function (e) { toast(e.message, false); })
+                .finally(function () { test.disabled = false; });
+            };
+            actions.appendChild(test);
+          }
+          card.appendChild(actions);
+          groupsWrap.appendChild(card);
+        });
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    refresh();
+    return container;
+  }
+
   function viewSettings() {
+    // A client only ever sees the email account they control. The operator keeps the
+    // full platform catalogue: model credentials, voice, hosting, safety and audit
+    // history belong on the backend screen, not in a client's workspace.
+    if (!isOwner(state.user)) return viewClientSettings();
+
     var container = el('div', 'container');
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Settings</h2><p>Configuration for every subsystem. A value saved ' +
@@ -2377,15 +2480,24 @@
   };
   var SITE_TARGETS = [];
 
-  function siteStatusBadge(status) {
-    return '<span class="badge ' + (SITE_STATUS_CLASS[status] || 'badge-status') + '">' + esc(status) + '</span>';
+  function siteStatusBadge(status, friendly) {
+    var label = status;
+    if (friendly) {
+      label = ({ pending_dns: 'Setting up', dns_ok: 'Connecting', live: 'Live',
+                 error: 'Needs attention' })[status] || 'Setting up';
+    }
+    return '<span class="badge ' + (SITE_STATUS_CLASS[status] || 'badge-status') + '">' +
+      esc(label) + '</span>';
   }
 
   function viewSites() {
+    var owner = isOwner(state.user);
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Sites</h2><p>Point a domain at this server and the platform serves it over HTTPS.</p></div>';
-    var addBtn = el('button', 'btn btn-primary', '+ New site');
+    head.innerHTML = owner
+      ? '<div><h2>Sites</h2><p>Point a domain at this server and the platform serves it over HTTPS.</p></div>'
+      : '<div><h2>Website</h2><p>Connect your domain and we will set up the secure site for you.</p></div>';
+    var addBtn = el('button', 'btn btn-primary', owner ? '+ New site' : '+ Connect a domain');
     addBtn.onclick = function () { siteEditor(null, refresh); };
     head.appendChild(addBtn);
     container.appendChild(head);
@@ -2398,14 +2510,19 @@
     function refresh() {
       api('GET', '/api/sites').then(function (d) {
         SITE_TARGETS = d.targets || [];
-        banner.innerHTML = '<h3>How this works</h3><div class="muted">' +
-          (d.dry_run
-            ? 'Dry-run: nothing is written to disk or the web server until you set <code>ALLOW_LIVE_ACTIONS=1</code>.'
-            : 'Live: provisioning runs the real commands and may ask for approval.') +
-          (d.server_ip
-            ? '<br>Server IP: <b>' + esc(d.server_ip) + '</b>'
-            : '<br>Set <code>SERVER_IP</code> so the DNS hints are accurate.') +
-          '</div>';
+        banner.innerHTML = owner
+          ? '<h3>How this works</h3><div class="muted">' +
+            (d.dry_run
+              ? 'Dry-run: nothing is written to disk or the web server until you set <code>ALLOW_LIVE_ACTIONS=1</code>.'
+              : 'Live: provisioning runs the real commands and may ask for approval.') +
+            (d.server_ip
+              ? '<br>Server IP: <b>' + esc(d.server_ip) + '</b>'
+              : '<br>Set <code>SERVER_IP</code> so the DNS hints are accurate.') +
+            '</div>'
+          : '<h3>Your website</h3><div class="muted">Add the domain you want to use. ' +
+            'We will give you the DNS records and set up the certificate automatically.' +
+            (d.server_ip ? '<br>Point your domain at <b>' + esc(d.server_ip) + '</b>.'
+                         : '') + '</div>';
         grid.innerHTML = '';
         var sites = d.sites || [];
         if (!sites.length) {
@@ -2422,6 +2539,7 @@
   }
 
   function siteCard(site, refresh) {
+    var owner = isOwner(state.user);
     var card = el('div', 'bot-card');
     var top = el('div', 'bot-card-top');
     var av = el('div', 'bot-avatar');
@@ -2430,13 +2548,19 @@
     top.appendChild(av);
     var names = el('div');
     names.innerHTML = '<div class="bot-card-name">' + esc(site.domain) + '</div>' +
-      '<div class="bot-card-assistant">' + esc(site.target) + ' target</div>';
+      '<div class="bot-card-assistant">' +
+      (owner ? esc(site.target) + ' target'
+             : (site.status === 'live' ? 'Live website'
+                : (site.status === 'error' ? 'Needs attention' : 'Setting up'))) +
+      '</div>';
     top.appendChild(names);
     card.appendChild(top);
 
     var meta = el('div', 'bot-card-meta');
-    meta.innerHTML = '<span>' + siteStatusBadge(site.status) + '</span>' +
-      '<span>ssl: ' + esc(site.ssl_status) + '</span>';
+    meta.innerHTML = '<span>' + siteStatusBadge(site.status, !owner) + '</span>' +
+      '<span>' + (owner ? 'ssl: ' + esc(site.ssl_status)
+                        : (site.ssl_status === 'issued' ? 'Secure certificate ready'
+                           : 'Certificate pending')) + '</span>';
     card.appendChild(meta);
 
     if (site.url) {
@@ -2444,33 +2568,46 @@
       link.innerHTML = '<a href="' + esc(site.url) + '" target="_blank" rel="noopener">' + esc(site.url) + '</a>';
       card.appendChild(link);
     }
-    if (site.last_error) card.appendChild(el('div', 'muted', site.last_error));
-    if (site.dns_last_ip) card.appendChild(el('div', 'muted', 'resolves to ' + esc(site.dns_last_ip)));
+    if (owner && site.last_error) card.appendChild(el('div', 'muted', site.last_error));
+    if (owner && site.dns_last_ip) {
+      card.appendChild(el('div', 'muted', 'resolves to ' + esc(site.dns_last_ip)));
+    }
 
     var actions = el('div', 'card-actions');
-    var dns = el('button', 'btn btn-ghost btn-sm', 'DNS & SSL');
+    var dns = el('button', 'btn btn-ghost btn-sm', owner ? 'DNS & SSL' : 'Domain setup');
     // One implementation, in the Domains tab - this used to open a second, older modal.
     dns.onclick = function () { location.hash = '#/app/domains/' + site.id; };
-    var check = el('button', 'btn btn-ghost btn-sm', 'Check DNS');
+    var check = el('button', 'btn btn-ghost btn-sm', owner ? 'Check DNS' : 'Check connection');
     check.onclick = function () {
       api('POST', '/api/sites/' + site.id + '/check').then(function (d) {
-        toast(d.check.ok ? 'DNS points here' : 'DNS: ' + d.check.reason, d.check.ok);
+        toast(d.check.ok ? 'Your domain is connected'
+                         : (owner ? 'DNS: ' + d.check.reason : 'The domain is not connected yet'),
+              d.check.ok);
         refresh();
       }).catch(function (e) { toast(e.message, false); });
     };
-    var provision = el('button', 'btn btn-primary btn-sm', 'Provision');
+    var provision = el('button', 'btn btn-primary btn-sm', owner ? 'Provision' : 'Publish website');
     provision.onclick = function () {
+      provision.disabled = true;
       api('POST', '/api/sites/' + site.id + '/provision').then(function (d) {
-        toast('Provisioning queued', true);
-        location.hash = '#/jobs/' + d.job.id;
-      }).catch(function (e) { toast(e.message, false); });
+        if (owner) {
+          toast('Provisioning queued', true);
+          location.hash = '#/jobs/' + d.job.id;
+        } else {
+          toast('We are preparing your website. This can take a moment.', true);
+          refresh();
+        }
+      }).catch(function (e) { toast(e.message, false); })
+        .finally(function () { provision.disabled = false; });
     };
-    var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
-    edit.onclick = function () { siteEditor(site, refresh); };
     actions.appendChild(dns);
     actions.appendChild(check);
     actions.appendChild(provision);
-    actions.appendChild(edit);
+    if (owner) {
+      var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+      edit.onclick = function () { siteEditor(site, refresh); };
+      actions.appendChild(edit);
+    }
     if (canAdmin(state.user)) {
       var del = el('button', 'btn btn-danger btn-sm', 'Remove domain');
       del.onclick = function () {
@@ -2480,7 +2617,8 @@
         del.disabled = true;
         api('DELETE', '/api/sites/' + site.id).then(function (res) {
           toast(res.dry_run
-            ? (res.message || 'Dry-run: nothing was removed')
+            ? (owner ? (res.message || 'Dry-run: nothing was removed')
+                     : 'We could not remove the domain right now. Please contact your agency.')
             : (res.message || 'Removed ' + site.domain), true);
           refresh();
         }).catch(function (e) {
@@ -2530,11 +2668,16 @@
 
   function siteEditor(site, onSaved) {
     site = site || {};
+    var owner = isOwner(state.user);
     var isNew = !site.id;
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal modal-wide');
-    modal.innerHTML = '<h3>' + (isNew ? 'New site' : 'Edit ' + esc(site.domain)) + '</h3>' +
-      '<p class="muted">The domain must already be pointed here (or be pointed after you save).</p>';
+    modal.innerHTML = owner
+      ? '<h3>' + (isNew ? 'New site' : 'Edit ' + esc(site.domain)) + '</h3>' +
+        '<p class="muted">The domain must already be pointed here (or be pointed after you save).</p>'
+      : '<h3>Connect a domain</h3>' +
+        '<p class="muted">Enter the domain you own. We will show you the records to add ' +
+        'and set up the secure website.</p>';
 
     function field(label, input) {
       var wrap = el('div', 'field');
@@ -2571,25 +2714,29 @@
     linkedBot.placeholder = 'optional bot id to embed';
 
     modal.appendChild(field('Domain', domain));
-    modal.appendChild(field('Target', target));
-    modal.appendChild(field('Aliases', aliases));
-    modal.appendChild(field('Docroot', docroot));
-    modal.appendChild(field('Content HTML', content));
-    modal.appendChild(field('Linked chatbot', linkedBot));
+    if (owner) {
+      modal.appendChild(field('Target', target));
+      modal.appendChild(field('Aliases', aliases));
+      modal.appendChild(field('Docroot', docroot));
+      modal.appendChild(field('Content HTML', content));
+      modal.appendChild(field('Linked chatbot', linkedBot));
+    }
 
     var actions = el('div', 'modal-actions');
     var cancel = el('button', 'btn btn-ghost', 'Cancel');
     cancel.onclick = function () { backdrop.remove(); };
-    var save = el('button', 'btn btn-primary', 'Save');
+    var save = el('button', 'btn btn-primary', owner ? 'Save' : 'Continue');
     save.onclick = function () {
-      var payload = {
-        domain: domain.value.trim().toLowerCase(),
-        target: target.value,
-        aliases: aliases.value.split(',').map(function (a) { return a.trim(); }).filter(Boolean),
-        docroot: docroot.value,
-        content_html: content.value,
-        linked_bot_id: linkedBot.value
-      };
+      var payload = owner
+        ? {
+            domain: domain.value.trim().toLowerCase(),
+            target: target.value,
+            aliases: aliases.value.split(',').map(function (a) { return a.trim(); }).filter(Boolean),
+            docroot: docroot.value,
+            content_html: content.value,
+            linked_bot_id: linkedBot.value
+          }
+        : { domain: domain.value.trim().toLowerCase(), target: 'local' };
       save.disabled = true;
       var request = isNew ? api('POST', '/api/sites', payload) : api('PUT', '/api/sites/' + site.id, payload);
       request
@@ -6270,14 +6417,24 @@
   // ---------- Usage: what the team spent, and on what ----------
   // The client's own meter. The operator's cross-client screen is separate, because it
   // owns the rate card and the credits themselves.
+  function usageKind(kind) {
+    var labels = { model: 'Assistant', voice: 'Voice', image: 'Image' };
+    return labels[kind] || kind || 'Activity';
+  }
+
   function viewUsage() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
+    var owner = isOwner(state.user);
     // Credits only. The dollar price of a credit is the operator's business, and it is
-    // deliberately absent from this screen and from a client's payload.
-    head.innerHTML = '<div><h2>Usage</h2><p class="muted">What the team has used, in ' +
-      'credits. Cached input costs less than fresh input, so a cached prompt is cheaper ' +
-      'to run.</p></div>';
+    // deliberately absent from this screen and from a client's payload. Technical
+    // token/model detail is operator-only too; a client sees what the work cost.
+    head.innerHTML = owner
+      ? '<div><h2>Usage</h2><p class="muted">What the team has used, in credits. ' +
+        'Cached input costs less than fresh input, so a cached prompt is cheaper to run.' +
+        '</p></div>'
+      : '<div><h2>Credits used</h2><p class="muted">What your team has used this month, ' +
+        'in credits.</p></div>';
     var range = el('select');
     range.innerHTML = '<option value="7">Last 7 days</option>' +
       '<option value="30" selected>Last 30 days</option>' +
@@ -6296,16 +6453,15 @@
             ? 'No credits yet' : fmtCredits(d.balance) + ' credits'));
         card.appendChild(el('p', 'muted', [
           'Plan ' + (d.plan || 'standard'),
-          d.allowance ? fmtCredits(d.allowance) + ' credits a month' : 'no monthly allowance',
-          'enforcement: ' + (d.enforce || 'shadow')
-        ].join(' \u00b7 ')));
+          d.allowance ? fmtCredits(d.allowance) + ' credits a month' : 'no monthly allowance'
+        ].concat(owner ? ['enforcement: ' + (d.enforce || 'shadow')] : []).join(' \u00b7 ')));
         if (d.low) {
           card.appendChild(el('p', 'form-error',
             'Low balance. Once enforcement is on, new work is refused at zero.'));
         }
         body.appendChild(card);
 
-        if ((d.missing_rates || []).length) {
+        if (owner && (d.missing_rates || []).length) {
           var warn = el('div', 'panel');
           warn.appendChild(el('h3', null, 'Unpriced models'));
           warn.appendChild(el('p', 'muted', 'These calls are recorded but not priced. ' +
@@ -6320,32 +6476,40 @@
         }
 
         var summary = el('div', 'panel');
-        summary.appendChild(el('h3', null, 'Spend by model and agent'));
+        summary.appendChild(el('h3', null,
+          owner ? 'Spend by model and agent' : 'Where your credits went'));
         var rows = d.rows || [];
         if (!rows.length) {
           summary.appendChild(el('p', 'muted', 'Nothing has been spent in this window.'));
         } else {
           // A client payload has no provider or model (stripped server-side); the
-          // operator does, so the same table serves both without a wasted column.
-          var named = rows.some(function (row) { return !!(row.provider || row.model); });
+          // operator does. The client table is deliberately shorter: activity, team,
+          // calls and credits only.
+          var named = owner && rows.some(function (row) { return !!(row.provider || row.model); });
           var table = el('table', 'table');
-          table.innerHTML = '<thead><tr><th>Where</th><th>Agent</th><th>Calls</th>' +
-            '<th>Input (cached)</th><th>Output</th><th>Credits</th></tr></thead>';
+          table.innerHTML = owner
+            ? '<thead><tr><th>Where</th><th>Agent</th><th>Calls</th>' +
+              '<th>Input (cached)</th><th>Output</th><th>Credits</th></tr></thead>'
+            : '<thead><tr><th>Activity</th><th>Team</th><th>Calls</th>' +
+              '<th>Credits</th></tr></thead>';
           var tbody = el('tbody');
           rows.forEach(function (row) {
             var tr = el('tr');
-            tr.innerHTML = '<td><span class="badge">' + esc(row.kind) + '</span>' +
+            var where = '<td><span class="badge">' + esc(usageKind(row.kind)) + '</span>' +
               (named ? ' ' + esc(row.provider || '') +
-                (row.model ? ' \u00b7 ' + esc(row.model) : '') : '') + '</td>' +
-              '<td>' + esc(row.label || '-') + '</td>' +
-              '<td>' + esc(row.calls || 0) + '</td>' +
-              '<td>' + esc(row.input_uncached || 0) +
-              (row.input_cached ? ' <span class="muted">(' + esc(row.input_cached) +
-                ' cached)</span>' : '') + '</td>' +
-              '<td>' + esc(row.output_tokens || 0) + '</td>' +
-              '<td>' + (row.unpriced
-                ? '<span class="badge badge-queued">unpriced</span> '
-                : '') + esc(fmtCredits(row.credits)) + '</td>';
+                (row.model ? ' \u00b7 ' + esc(row.model) : '') : '') + '</td>';
+            var team = '<td>' + esc(row.label || '-') + '</td>' +
+              '<td>' + esc(row.calls || 0) + '</td>';
+            var credits = '<td>' + (row.unpriced && owner
+              ? '<span class="badge badge-queued">unpriced</span> '
+              : '') + esc(fmtCredits(row.credits)) + '</td>';
+            tr.innerHTML = owner
+              ? where + team +
+                '<td>' + esc(row.input_uncached || 0) +
+                (row.input_cached ? ' <span class="muted">(' + esc(row.input_cached) +
+                  ' cached)</span>' : '') + '</td>' +
+                '<td>' + esc(row.output_tokens || 0) + '</td>' + credits
+              : where + team + credits;
             tbody.appendChild(tr);
           });
           table.appendChild(tbody);
@@ -6354,30 +6518,34 @@
         body.appendChild(summary);
 
         var recent = el('div', 'panel');
-        recent.appendChild(el('h3', null, 'Recent calls'));
+        recent.appendChild(el('h3', null, owner ? 'Recent calls' : 'Recent activity'));
         var items = d.recent || [];
         if (!items.length) {
-          recent.appendChild(el('p', 'muted', 'No calls yet.'));
+          recent.appendChild(el('p', 'muted', 'No activity yet.'));
         } else {
-          var showModel = items.some(function (item) {
+          var showModel = owner && items.some(function (item) {
             return !!(item.model_returned || item.model_configured);
           });
           var list = el('table', 'table');
-          list.innerHTML = '<thead><tr><th>When</th><th>Kind</th>' +
-            (showModel ? '<th>Model</th>' : '') +
-            '<th>Agent</th><th>Credits</th></tr></thead>';
+          list.innerHTML = owner
+            ? '<thead><tr><th>When</th><th>Kind</th>' +
+              (showModel ? '<th>Model</th>' : '') +
+              '<th>Agent</th><th>Credits</th></tr></thead>'
+            : '<thead><tr><th>When</th><th>Activity</th><th>Team</th>' +
+              '<th>Credits</th></tr></thead>';
           var listBody = el('tbody');
           items.forEach(function (item) {
             var tr = el('tr');
-            tr.innerHTML = '<td class="muted">' +
-              esc((item.created_at || '').slice(0, 16)) + '</td>' +
-              '<td>' + esc(item.kind) + '</td>' +
+            var when = '<td class="muted">' +
+              esc((item.created_at || '').slice(0, 16)) + '</td>';
+            var credits = '<td>' + (item.credits_milli === null && owner
+              ? '<span class="badge badge-queued">unpriced</span>'
+              : esc(fmtCredits((item.credits_milli || 0) / 1000))) + '</td>';
+            tr.innerHTML = when +
+              '<td>' + esc(usageKind(item.kind)) + '</td>' +
               (showModel ? '<td>' + esc(item.model_returned || item.model_configured || '-') +
                 '</td>' : '') +
-              '<td>' + esc(item.label || '-') + '</td>' +
-              '<td>' + (item.credits_milli === null
-                ? '<span class="badge badge-queued">unpriced</span>'
-                : esc(fmtCredits(item.credits_milli / 1000))) + '</td>';
+              '<td>' + esc(item.label || '-') + '</td>' + credits;
             listBody.appendChild(tr);
           });
           list.appendChild(listBody);
@@ -6784,11 +6952,15 @@
   // End provisionState.
 
   function viewDomains(openId) {
+    var owner = isOwner(state.user);
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Domains</h2><p class="muted">Point a domain at this server, ' +
-      'watch each record go green, then go live. A certificate is only reported once the ' +
-      'site actually answers over HTTPS.</p></div>';
+    head.innerHTML = owner
+      ? '<div><h2>Domains</h2><p class="muted">Point a domain at this server, watch each ' +
+        'record go green, then go live. A certificate is only reported once the site ' +
+        'actually answers over HTTPS.</p></div>'
+      : '<div><h2>Domains</h2><p class="muted">Connect a domain you own. We will show ' +
+        'you the exact records to add, then set up the secure website.</p></div>';
     container.appendChild(head);
 
     // The one thing the Sites tab says and this tab did not: whether anything will
@@ -6877,9 +7049,9 @@
     // Type it, read the two rows, decide. Nothing is created until "Add this domain", so a
     // typo costs a re-type rather than a site row somebody has to go and delete.
     var addCard = el('div', 'panel-card');
-    addCard.innerHTML = '<h3 class="card-title">Point a new domain here</h3>' +
+    addCard.innerHTML = '<h3 class="card-title">Connect a new domain</h3>' +
       '<p class="fine-print">Type a domain you own. You get the exact records to add at ' +
-      'your DNS provider - copy them across, then press Check again until every row is ' +
+      'your domain provider - copy them across, then press Check again until every row is ' +
       'green. Nothing is created until you add it.</p>';
     var addBar = el('div', 'chip-input');
     var addInput = el('input');
@@ -6902,8 +7074,9 @@
         (d.warnings || []).forEach(function (text) {
           addPreview.appendChild(el('p', 'form-error', text));
         });
-        addPreview.appendChild(el('p', 'fine-print', 'Server IP ' +
-          esc(d.server_ip || 'unknown') + ' (' + esc(d.server_ip_source || 'not set') + ')'));
+        addPreview.appendChild(el('p', 'fine-print', 'Point your domain at ' +
+          esc(d.server_ip || 'the server address') +
+          (owner ? ' (' + esc(d.server_ip_source || 'not set') + ')' : '') + '.'));
 
         var table = el('table', 'table');
         table.innerHTML = '<thead><tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th>' +
@@ -6958,16 +7131,21 @@
       Promise.all([api('GET', '/api/sites'), jobsPromise]).then(function (results) {
         var d = results[0] || {};
         body.innerHTML = '';
-        banner.innerHTML = '<h3>How this works</h3><div class="muted">' +
-          (d.dry_run
-            ? 'Dry-run: DNS checks and certificates are real, but provisioning writes ' +
-              'nothing and reloads nothing until you set <code>ALLOW_LIVE_ACTIONS=1</code>.'
-            : 'Live: provisioning writes the page and the site block, reloads the web ' +
-              'server, then waits for the certificate. One approval covers the whole run.') +
-          (d.server_ip
-            ? '<br>Server IP: <b>' + esc(d.server_ip) + '</b>'
-            : '<br>Set <code>SERVER_IP</code> so the DNS hints are accurate.') +
-          '</div>';
+        banner.innerHTML = owner
+          ? '<h3>How this works</h3><div class="muted">' +
+            (d.dry_run
+              ? 'Dry-run: DNS checks and certificates are real, but provisioning writes ' +
+                'nothing and reloads nothing until you set <code>ALLOW_LIVE_ACTIONS=1</code>.'
+              : 'Live: provisioning writes the page and the site block, reloads the web ' +
+                'server, then waits for the certificate. One approval covers the whole run.') +
+            (d.server_ip
+              ? '<br>Server IP: <b>' + esc(d.server_ip) + '</b>'
+              : '<br>Set <code>SERVER_IP</code> so the DNS hints are accurate.') +
+            '</div>'
+          : '<h3>Connecting your domain</h3><div class="muted">Add the records we show ' +
+            'at your domain provider. Once they are live, press Check and we will finish ' +
+            'the secure setup.' + (d.server_ip
+              ? '<br>Point the domain at <b>' + esc(d.server_ip) + '</b>.' : '') + '</div>';
         var sites = d.sites || [];
         // Newest first from the API, so the first match per domain is the current run.
         var latest = {};
@@ -7001,11 +7179,15 @@
       var state = provisionState(prov);
       card.innerHTML = '<div><div class="dom-name">' + esc(site.domain) + '</div>' +
         '<div class="dom-meta"><span class="badge ' + cls + '">' +
-        esc(String(site.status || 'pending').replace('_', ' ')) + '</span>' +
-        (site.dns_last_ip ? ' · resolves to ' + esc(site.dns_last_ip) : '') +
-        (site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') +
-        (state ? ' · ' + esc(state) : '') + '</div>' +
-        (site.last_error ? '<div class="fine-print">' + esc(site.last_error) + '</div>' : '') +
+        esc(owner ? String(site.status || 'pending').replace('_', ' ')
+                  : (site.status === 'live' ? 'Live'
+                     : (site.status === 'error' ? 'Needs attention' : 'Connecting'))) +
+        '</span>' +
+        (owner && site.dns_last_ip ? ' · resolves to ' + esc(site.dns_last_ip) : '') +
+        (owner && site.ssl_status ? ' · ssl ' + esc(site.ssl_status) : '') +
+        (owner && state ? ' · ' + esc(state) : '') + '</div>' +
+        (owner && site.last_error
+          ? '<div class="fine-print">' + esc(site.last_error) + '</div>' : '') +
         '</div>';
 
       var actions = el('div', 'row-actions');
@@ -7032,10 +7214,18 @@
         api('POST', '/api/sites/' + site.id + '/check').then(function (d) {
           var verdict = d.check || {};
           var queued = d.provision || null;
-          var message = verdict.ok
-            ? (queued ? 'DNS points here - provisioning queued (job #' + queued.id + ')'
-                      : 'DNS points here')
-            : 'DNS: ' + (verdict.reason || 'not pointed here yet');
+          var message;
+          if (owner) {
+            message = verdict.ok
+              ? (queued ? 'DNS points here - provisioning queued (job #' + queued.id + ')'
+                        : 'DNS points here')
+              : 'DNS: ' + (verdict.reason || 'not pointed here yet');
+          } else {
+            message = verdict.ok
+              ? (queued ? 'Your domain is connected. We are preparing your website.'
+                        : 'Your domain is connected.')
+              : 'Your domain is not connected yet. Check the records above and try again.';
+          }
           toast(message, !!verdict.ok);
           refresh();
         }).catch(function (e) { toast(e.message, false); })
@@ -7046,6 +7236,7 @@
       // One action for a site that is already live: install the form proxy without
       // rewriting the page. Provision would do that too, but it also rewrites index.html
       // - and "my page is fine, I just want forms on my domain" should not risk it.
+      if (owner) {
       var refreshConfig = el('button', 'btn btn-ghost btn-sm', 'Refresh web config');
       refreshConfig.title = 'Serve forms at ' + site.domain + '/f/... without changing ' +
         'the website content.';
@@ -7065,14 +7256,21 @@
           .finally(function () { refreshConfig.disabled = false; });
       };
       actions.appendChild(refreshConfig);
+      }
 
-      var provision = el('button', 'btn btn-primary btn-sm', 'Provision');
+      var provision = el('button', 'btn btn-primary btn-sm',
+        owner ? 'Provision' : 'Publish website');
       provision.onclick = function () {
         provision.disabled = true;
         api('POST', '/api/sites/' + site.id + '/provision').then(function (d) {
           var job = (d && d.job) || {};
-          toast('Provisioning queued - job #' + (job.id || '?'), true);
-          if (job.id) location.hash = '#/app/jobs/' + job.id;
+          if (owner) {
+            toast('Provisioning queued - job #' + (job.id || '?'), true);
+            if (job.id) location.hash = '#/app/jobs/' + job.id;
+          } else {
+            toast('We are preparing your website. This can take a moment.', true);
+            refresh();
+          }
         }).catch(function (e) { toast(e.message, false); })
           .finally(function () { provision.disabled = false; });
       };
@@ -7087,7 +7285,8 @@
           remove.disabled = true;
           api('DELETE', '/api/sites/' + site.id).then(function (res) {
             toast(res.dry_run
-              ? (res.message || 'Dry-run: nothing was removed')
+              ? (owner ? (res.message || 'Dry-run: nothing was removed')
+                       : 'We could not remove the domain right now. Please contact your agency.')
               : (res.message || 'Removed ' + site.domain), true);
             // Do not leave a Records panel open under an id that no longer exists.
             if (res.removed && String(openId) === String(site.id)) {
@@ -7116,8 +7315,8 @@
           box.innerHTML = '';
           var report = d.report || {};
           box.appendChild(el('h3', 'card-title', 'Where ' + site.domain + ' should point'));
-          box.appendChild(el('p', 'fine-print', 'Server IP ' + esc(d.server_ip || 'unknown') +
-            ' (' + esc(d.server_ip_source || 'not set') + ')'));
+          box.appendChild(el('p', 'fine-print', 'Server address ' + esc(d.server_ip || 'unknown') +
+            (owner ? ' (' + esc(d.server_ip_source || 'not set') + ')' : '')));
 
           var table = el('table', 'table');
           table.innerHTML = '<thead><tr><th>Type</th><th>Name</th><th>Value</th>' +
@@ -7157,8 +7356,10 @@
             check.disabled = true;
             api('POST', '/api/sites/' + site.id + '/verify').then(function (res) {
               var probe = res.probe || {};
-              toast(probe.ok ? 'Live - certificate verified'
-                             : (probe.hint || ('DNS: ' + (report.reason || 'not pointed here'))),
+              toast(probe.ok
+                    ? (owner ? 'Live - certificate verified' : 'Your website is live.')
+                    : (owner ? (probe.hint || ('DNS: ' + (report.reason || 'not pointed here')))
+                             : 'Your domain is not connected yet. Check the records above.'),
                     !!probe.ok);
               refresh();
             }).catch(function (e) { toast(e.message, false); })
@@ -7166,13 +7367,19 @@
           };
           actions.appendChild(check);
 
-          var live = el('button', 'btn btn-primary', 'Go live');
+          var live = el('button', 'btn btn-primary',
+            owner ? 'Go live' : 'Publish website');
           live.disabled = !report.ok;
-          if (!report.ok) live.title = report.reason || 'DNS is not pointed here yet';
+          if (!report.ok) {
+            live.title = owner ? (report.reason || 'DNS is not pointed here yet')
+                               : 'Your domain must be connected first';
+          }
           live.onclick = function () {
             live.disabled = true;
             api('POST', '/api/sites/' + site.id + '/provision').then(function (res) {
-              toast('Provisioning queued - job #' + ((res.job || {}).id || '?'), true);
+              toast(owner
+                    ? 'Provisioning queued - job #' + ((res.job || {}).id || '?')
+                    : 'We are preparing your website. This can take a moment.', true);
               refresh();
             }).catch(function (e) {
               live.disabled = false;
@@ -7182,21 +7389,30 @@
           actions.appendChild(live);
           box.appendChild(actions);
 
-          if (report.reason) box.appendChild(el('p', 'form-error', report.reason));
+          if (report.reason) {
+            box.appendChild(el('p', 'form-error',
+              owner ? report.reason : 'Your domain is not connected yet.'));
+          }
           var probe = d.probe || {};
           var cert;
-          if (probe.ok) {
-            cert = 'Certificate: ' + (probe.issuer || 'issued') +
-              (probe.expires ? ' · expires ' + probe.expires : '') +
-              ' · HTTPS answered ' + probe.status_code;
-          } else if (probe.error) {
-            cert = 'Certificate: ' + (probe.hint || probe.error);
+          if (owner) {
+            if (probe.ok) {
+              cert = 'Certificate: ' + (probe.issuer || 'issued') +
+                (probe.expires ? ' · expires ' + probe.expires : '') +
+                ' · HTTPS answered ' + probe.status_code;
+            } else if (probe.error) {
+              cert = 'Certificate: ' + (probe.hint || probe.error);
+            } else {
+              cert = 'Certificate: pending — issued after the site answers, so this is not ' +
+                'a failure yet.';
+            }
           } else {
-            cert = 'Certificate: pending — issued after the site answers, so this is not ' +
-              'a failure yet.';
+            cert = probe.ok ? 'Security certificate ready.'
+                            : 'Security certificate pending — we finish this after your ' +
+                              'domain connects.';
           }
           box.appendChild(el('p', 'fine-print', cert));
-          if (report.ok && !probe.ok) {
+          if (owner && report.ok && !probe.ok) {
             box.appendChild(el('p', 'fine-print', 'DNS is right, so the next step is Go ' +
               'live: it writes the page and the site block, reloads the web server, then ' +
               'waits for the certificate. Until that runs a browser shows ' +
@@ -8948,6 +9164,12 @@
     }
     // Settings is admin-only (nav hides it); a bookmark should not collect a 403 toast.
     if (parts[0] === 'app' && parts[1] === 'settings' && !canAdmin(state.user)) {
+      location.replace(AREAS.app.home);
+      return;
+    }
+    // Jobs is the raw transcript, with tool and backend detail. Clients get the
+    // friendly Studio progress instead; the owner keeps the operator view.
+    if (parts[0] === 'app' && parts[1] === 'jobs' && !isOwner(state.user)) {
       location.replace(AREAS.app.home);
       return;
     }

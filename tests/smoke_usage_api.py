@@ -294,6 +294,9 @@ def test_the_console_is_wired():
     check("the operator is told to pick a client", "pick a client" in admin_js, True)
     check("the client page never shows a dollar price",
           "1 credit = $0.001" not in admin_js, True)
+    check("the client usage page is credits-only", "Credits used" in admin_js, True)
+    check("the client usage table is not a model breakdown",
+          "Where your credits went" in admin_js, True)
     check("the platform page states the sale price", "d.credit_usd" in admin_js, True)
     voice_js = read("admin", "voice.js")
     check("the browser hands the voice token back when it stops",

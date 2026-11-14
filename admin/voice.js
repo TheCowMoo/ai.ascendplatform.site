@@ -694,9 +694,12 @@
     ws.onopen = function () {
       if (state.ws !== ws || generation !== state.generation) return;
       send(data.setup);
-      setPhase('connecting', PHASES.connecting,
-               'Waiting for the server to accept the session · ' +
-               data.model + ' · ' + data.api_version);
+      // A client payload intentionally has no model or API version. Build the note
+      // from what is present so the connecting screen never says "undefined".
+      var connecting = 'Waiting for the server to accept the session';
+      if (data.model) connecting += ' · ' + data.model;
+      if (data.api_version) connecting += ' · ' + data.api_version;
+      setPhase('connecting', PHASES.connecting, connecting);
       state.setupTimer = window.setTimeout(function () { setupTimeout(generation); }, SETUP_TIMEOUT);
     };
     ws.onmessage = function (event) {
@@ -725,12 +728,19 @@
 
   function setupTimeout(generation) {
     if (generation !== state.generation || state.settled || state.phase === 'error') return;
-    var model = state.session ? state.session.model : 'unknown';
-    var version = state.session ? state.session.api_version : 'unknown';
-    fail('The socket opened, but the server never confirmed the session (no setupComplete in 12 seconds).',
-         'Model ' + model + ' on ' + version + '. Open Settings -> Voice -> Test; it lists ' +
-         'the Live models this key can open and the API version. The Gemini text model in ' +
-         'AI providers is not the voice model.');
+    var model = state.session ? state.session.model : '';
+    var version = state.session ? state.session.api_version : '';
+    var detail = 'The voice service did not answer. Please try again, or type your request.';
+    var message = 'The voice session could not start. Please try again, or type your request.';
+    if (model && version) {
+      // Owner diagnostics only. A client payload has neither field.
+      message = 'The socket opened, but the server never confirmed the session ' +
+        '(no setupComplete in 12 seconds).';
+      detail = 'Model ' + model + ' on ' + version + '. Open Settings -> Voice -> Test; ' +
+        'it lists the Live models this key can open and the API version. The text model in ' +
+        'AI providers is not the voice model.';
+    }
+    fail(message, detail);
     teardownTransport();
   }
 
@@ -847,7 +857,9 @@
   }
 
   function modelHint() {
-    if (!state.session) return '';
+    // Operator diagnostics only. The server strips these fields for a client, and
+    // printing "undefined" in an error is worse than printing nothing.
+    if (!state.session || !state.session.model) return '';
     return 'Model ' + state.session.model + ' · ' + state.session.api_version + '.';
   }
 
@@ -865,6 +877,12 @@
 
 
   function handleServerError(error) {
+    var ownerView = !!(state.session && state.session.model);
+    if (!ownerView) {
+      fail('The voice service could not start this session. Please try again, or type your request.');
+      teardownTransport();
+      return;
+    }
     var message = (error && (error.message || error.status)) || 'The server refused the session.';
     var code = error && error.code ? ' (code ' + error.code + ')' : '';
     fail('The server refused the session' + code + ': ' + message, modelHint());
@@ -894,6 +912,11 @@
     var code = event && typeof event.code === 'number' ? event.code : 0;
     var reason = event && event.reason ? String(event.reason).trim() : '';
     state.closeInfo = 'code ' + code + (reason ? ' · ' + reason : '');
+    var ownerView = !!(state.session && state.session.model);
+    if (!ownerView) {
+      fail('The voice session ended. Please try again, or type your request.');
+      return;
+    }
     var suffix = reason ? ': ' + reason : (code ? ' (code ' + code + ')' : '');
     var detail = closeHint(code) + ' ' + modelHint();
     if (!state.settled) {
@@ -1469,17 +1492,23 @@
   }
 
   function diagnostics() {
-    return [
-      'model: ' + (state.session ? state.session.model : 'unknown'),
-      'api: ' + (state.session ? state.session.api_version : 'unknown'),
-      'endpoint: ' + (state.session ? state.session.endpoint : 'unknown'),
-      'phase: ' + state.phase,
-      'settled: ' + state.settled,
-      'close: ' + (state.closeInfo || 'none'),
-      'error: ' + (state.lastError || 'none'),
-      'turns: ' + state.turns.length,
-      'team jobs: ' + (Object.keys(state.team.jobs).join(', ') || 'none')
-    ].join('\n');
+    var lines = [];
+    // These three fields are operator-only; the server strips them from a client's
+    // voice session. Omit them entirely rather than printing "unknown".
+    if (state.session && state.session.model) lines.push('model: ' + state.session.model);
+    if (state.session && state.session.api_version) {
+      lines.push('api: ' + state.session.api_version);
+    }
+    if (state.session && state.session.endpoint) {
+      lines.push('endpoint: ' + state.session.endpoint);
+    }
+    lines.push('phase: ' + state.phase);
+    lines.push('settled: ' + state.settled);
+    lines.push('close: ' + (state.closeInfo || 'none'));
+    lines.push('error: ' + (state.lastError || 'none'));
+    lines.push('turns: ' + state.turns.length);
+    lines.push('team jobs: ' + (Object.keys(state.team.jobs).join(', ') || 'none'));
+    return lines.join('\n');
   }
 
   function copyDiagnostics() {

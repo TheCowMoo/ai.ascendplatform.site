@@ -165,7 +165,7 @@ SPEC = [
         "icon": "mail",
         "blurb": "How the team sends mail.",
         "test": "smtp",
-        # The one client-scoped group: a client sends from their own domain, so
+        # The one client-visible group: a client sends from their own domain, so
         # these resolve per org. Everything else here configures the deployment.
         "scope": CLIENT,
         "fields": [
@@ -186,6 +186,12 @@ SPEC = [
                  "keep sending through SMTP.",
         "test": "client_email_ghl",
         "scope": CLIENT,
+        # Backend-only integration. A client gets one advanced email door: SMTP.
+        # Keeping the group client-scoped lets the operator configure it per client,
+        # while client_visible/client_writable keep it out of the client's page and
+        # API writes (the route checks those flags; direct backend calls still work).
+        "client_visible": False,
+        "client_writable": False,
         "fields": [
             _f("GHL_CLIENT_API_TOKEN", "GoHighLevel API token", secret=True,
                help="Private Integration token from this client's sub-account."),
@@ -330,6 +336,8 @@ for _group in SPEC:
         _entry["group_id"] = _group["id"]
         _entry["group_label"] = _group["label"]
         _entry["group_test"] = _group.get("test")
+        _entry["client_visible"] = bool(_group.get("client_visible", True))
+        _entry["client_writable"] = bool(_group.get("client_writable", True))
         FIELDS[_entry["key"]] = _entry
 
 
@@ -656,7 +664,8 @@ def all_for_ui(org_id=None):
     """
     groups = []
     for group in SPEC:
-        if org_id is not None and group_scope(group) != CLIENT:
+        if org_id is not None and (group_scope(group) != CLIENT
+                                   or not group.get("client_visible", True)):
             continue
         groups.append({
             "id": group["id"],

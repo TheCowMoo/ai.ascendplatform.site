@@ -268,6 +268,29 @@ def test_approvals_are_isolated(alpha, beta, job_id):
     return approval_id
 
 
+def test_client_job_errors_are_white_labelled(job_id):
+    """A client should never be shown a provider or model name in a failed run."""
+    with appmod.get_connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'failed', error = ? WHERE id = ?",
+            ("Provider 'deepseek' is not configured: set DEEPSEEK_API_KEY", job_id))
+        conn.execute(
+            "INSERT INTO job_events (job_id, seq, source, type, content) VALUES (?, ?, ?, ?, ?)",
+            (job_id, 999, "system", "error",
+             "Gemini refused the request for model gemini-3.8-live"))
+
+    client = login(ALPHA["email"], ALPHA["password"])
+    owner = owner_login()
+    mine = client.get("/api/jobs/%d" % job_id).get_json()["job"]
+    theirs = owner.get("/api/jobs/%d" % job_id).get_json()["job"]
+    assert "deepseek" not in (mine.get("error") or "").lower(), mine
+    assert "deepseek" in (theirs.get("error") or "").lower(), theirs
+    events = client.get("/api/jobs/%d/events" % job_id).get_json()["events"]
+    text = " ".join(event["content"] for event in events)
+    assert "gemini" not in text.lower() and "deepseek" not in text.lower(), text
+    print("  a client sees a plain failure; the operator keeps the provider detail")
+
+
 def test_user_without_an_org_sees_nothing(site, bot_id, job_id):
     """A login with no org belongs to no client, so it must reach no client's data.
 
@@ -554,7 +577,17 @@ def test_owner_only_surfaces_are_shut(alpha):
     assert keys, keys
     for platform_key in ("DEEPSEEK_API_KEY", "PEXELS_API_KEY", "GEMINI_API_KEY"):
         assert platform_key not in keys, "a platform key leaked into a client's panel"
+    # The client's Settings page has one advanced door: SMTP. GoHighLevel is a
+    # backend integration even though its credentials are per client.
+    assert [g["id"] for g in groups] == ["email"], [g["id"] for g in groups]
+    assert not any(key.startswith("GHL_CLIENT_") for key in keys), keys
     print("  a client sees %d group(s), client-scoped only: %s" % (len(groups), keys))
+
+    # Hiding a group in the page is not enough: the same key must be refused by the
+    # write route, or a client could still configure the hidden integration by hand.
+    hidden = a.put("/api/settings", json={"values": {"GHL_CLIENT_API_TOKEN": "stolen"}})
+    assert hidden.status_code == 400, hidden.get_json()
+    print("  blocked PUT  hidden client integration -> 400")
 
     # ...and cannot write a platform key through the same endpoint.
     resp = a.put("/api/settings", json={"values": {"DEEPSEEK_API_KEY": "stolen"}})
@@ -622,6 +655,7 @@ def main():
         print("\n--- approvals ---")
         test_approvals_are_isolated(alpha, beta, job_id)
         print("\n--- a login with no org ---")
+        test_client_job_errors_are_white_labelled(job_id)
         test_user_without_an_org_sees_nothing(site, bot_id, job_id)
         print("\n--- profiles per client ---")
         staff_id = test_profiles_are_per_client(alpha, beta)

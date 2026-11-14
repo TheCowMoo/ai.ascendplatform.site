@@ -231,10 +231,11 @@ async def chat_task(job, emit):
 
     provider = _provider_for(job)
     if provider != llm.DEFAULT_PROVIDER:
-        # Say it in the transcript: a fallback that cannot be seen is indistinguishable
-        # from the configured model having answered.
+        # The transcript is client-facing. Keep the provider name in the server log,
+        # never in the product copy: which model answers is an operator concern.
+        print("[manager] provider fallback active: %s" % provider)
         emit("system", "system",
-             "DeepSeek is not configured; using %s for this turn." % provider)
+             "Using an alternate assistant connection for this turn.")
     granted = granted_for(job)
     read_only = bool(job.get("read_only"))
     tools = tool_registry.resolve(granted, emit, job_id=job.get("id"))

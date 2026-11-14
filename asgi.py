@@ -110,6 +110,7 @@ async def job_stream(job_id: int, after: int = 0, session=Depends(require_sessio
         raise HTTPException(status_code=404, detail="Not found")
 
     max_seconds = int(os.environ.get("SSE_MAX_SECONDS", "600"))
+    owner = session.get("role") == "owner"
 
     async def event_source():
         last_seq = after
@@ -117,6 +118,9 @@ async def job_stream(job_id: int, after: int = 0, session=Depends(require_sessio
         yield ": connected\n\n"
         while True:
             events = await asyncio.to_thread(jobs.get_events, job_id, last_seq)
+            # The same white-label filter as /api/jobs/<id>/events. A client may keep
+            # the stream open, so provider names must not slip through here.
+            events = flask_module._client_events(events, owner)
             for event in events:
                 last_seq = event["seq"]
                 yield "id: %d\nevent: %s\ndata: %s\n\n" % (

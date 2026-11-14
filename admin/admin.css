@@ -248,6 +248,16 @@ input[type=color] {
 .form-card h3 { font-size: var(--fs-h3); margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .preview-pane { position: sticky; top: 84px; }
 
+/* ---------- Advanced channel setup ---------- */
+.channel-advanced {
+  margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px;
+}
+.channel-advanced > summary {
+  cursor: pointer; color: var(--ink-500); font-size: var(--fs-sm);
+  font-weight: 600; list-style-position: outside;
+}
+.channel-advanced > summary:hover { color: var(--ink-800); }
+
 /* ---------- Chips ---------- */
 .chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .chip {
