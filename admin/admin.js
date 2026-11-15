@@ -28,30 +28,35 @@
         // heading; every child keeps its old hash, so deep links, dashboard tiles, the
         // tour and the Studio links all land where they did.
         { id: 'studio', label: 'Studio', icon: 'studio', hash: '#/app/studio' },
-        { id: 'overview', label: 'Overview', icon: 'dashboard', children: [
+        { id: 'overview', label: 'Home', icon: 'dashboard', children: [
           { id: 'dashboard', label: 'Dashboard', hash: '#/app/dashboard' },
           { id: 'analytics', label: 'Analytics', hash: '#/app/analytics' },
           { id: 'usage', label: 'Usage', hash: '#/app/usage' },
           { id: 'jobs', label: 'Jobs', hash: '#/app/jobs', ownerOnly: true }
         ] },
-        { id: 'sites-group', label: 'Sites', icon: 'globe', children: [
-          { id: 'sites', label: 'Websites', hash: '#/app/sites' },
-          { id: 'domains', label: 'Domains', hash: '#/app/domains' },
-          { id: 'funnels', label: 'Funnels', hash: '#/app/funnels' },
-          { id: 'blogs', label: 'Blogs', hash: '#/app/blogs' },
-          { id: 'emails', label: 'Emails', hash: '#/app/emails' },
-          { id: 'library', label: 'Library', hash: '#/app/library' }
+        { id: 'sites-group', label: 'Website', icon: 'globe', children: [
+          { id: 'sites', label: 'Website', hash: '#/app/sites' },
+          { id: 'domains', label: 'Domains', hash: '#/app/domains' }
         ] },
-        { id: 'media', label: 'Media', icon: 'image', hash: '#/app/media' },
-        { id: 'customers', label: 'Customers', icon: 'user', children: [
+        { id: 'content', label: 'Content', icon: 'library', children: [
+          { id: 'blogs', label: 'Blog posts', hash: '#/app/blogs' },
+          { id: 'funnels', label: 'Landing pages', hash: '#/app/funnels' },
+          { id: 'emails', label: 'Emails', hash: '#/app/emails' },
+          { id: 'library', label: 'All content', hash: '#/app/library' },
+          { id: 'media', label: 'Media', hash: '#/app/media' }
+        ] },
+        { id: 'customers', label: 'Leads', icon: 'user', children: [
           { id: 'contacts', label: 'Contacts', hash: '#/app/contacts' },
           { id: 'forms', label: 'Forms', hash: '#/app/forms' },
           { id: 'conversations', label: 'Conversations', hash: '#/app/conversations' },
           { id: 'bots', label: 'Chatbots', hash: '#/app/bots' }
         ] },
-        { id: 'automations', label: 'Automations', icon: 'cog', hash: '#/app/automations' },
+        // Keep the route for anyone who bookmarked it, but do not put a graph editor in
+        // front of a client who has not asked for automations.
+        { id: 'automations', label: 'Automations', icon: 'cog',
+          hash: '#/app/automations', clientHidden: true },
         { id: 'account', label: 'Account', icon: 'sliders', children: [
-          { id: 'profile', label: 'Business Profile', hash: '#/app/profile' },
+          { id: 'profile', label: 'Business details', hash: '#/app/profile' },
           { id: 'team', label: 'Team', hash: '#/app/team', adminOnly: true },
           { id: 'settings', label: 'Settings', clientLabel: 'Email settings',
             hash: '#/app/settings', adminOnly: true }
@@ -103,6 +108,7 @@
     return (item.children || []).filter(function (child) {
       if (child.adminOnly && !canAdmin(state.user)) return false;
       if (child.ownerOnly && !isOwner(state.user)) return false;
+      if (child.clientHidden && !isOwner(state.user)) return false;
       return true;
     });
   }
@@ -801,6 +807,7 @@
     AREAS[area].nav.forEach(function (item) {
       if (item.adminOnly && !canAdmin(state.user)) return;
       if (item.ownerOnly && !isOwner(state.user)) return;
+      if (item.clientHidden && !isOwner(state.user)) return;
       if (!item.children || !item.children.length) {
         nav.appendChild(navLeaf(item, false));
         return;
@@ -980,15 +987,49 @@
     return card;
   }
 
+  function renderChecklist(card, prof, sites, content, bots) {
+    var steps = [
+      { label: 'Add your business details', done: !!prof.name, href: '#/app/profile' },
+      { label: 'Connect your domain', done: sites.length > 0, href: '#/app/domains' },
+      { label: 'Create your first page', done: content.length > 0, href: '#/app/studio' },
+      { label: 'Create a chatbot', done: bots.length > 0, href: '#/app/bots' },
+      { label: 'Connect email (optional)', done: false, href: '#/app/settings' }
+    ];
+    var allDone = steps.slice(0, 4).every(function (step) { return step.done; });
+    card.innerHTML = '<h3>' + (allDone ? 'You are set up' : 'Getting started') + '</h3>' +
+      '<p class="muted">' + (allDone
+        ? 'Your workspace is ready. You can change any of this later.'
+        : 'A few short steps and your workspace is ready.') + '</p>';
+    steps.forEach(function (step) {
+      var row = el('div', 'top-item');
+      row.innerHTML = '<span>' + (step.done ? '<b>✓</b> ' : '<b>○</b> ') +
+        esc(step.label) + '</span>';
+      var open = el('a', 'btn btn-ghost btn-sm', step.done ? 'Review' : 'Open');
+      open.href = step.href;
+      row.appendChild(open);
+      card.appendChild(row);
+    });
+    card.appendChild(el('p', 'fine-print',
+      'Need help? Ask your agency. They can set up anything you are unsure about.'));
+  }
+
   function viewDashboard() {
     var container = el('div', 'container');
     var owner = isOwner(state.user);
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Dashboard</h2><p>Your platform at a glance.</p></div>';
+    head.innerHTML = owner
+      ? '<div><h2>Dashboard</h2><p>Your platform at a glance.</p></div>'
+      : '<div><h2>Dashboard</h2><p>Your workspace at a glance.</p></div>';
     container.appendChild(head);
 
     var grid = el('div', 'stats-grid');
     container.appendChild(grid);
+
+    var checklist = null;
+    if (!owner) {
+      checklist = el('div', 'panel-card mt');
+      container.appendChild(checklist);
+    }
 
     var panel = el('div', 'panel-card');
     panel.innerHTML = '<h3>Recent jobs</h3>';
@@ -996,20 +1037,30 @@
     panel.appendChild(recent);
     if (owner) container.appendChild(panel);
 
-    Promise.all([api('GET', '/api/bots'), api('GET', '/api/jobs'), api('GET', '/api/profile')])
+    var extras = owner
+      ? [Promise.resolve({}), Promise.resolve({})]
+      : [api('GET', '/api/sites'), api('GET', '/api/deliverables')];
+    Promise.all([api('GET', '/api/bots'), api('GET', '/api/jobs'),
+                 api('GET', '/api/profile')].concat(extras))
       .then(function (results) {
         var bots = results[0].bots || [];
         var jobs = results[1].jobs || [];
         var prof = results[2].profile || {};
+        var sites = (results[3] || {}).sites || [];
+        var content = (results[4] || {}).deliverables || [];
         var messages = bots.reduce(function (sum, b) { return sum + (b.message_count || 0); }, 0);
 
         grid.innerHTML = '';
         grid.appendChild(statCard(bots.length, 'Chatbots'));
         grid.appendChild(statCard(messages, 'Messages'));
         if (owner) grid.appendChild(statCard(jobs.length, 'Agent jobs'));
-        grid.appendChild(statCard(prof.name ? 'Ready' : 'Empty', 'Business Profile'));
+        grid.appendChild(statCard(prof.name ? 'Ready' : 'Empty',
+                                  owner ? 'Business Profile' : 'Business details'));
 
-        if (!owner) return;
+        if (!owner) {
+          renderChecklist(checklist, prof, sites, content, bots);
+          return;
+        }
         recent.innerHTML = '';
         if (!jobs.length) {
           recent.appendChild(el('div', 'muted', 'No agent jobs yet.'));
@@ -2030,8 +2081,11 @@
   // ---------- Business Profile ----------
   function viewProfile() {
     var container = el('div', 'container');
+    var owner = isOwner(state.user);
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Business Profile</h2><p>Everything here feeds your AI as its knowledge base.</p></div>';
+    head.innerHTML = owner
+      ? '<div><h2>Business Profile</h2><p>Everything here feeds your AI as its knowledge base.</p></div>'
+      : '<div><h2>Business details</h2><p>The facts and voice your team uses when it writes for you.</p></div>';
     container.appendChild(head);
 
     var inputs = {};
@@ -3524,10 +3578,10 @@
   // kind; the Library is the same list unfiltered, because "everything the team
   // produced" is exactly the union of them.
   var CONTENT_TABS = {
-    blogs: { kind: 'blog', title: 'Blogs', blurb: 'Articles written for you and published onto a website.' },
-    funnels: { kind: 'funnel', title: 'Funnels', blurb: 'Opt-in pages and the steps that follow them.' },
+    blogs: { kind: 'blog', title: 'Blog posts', blurb: 'Articles written for you and published onto a website.' },
+    funnels: { kind: 'funnel', title: 'Landing pages', blurb: 'Opt-in pages and the steps that follow them.' },
     emails: { kind: 'email', title: 'Emails', blurb: 'Campaigns and sequences sent to your list.' },
-    library: { kind: null, title: 'Library', blurb: 'Everything the team has produced for you, in one place.' }
+    library: { kind: null, title: 'All content', blurb: 'Everything the team has produced for you, in one place.' }
   };
 
   // ---------- AI inside the builder tabs ----------
@@ -3839,7 +3893,7 @@
       var sites = d.sites || [];
       if (!sites.length) {
         if (button) button.disabled = false;
-        toast('Add a domain in the Websites tab first - a page needs somewhere to live', false);
+        toast('Add a domain in the Website tab first - a page needs somewhere to live', false);
         return;
       }
       var slug = (item.slug || 'page').trim();
@@ -4161,7 +4215,7 @@
         }
         var counts = d.counts || {};
         body.appendChild(el('p', 'muted',
-          'Blogs ' + (counts.blog || 0) + ' · Funnels ' + (counts.funnel || 0) +
+          'Blog posts ' + (counts.blog || 0) + ' · Landing pages ' + (counts.funnel || 0) +
           ' · Emails ' + (counts.email || 0) + ' · Websites ' + (counts.website || 0) +
           ' · Everything ' + (counts.all || 0)));
         if (!items.length) {
@@ -5867,7 +5921,7 @@
         return;
       }
       chip.className = 'studio-chip';
-      chip.textContent = 'Working on: Deliverable #' + activeArtifact.id + ' \u00b7 ' +
+      chip.textContent = 'Working on: Page #' + activeArtifact.id + ' \u00b7 ' +
         (activeArtifact.title || activeArtifact.kind || 'draft');
     }
 
@@ -5879,7 +5933,7 @@
     function renderPreview(item, opts) {
       if (!item) {
         previewTitle.textContent = 'Nothing open';
-        previewMeta.textContent = 'Open a draft from Pages, Library or Jobs.';
+        previewMeta.textContent = 'Open a draft from Pages or All content.';
         if (renderedContent !== '') {
           renderedContent = '';
           frame.srcdoc = '<p style="font-family:system-ui;padding:24px;color:#667">' +
@@ -5887,7 +5941,7 @@
         }
         return;
       }
-      previewTitle.textContent = 'Deliverable #' + item.id + ' \u00b7 ' +
+      previewTitle.textContent = 'Page #' + item.id + ' \u00b7 ' +
         (item.title || 'untitled');
       previewMeta.textContent = [item.kind, item.status,
         item.updated_at ? 'updated ' + String(item.updated_at).slice(0, 16) : '']
@@ -7156,7 +7210,7 @@
         });
         if (!sites.length) {
           body.innerHTML = '<div class="empty-state"><strong>No domains yet</strong>' +
-            '<p>Add one under Websites first — a domain has to exist before it can be ' +
+            '<p>Add one under Website first — a domain has to exist before it can be ' +
             'pointed here.</p></div>';
           return;
         }
@@ -9425,22 +9479,42 @@
   // Shown once per browser, skip always visible, and every stop names the thing rather than
   // describing the interface. Remembered in localStorage, which is per device: a
   // users.tour_done column is the upgrade, and this is the honest version until then.
-  var TOUR = [
-    { hash: '#/app/studio', title: 'Ask, and it builds',
-      text: 'Every job is a chat: type or talk in plain English, and the page it is changing ' +
-            'stays on the canvas beside it. New starts a fresh page; the chats are on the left.' },
-    { hash: '#/app/sites', title: 'Websites',
-      text: 'Each client gets a site here. Publish a page, and the domain points at this server.' },
-    { hash: '#/app/automations', title: 'Automations',
-      text: 'A sequence of steps: tag, wait a day, ask for approval, send. Drafts arrive from ' +
-            'the AI and nothing goes live until you press Apply.' },
-    { hash: '#/app/forms', title: 'Forms, surveys and quizzes',
-      text: 'Build one, publish it, and it lives at its own link. Answers land in the list, ' +
-            'and a submission can start an automation.' },
-    { hash: '#/app/domains', title: 'Domains',
-      text: 'Type a domain and copy two records to your DNS provider. Press Check again until ' +
-            'every row is green, then go live.' }
-  ];
+  function tourSteps() {
+    if (isOwner(state.user)) {
+      return [
+        { hash: '#/app/studio', title: 'Ask, and it builds',
+          text: 'Every job is a chat: type or talk in plain English, and the page it is ' +
+                'changing stays on the canvas beside it. New starts a fresh page; the chats ' +
+                'are on the left.' },
+        { hash: '#/app/sites', title: 'Websites',
+          text: 'Each client gets a site here. Publish a page, and the domain points at this ' +
+                'server.' },
+        { hash: '#/app/automations', title: 'Automations',
+          text: 'A sequence of steps: tag, wait a day, ask for approval, send. Drafts arrive ' +
+                'from the AI and nothing goes live until you press Apply.' },
+        { hash: '#/app/forms', title: 'Forms, surveys and quizzes',
+          text: 'Build one, publish it, and it lives at its own link. Answers land in the ' +
+                'list, and a submission can start an automation.' },
+        { hash: '#/app/domains', title: 'Domains',
+          text: 'Type a domain and copy two records to your DNS provider. Press Check again ' +
+                'until every row is green, then go live.' }
+      ];
+    }
+    return [
+      { hash: '#/app/studio', title: 'Ask for what you need',
+        text: 'Type or talk in plain English. The page you are working on stays on the ' +
+              'canvas beside the chat.' },
+      { hash: '#/app/sites', title: 'Your website',
+        text: 'Connect your domain and publish pages. We handle the secure certificate.' },
+      { hash: '#/app/library', title: 'Your content',
+        text: 'Blog posts, landing pages and emails live here, ready to review and publish.' },
+      { hash: '#/app/forms', title: 'Forms and leads',
+        text: 'Build a form, share its link, and new answers appear under Leads.' },
+      { hash: '#/app/settings', title: 'Email settings',
+        text: 'If you want email to come from your own domain, add your mailbox here. ' +
+              'Leave it blank to use the agency default.' }
+    ];
+  }
 
   function startTour(force) {
     var key = 'tour:' + ((state.user && state.user.id) || 0);
@@ -9449,6 +9523,7 @@
     } catch (e) {
       return;                     // private mode: no tour rather than a tour every load
     }
+    var tour = tourSteps();
     var index = 0;
     var veil = el('div', 'tour-veil');
     var card = el('div', 'tour-card');
@@ -9462,10 +9537,10 @@
     }
 
     function show() {
-      var step = TOUR[index];
+      var step = tour[index];
       if (step.hash) location.hash = step.hash;
       card.innerHTML = '';
-      card.appendChild(el('p', 'fine-print', 'Step ' + (index + 1) + ' of ' + TOUR.length));
+      card.appendChild(el('p', 'fine-print', 'Step ' + (index + 1) + ' of ' + tour.length));
       card.appendChild(el('h3', 'card-title', step.title));
       card.appendChild(el('p', 'muted', step.text));
       var row = el('div', 'chip-input');
@@ -9484,12 +9559,12 @@
           onClose: function () { talk.textContent = 'Talk about this'; }
         });
       };
-      var skip = el('button', 'btn btn-ghost', index === TOUR.length - 1 ? 'Done' : 'Skip');
+      var skip = el('button', 'btn btn-ghost', index === tour.length - 1 ? 'Done' : 'Skip');
       skip.onclick = close;
       var next = el('button', 'btn btn-primary',
-                    index === TOUR.length - 1 ? 'Finish' : 'Next');
+                    index === tour.length - 1 ? 'Finish' : 'Next');
       next.onclick = function () {
-        if (index === TOUR.length - 1) { close(); return; }
+        if (index === tour.length - 1) { close(); return; }
         index += 1;
         show();
       };
@@ -9505,9 +9580,9 @@
   // follows when the voice overlay closes.
   var INTRO_TEXT =
     'Ask for anything - a page, an email, a whole site - and the team builds it in the ' +
-    'Studio, with the work on the canvas beside the chat. Sites and Domains put a page on ' +
-    'your own domain and issue the certificate automatically. Forms turn answers into ' +
-    'contacts, and Automations follow up, asking before anything is sent.';
+    'Studio, with the work on the canvas beside the chat. Website and Domains put a page on ' +
+    'your own domain and handle the secure certificate. Forms turn answers into leads, ' +
+    'and you choose when anything is sent.';
 
   function markOnboarded() {
     if (!state.user || state.user.onboarded_at) return;

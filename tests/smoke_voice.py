@@ -95,8 +95,8 @@ def test_the_setup_can_be_diagnosed():
                         role="owner")["setup"]["systemInstruction"]["parts"][0]["text"]
     check("a first visit asks for an introduction", "first visit" in intro, True)
     check("naming what the platform does",
-          all(word in intro for word in ("Studio", "Sites and Domains", "Forms",
-                                         "Automations")), True)
+          all(word in intro for word in ("Studio", "Website and Domains", "Forms",
+                                         "Content")), True)
     check("and says not to call tools during it",
           "Do not call tools" in intro, True)
     normal = voice.setup(org_name="Acme")["setup"]["systemInstruction"]["parts"][0]["text"]

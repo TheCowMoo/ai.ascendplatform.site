@@ -327,11 +327,11 @@ def instruction(org_name="", page="", intro=False, role=""):
             "This is the user's first visit, and you are speaking to %s. Begin with a short "
             "spoken welcome of about thirty seconds: say what the platform is, then name the "
             "four things they will use - the Studio, where talking or typing builds work and "
-            "the page stays on the canvas beside the chat; Sites and Domains, where publishing "
+            "the page stays on the canvas beside the chat; Website and Domains, where publishing "
             "puts a page on their own domain and the certificate is issued automatically; "
-            "Forms, which live at a link and turn answers into contacts; and Automations, "
-            "which follow up and ask before anything is sent. End by asking what they would "
-            "like to build first, then stop and listen. Do not call tools during the "
+            "Forms, which live at a link and turn answers into leads; and Content, where their "
+            "pages, articles and emails are kept. End by asking what they would like to build "
+            "first, then stop and listen. Do not call tools during the "
             "introduction. " % who)
     return (
         "You are the platform's spoken guide and the team's spokesperson: warm, brief, "

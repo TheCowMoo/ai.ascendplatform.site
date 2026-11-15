@@ -518,18 +518,19 @@ assistant row; the floating sheet is not session-backed.
 ## Console navigation (grouped, 2026-11-03)
 
 `AREAS.*.nav` in `admin.js` is the whole sidebar. The workspace is seven rows, not twenty:
-**Studio** (leaf), **Overview** (Dashboard, Analytics, Usage, Jobs), **Sites** (Websites,
-Domains, Funnels, Blogs, Emails, Library), **Media** (leaf), **Customers** (Contacts,
-Forms, Conversations, Chatbots), **Automations** (leaf), **Account** (Business Profile,
-Team, Settings - the last two admin-only). Every child keeps its old hash, so deep links,
-dashboard tiles, the tour and Studio links are unchanged.
+**Studio** (leaf), **Home** (Dashboard, Analytics, Usage; Jobs is owner-only),
+**Website** (Website, Domains), **Content** (Blog posts, Landing pages, Emails, All
+content, Media), **Leads** (Contacts, Forms, Conversations, Chatbots), **Automations**
+(hidden from the default client nav; the operator keeps it), and **Account** (Business
+details, Team, Email settings - the last two admin-only). Every child keeps its old hash,
+so deep links, dashboard tiles, the tour and Studio links are unchanged.
 
 A group is a `<button class="side-group">` that expands its children in place. The group
 holding the current tab is open on every render and carries a dot; other groups remember
 open/closed per user in `localStorage["nav:open:<user>"]`. `flattenNav(nav)` feeds the flat
 `NAV` that `isSoonTab` / `viewSoon` read, so a child is a first-class tab;
 `tests/nav_groups.mjs` (in preflight) pins seven rows, twenty leaves, unique ids and
-hashes, and the exact Sites/Customers/Account children. The Platform console stays flat
+hashes, and the exact Website/Content/Leads/Account children. The Platform console stays flat
 (eight rows; Domains is the owner-wide cleanup page).
 
 ## Provider configuration is the agency's (2026-11-03)

@@ -46,12 +46,20 @@ assert.equal(leaves.length, 20, 'every old tab is still reachable');
 assert.equal(new Set(leaves.map((leaf) => leaf.id)).size, 20, 'leaf ids are unique');
 assert.equal(new Set(leaves.map((leaf) => leaf.hash)).size, 20, 'no duplicate hashes');
 
-const sites = app.find((item) => item.id === 'sites-group');
-assert.deepEqual(sites.children.map((child) => child.id),
-  ['sites', 'domains', 'funnels', 'blogs', 'emails', 'library'], 'Sites holds every page-like tab');
-assert.equal(groupFor(app, 'emails'), sites, 'a child finds its group');
+const website = app.find((item) => item.id === 'sites-group');
+assert.deepEqual(website.children.map((child) => child.id),
+  ['sites', 'domains'], 'Website holds the site and its domain');
+assert.equal(website.label, 'Website');
+
+const content = app.find((item) => item.id === 'content');
+assert.deepEqual(content.children.map((child) => child.id),
+  ['blogs', 'funnels', 'emails', 'library', 'media'],
+  'Content holds every page-like tab');
+assert.equal(groupFor(app, 'emails'), content, 'a child finds its group');
 assert.equal(groupFor(app, 'studio'), null, 'a leaf belongs to no group');
 assert.equal(groupFor(app, 'nope'), null, 'an unknown tab belongs to no group');
+assert.ok(app.find((item) => item.id === 'automations').clientHidden,
+          'Automations stays out of the default client nav');
 
 const customers = app.find((item) => item.id === 'customers');
 assert.deepEqual(customers.children.map((child) => child.id),
