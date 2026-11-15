@@ -992,9 +992,11 @@
       { label: 'Add your business details', done: !!prof.name, href: '#/app/profile' },
       { label: 'Connect your domain', done: sites.length > 0, href: '#/app/domains' },
       { label: 'Create your first page', done: content.length > 0, href: '#/app/studio' },
-      { label: 'Create a chatbot', done: bots.length > 0, href: '#/app/bots' },
-      { label: 'Connect email (optional)', done: false, href: '#/app/settings' }
+      { label: 'Create a chatbot', done: bots.length > 0, href: '#/app/bots' }
     ];
+    if (canAdmin(state.user)) {
+      steps.push({ label: 'Connect email (optional)', done: false, href: '#/app/settings' });
+    }
     var allDone = steps.slice(0, 4).every(function (step) { return step.done; });
     card.innerHTML = '<h3>' + (allDone ? 'You are set up' : 'Getting started') + '</h3>' +
       '<p class="muted">' + (allDone
