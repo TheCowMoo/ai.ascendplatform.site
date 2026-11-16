@@ -1661,7 +1661,14 @@
       listEl.innerHTML = '';
       var shown = showLeadsOnly ? conversations.filter(function (c) { return c.lead; }) : conversations;
       if (!shown.length) {
-        listEl.appendChild(el('div', 'empty-state', showLeadsOnly ? 'No leads captured yet.' : 'No conversations yet.'));
+        var empty = el('div', 'empty-state');
+        empty.innerHTML = '<div class="big">' + icon('chat') + '</div>' +
+          '<strong>' + (showLeadsOnly ? 'No leads captured yet.' : 'No conversations yet.') +
+          '</strong>' +
+          '<p>' + (showLeadsOnly
+            ? 'When someone shares their details in a chat, they will appear here.'
+            : 'They appear here as soon as someone talks to one of your chatbots.') + '</p>';
+        listEl.appendChild(empty);
         return;
       }
       shown.forEach(function (c) {
@@ -7545,7 +7552,9 @@
           if (!latest[key]) latest[key] = job;
         });
         if (!sites.length) {
-          body.innerHTML = '<div class="empty-state"><strong>No domains yet</strong>' +
+          body.innerHTML = '<div class="empty-state">' +
+            '<div class="big">' + icon('globe') + '</div>' +
+            '<strong>No domains yet</strong>' +
             '<p>Add one under Website first — a domain has to exist before it can be ' +
             'pointed here.</p></div>';
           return;
@@ -8834,8 +8843,9 @@
         esc(item.status || 'draft') + '</p>';
       if (!rows.length) {
         var empty = el('div', 'panel-card empty-state');
-        empty.innerHTML = '<p><strong>No answers yet.</strong></p>' +
-          '<p class="muted">Publish the form and share its link.</p>';
+        empty.innerHTML = '<div class="big">' + icon('form') + '</div>' +
+          '<strong>No answers yet.</strong>' +
+          '<p>Publish the form and share its link.</p>';
         body.appendChild(empty);
         return;
       }
