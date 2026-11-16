@@ -1302,6 +1302,23 @@ def business_profile_knowledge():
     return jsonify({"knowledge": text, "chars": len(text)})
 
 
+@app.route("/api/profile/suggestions", methods=["GET"])
+@login_required
+def business_profile_suggestions():
+    """Business facts the AI proposed, scoped to the profile being edited.
+
+    The general approvals list is platform-wide for an owner. Business details is
+    always one profile, so this endpoint keeps another client's suggestions out of
+    it even when an operator is signed in.
+    """
+    org, error = _profile_scope_or_403()
+    if error:
+        return error
+    rows = actions.list_approvals("pending", org_id=org)
+    return jsonify({"suggestions": [row for row in rows
+                                    if row.get("tool") == "profile_fact"]})
+
+
 @app.route("/api/profile/seed-sample", methods=["POST"])
 @client_admin_required
 def business_profile_seed():
@@ -2666,20 +2683,22 @@ def _voice_assistant_session(raw):
 @app.route("/api/voice/tool", methods=["POST"])
 @login_required
 def voice_tool():
-    """The three tools the voice may use: delegate work, answer questions, publish a page.
+    """The voice tools: delegate work, remember a rule, answer questions, publish a page.
 
     The browser relays these calls because the socket is browser-direct. That is safe because
     this route - not the model - is what executes: it needs a login, takes the tenant from the
     session, and starts the same manager job a typed request would. An answer is bound to the
     job this browser's voice session started; the model never supplies a job id.
     """
+    import profile as profile_mod
     import voice
 
     data = request.get_json(silent=True) or {}
     name = str(data.get("name") or "")
-    if name not in ("delegate_to_team", "answer_team_question", "publish_page"):
-        return jsonify({"error": "The voice may only delegate to the team, answer its "
-                                 "questions, or publish a page."}), 403
+    if name not in ("delegate_to_team", "remember_preference", "answer_team_question",
+                    "publish_page"):
+        return jsonify({"error": "The voice may only delegate to the team, remember a "
+                                 "writing rule, answer its questions, or publish a page."}), 403
     # The voice can talk with Gemini alone, but the team it delegates to needs a chat
     # provider. Refuse before creating a job that would only fail in the transcript.
     import llm
@@ -2698,6 +2717,18 @@ def voice_tool():
     args = data.get("args") or {}
     if not isinstance(args, dict):
         args = {}
+
+    if name == "remember_preference":
+        preference = str(args.get("preference") or "").strip()
+        if not preference:
+            return jsonify({"error": "There was no rule to save."}), 400
+        org = current_org()
+        if org is None:
+            return jsonify({"error": "Pick a client first; a rule belongs to one."}), 400
+        saved, message = profile_mod.add_preference(
+            org, preference, owner_id=session.get("user_id"))
+        session["voice_calls"] = calls + 1
+        return jsonify({"ok": saved, "saved": saved, "message": message})
 
     if name == "publish_page":
         # The one write the voice performs itself. The spoken yes is the decision, so the
@@ -3091,16 +3122,33 @@ def list_approvals():
 def decide_approval(approval_id, decision):
     if decision not in ("approve", "deny"):
         return jsonify({"error": "decision must be approve or deny"}), 400
-    if not actions.get_approval(approval_id):
+    approval = actions.get_approval(approval_id)
+    if not approval:
         return jsonify({"error": "Not found"}), 404
     # A client may only decide the writes its own runs asked for. Deciding another
     # client's approval would mean authorising a write to their server.
     if not can_access_org(actions.approval_org_id(approval_id)):
         return jsonify({"error": "Not found"}), 404
+    result_text = ""
+    if (decision == "approve" and approval.get("status") == "pending"
+            and approval.get("tool") == "profile_fact"):
+        # Business facts are different from writing rules: the AI may only propose them,
+        # and this approval is the moment the fact is actually written.
+        try:
+            payload = json.loads(approval.get("args_json") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError("That suggestion is malformed.")
+            field = str(payload.get("field") or "")
+            value = str(payload.get("value") or "")
+            profile_mod.apply_fact(actions.approval_org_id(approval_id), field, value)
+            result_text = "Business details updated."
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
     row = actions.decide_approval(
         approval_id,
         "approved" if decision == "approve" else "denied",
         decided_by=session.get("name") or session.get("email") or "operator",
+        result=result_text,
     )
     return jsonify({"approval": row})
 

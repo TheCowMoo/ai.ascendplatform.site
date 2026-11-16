@@ -10,7 +10,9 @@ you can watch.
 import json
 import re
 
+import actions
 import deliverables as deliverables_service
+import profile as profile_mod
 import sites as sites_service
 from db import get_connection
 
@@ -74,16 +76,58 @@ def _build_remember_preference(emit, job_id=None):
         """Save a lasting rule about how this client's work should be done."""
         import profile as profile_mod
 
-        org_id, _ = _context(job_id)
+        org_id, requester_id = _context(job_id)
         if org_id is None:
             return ("This chat is not attached to a client, so there is nowhere to save a "
                     "preference. Ask the user to pick one in the workspace switcher.")
-        saved, message = profile_mod.add_preference(org_id, preference)
+        saved, message = profile_mod.add_preference(org_id, preference, owner_id=requester_id)
         if emit:
             emit("Preference", "system", message)
         return message
 
     return remember_preference
+
+
+def _build_propose_business_fact(emit, job_id=None):
+    async def propose_business_fact(field: str, value: str) -> str:
+        """Propose a factual update to Business details for the client to approve."""
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return ("This chat is not attached to a client, so there is nowhere to "
+                    "propose a business fact.")
+        label = profile_mod.FACT_LABELS.get(str(field or "").strip())
+        if not label:
+            return ("That is not a business fact I can propose. Use remember_preference "
+                    "for a writing rule, or one of: %s."
+                    % ", ".join(sorted(profile_mod.FACT_LABELS)))
+        text = " ".join(str(value or "").split()).strip()[:4000]
+        if not text:
+            return "There is no fact to save."
+        current = profile_mod.get_profile(org_id) or {}
+        if str(current.get(field) or "").strip() == text:
+            return "%s already says that." % label
+        for pending in actions.list_approvals("pending", org_id=org_id):
+            if pending.get("tool") != "profile_fact":
+                continue
+            try:
+                payload = json.loads(pending.get("args_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("field") == field and payload.get("value") == text:
+                return "That change is already waiting for your approval."
+        approval_id = actions.request_approval(
+            "profile_fact",
+            "Add %s to Business details: %s" % (label, text[:180]),
+            {"field": field, "value": text}, job_id)
+        if emit:
+            emit("Business details", "system",
+                 "%s is waiting for your approval in Business details." % label)
+        return ("I have put that under Business details for your approval (suggestion #%d). "
+                "Nothing has changed yet." % approval_id)
+
+    return propose_business_fact
 
 
 def _build_list_sites(emit, job_id=None):
@@ -830,3 +874,10 @@ register("remember_preference",
          "structure, wording, a sign-off, something to always or never include. Call this "
          "the moment the user states one; do not wait to be asked to remember it.",
          _build_remember_preference)
+
+register("propose_business_fact",
+         "Propose a factual update to Business details (name, description, contact, hours, "
+         "price, policy, audience or signature). The client must approve it before it is "
+         "saved. field is one of: %s; value is the new text."
+         % ", ".join(sorted(profile_mod.FACT_LABELS)),
+         _build_propose_business_fact)

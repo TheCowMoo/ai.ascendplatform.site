@@ -199,11 +199,20 @@ Every `chat` turn builds its system prompt through `manager.system_for(org)` and
 agent gets the same brief appended in `agents.build_team` (1500 characters per agent, 3000 for
 the Manager), so tone and rules reach the Studio, the Assistant page, the floating sheet, voice
 and the team - the Business Profile used to reach only the chatbot. `build_knowledge` carries
-the rules too, so bots follow them. The Manager learns them itself: `remember_preference`
-(granted tool, no approval - it writes the client's own profile) appends one deduplicated line
-and emits `Preference: Saved ...` into the transcript, and the system prompt tells it to call
-that when a lasting rule is stated, without waiting for "remember". The same block is editable
-on the Business Profile screen, so a wrong rule is one deletion away.
+the rules too, so bots follow them.
+
+Rules are learned automatically: the Manager's `remember_preference` and the voice's matching
+tool append one deduplicated line with no approval, because a writing rule is the client's own
+instruction. Facts are not: `propose_business_fact` writes a `profile_fact` row to
+`action_approvals` and changes nothing until the client approves it under Business details (or
+in a job's approvals card). Approval applies the field through `profile.apply_fact`; denial
+leaves the profile untouched. A conversational "remember this" now lands in the rules list even
+when spoken, while "our phone number is..." becomes a suggestion the client can accept.
+
+The Business details screen uses plain-language cards (Your business, What you offer, How
+customers reach you, How your team should write, Rules your team has learned, Common
+questions). Rules are one editable row each, learned suggestions appear above the form, and the
+raw knowledge text is hidden behind **Show exact text**.
 
 **The first login.** `users.onboarded_at` (migration `0025`) is per account, not per
 browser, so a second device does not replay the welcome. Boot and the login handler call

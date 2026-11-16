@@ -26,6 +26,43 @@ TEXT_FIELDS = (
 # Columns stored as JSON.
 JSON_FIELDS = ("services", "faq", "social")
 
+# Facts the AI may propose. Rules/preferences are deliberately absent: they are the
+# automatic learning path, while a business fact must be approved by the client first.
+FACT_LABELS = {
+    "name": "Business name",
+    "tagline": "Tagline",
+    "description": "What the business does",
+    "industry": "Industry",
+    "website": "Website",
+    "logo_url": "Logo URL",
+    "brand_font": "Brand font",
+    "tone_of_voice": "Tone of voice",
+    "target_audience": "Who you help",
+    "pricing_notes": "Pricing notes",
+    "support_email": "Support email",
+    "support_phone": "Support phone",
+    "address": "Address",
+    "business_hours": "Opening hours",
+    "policies": "Policies",
+    "extra_notes": "Additional notes",
+    "signature": "Signature",
+}
+
+
+def apply_fact(org_id, field, value):
+    """Apply one approved business fact. Raises ``ValueError`` when unusable."""
+    if field not in FACT_LABELS:
+        raise ValueError("That is not an editable business fact.")
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("A business fact cannot be empty.")
+    if len(text) > 4000:
+        raise ValueError("That fact is too long (4,000 characters maximum).")
+    updated = update_profile(org_id, {field: text})
+    if updated is None:
+        raise ValueError("There is no business profile for this client.")
+    return updated
+
 DEFAULTS = {
     "name": "", "tagline": "", "description": "", "industry": "", "website": "",
     "logo_url": "", "brand_color": "#4f46e5", "brand_font": "",
@@ -71,9 +108,23 @@ def ensure_profile(org_id, owner_id=None):
     # owner_id records the creator. The column is NOT NULL, and the platform profile
     # is seeded at boot before anyone has logged in, so 0 stands for "no user".
     cols = ["org_id", "owner_id"] + list(DEFAULTS.keys())
-    values = [org_id, owner_id if owner_id is not None else 0]
+    creator = owner_id if owner_id is not None else 0
+    values = [org_id, creator]
     values += [DEFAULTS[k] for k in DEFAULTS]
     with get_connection() as conn:
+        # An upgraded database can still carry the old UNIQUE(owner_id), and creator 0
+        # is shared by every pre-login profile. A negative, org-specific placeholder
+        # keeps a new client's first profile creatable without weakening the org key.
+        taken = conn.execute(
+            "SELECT 1 FROM business_profiles WHERE owner_id = ?", (creator,)
+        ).fetchone()
+        if taken:
+            fallback = -abs(int(org_id or 1))
+            while conn.execute(
+                    "SELECT 1 FROM business_profiles WHERE owner_id = ?", (fallback,)
+            ).fetchone():
+                fallback -= 1
+            values[1] = fallback
         conn.execute(
             "INSERT INTO business_profiles (%s) VALUES (%s)"
             % (", ".join(cols), ", ".join("?" for _ in cols)),
@@ -337,7 +388,7 @@ def brief_for_org(org_id, limit=BRIEF_LIMIT):
         return ""
 
 
-def add_preference(org_id, text):
+def add_preference(org_id, text, owner_id=None):
     """Append one lasting rule to this client's preferences.
 
     Returns ``(saved, message)``. Dedupe is case- and bullet-insensitive, and the list is
@@ -348,7 +399,7 @@ def add_preference(org_id, text):
     if org_id is None or not line:
         return False, ("This chat is not attached to a client, so there is nothing to "
                        "save this preference to.")
-    profile = ensure_profile(org_id)
+    profile = ensure_profile(org_id, owner_id)
     if profile is None:
         return False, ("This chat is not attached to a client, so there is nothing to "
                        "save this preference to.")
@@ -361,7 +412,7 @@ def add_preference(org_id, text):
     value = "\n".join(lines)
     if len(value) > MAX_PREFERENCE_CHARS:
         value = value[-MAX_PREFERENCE_CHARS:].split("\n", 1)[-1]
-    update_profile(org_id, {"preferences": value})
+    update_profile(org_id, {"preferences": value}, owner_id=owner_id)
     return True, "Saved for this client: %s" % line
 
 

@@ -1273,6 +1273,7 @@
 
   function relay(call) {
     var isAnswer = call.name === 'answer_team_question';
+    var isRemember = call.name === 'remember_preference';
     if (isAnswer && !state.team.awaitingAnswer) {
       // The model may try to answer before the team's question actually reached the user.
       // Do not turn that guess into a job; the server would refuse it too.
@@ -1283,13 +1284,16 @@
     }
     var detail = isAnswer
       ? ((call.args && (call.args.answers || call.args.answer)) || '')
-      : ((call.args && call.args.instruction) || '');
+      : (isRemember ? ((call.args && call.args.preference) || '')
+                     : ((call.args && call.args.instruction) || ''));
     // A successful tool response starts a new watch, which clears the previous wait. Keeping
     // the wait on a network failure lets the user answer the still-pending team question
     // again instead of locking the voice out of it.
     appendSystemNote(isAnswer
       ? 'Passing your answer to the team…'
-      : (detail ? 'On it: ' + detail : 'Handing that to the team…'));
+      : (isRemember
+         ? 'Saving that rule to Business details…'
+         : (detail ? 'On it: ' + detail : 'Handing that to the team…')));
     var turnId = state.sessionId + ':' + (call.id || stableId(call));
     state.calls += 1;
     var generation = state.generation;
@@ -1302,7 +1306,7 @@
     // The canvas on screen is part of a spoken request, not just a typed one. The server
     // validates the id against this session's client; the model never learns a job id
     // or a tenant from it.
-    if (!isAnswer) {
+    if (!isAnswer && !isRemember) {
       var artifact = voiceContext();
       if (artifact) body.artifact = artifact;
     }

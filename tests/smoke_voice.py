@@ -18,6 +18,7 @@ os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 import app as appmod  # noqa: E402
 import db  # noqa: E402
 import llm  # noqa: E402
+import profile as profile_mod  # noqa: E402
 import voice  # noqa: E402
 
 FAILED = []
@@ -56,8 +57,9 @@ def test_status_tells_the_truth():
 def test_setup_declares_team_tools():
     setup = voice.setup()["setup"]
     names = [item["name"] for item in setup["tools"][0]["functionDeclarations"]]
-    check("the voice can delegate and answer", names,
-          ["delegate_to_team", "answer_team_question", "publish_page"])
+    check("the voice can delegate, remember and answer", names,
+          ["delegate_to_team", "remember_preference", "answer_team_question",
+           "publish_page"])
     check("it asks for audio back", setup["generationConfig"]["responseModalities"], ["AUDIO"])
     check("it asks for the user's words", setup.get("inputAudioTranscription"), {})
     check("it asks for its own words", setup.get("outputAudioTranscription"), {})
@@ -327,7 +329,8 @@ def test_the_routes():
         check("the setup carries the tools",
               [item["name"] for item in
                data["setup"]["setup"]["tools"][0]["functionDeclarations"]],
-              ["delegate_to_team", "answer_team_question", "publish_page"])
+              ["delegate_to_team", "remember_preference", "answer_team_question",
+               "publish_page"])
 
         voice.model_availability = lambda: {
             "ok": False, "checked": True, "model": voice.model(),
@@ -382,6 +385,23 @@ def test_the_routes():
     orgs = client.get("/api/orgs").get_json().get("orgs") or []
     if orgs:
         client.post("/api/session/org", json={"org_id": orgs[0]["id"]})
+        before_profile = profile_mod.get_profile(orgs[0]["id"])
+        before_rules = (before_profile or {}).get("preferences", "")
+        rule = "Keep spoken updates brief (%s)." % db.now_str()
+        remembered = client.post("/api/voice/tool", json={
+            "name": "remember_preference",
+            "args": {"preference": rule},
+        })
+        check("the voice can remember a writing rule", remembered.status_code, 200)
+        check("and says it was saved", (remembered.get_json() or {}).get("saved"), True)
+        learned = (profile_mod.get_profile(orgs[0]["id"]) or {}).get("preferences", "")
+        check("the rule reached the client profile", rule in learned, True)
+        if before_profile is None:
+            with db.get_connection() as conn:
+                conn.execute("DELETE FROM business_profiles WHERE org_id = ?",
+                             (orgs[0]["id"],))
+        else:
+            profile_mod.update_profile(orgs[0]["id"], {"preferences": before_rules})
     with db.get_connection() as conn:
         before = conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE title = 'Voice request'"
                               ).fetchone()["n"]

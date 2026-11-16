@@ -23,6 +23,7 @@ os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 os.environ.pop("JOB_BACKEND", None)
 os.environ.pop("REDIS_URL", None)
 
+import actions  # noqa: E402
 import agents  # noqa: E402
 import db  # noqa: E402
 import jobs  # noqa: E402
@@ -32,6 +33,7 @@ import tools  # noqa: E402
 import tools.manager as manager_tools  # noqa: E402
 
 db.init_db()
+import app as appmod  # noqa: E402
 
 FAILED = []
 ORG = 501
@@ -112,6 +114,10 @@ def test_every_turn_gets_it():
           "remember_preference" in manager.GRANTED, True)
     check("the tool is registered",
           tools.unknown(["remember_preference"]), [])
+    check("the manager may propose a fact, not save it",
+          "propose_business_fact" in manager.GRANTED, True)
+    check("the fact tool is registered",
+          tools.unknown(["propose_business_fact"]), [])
 
     row = {"name": "Copywriter", "system_prompt": "You write the emails.",
            "tools": []}
@@ -148,11 +154,50 @@ def test_the_tool_writes_to_the_jobs_client():
           "Keep it short." in (profile_mod.get_profile(ORG)["preferences"] or ""), False)
 
 
+def test_a_business_fact_waits_for_approval():
+    job_id = jobs.create_job("Chat", "add a fact", None, "selector", "chat", org_id=ORG)
+    propose = manager_tools._build_propose_business_fact(None, job_id=job_id)
+    result = asyncio.run(propose("support_email", "hello@acme.test"))
+    check("the tool says the fact is waiting", "approval" in result, True)
+    check("the profile was not changed yet",
+          (profile_mod.get_profile(ORG) or {}).get("support_email"), "")
+    again = asyncio.run(propose("support_email", "hello@acme.test"))
+    check("the same suggestion is not queued twice", "already waiting" in again, True)
+    pending = actions.list_approvals(status="pending", org_id=ORG)
+    fact = [row for row in pending if row.get("tool") == "profile_fact"]
+    check("exactly one suggestion is waiting", len(fact), 1)
+
+    client = appmod.app.test_client()
+    login = client.post("/api/auth/login",
+                        json={"email": "admin@example.com", "password": "admin123"})
+    check("the owner can sign in", login.status_code, 200)
+    suggestions = client.get("/api/profile/suggestions")
+    check("the platform profile does not show a client's suggestion",
+          suggestions.status_code, 200)
+    check("and the list is scoped", (suggestions.get_json() or {}).get("suggestions"), [])
+    approved = client.post("/api/approvals/%d/approve" % fact[0]["id"])
+    check("the client can approve it", approved.status_code, 200)
+    check("and the fact is saved",
+          (profile_mod.get_profile(ORG) or {}).get("support_email"), "hello@acme.test")
+    check("the approval records the result",
+          "updated" in ((actions.get_approval(fact[0]["id"]) or {}).get("result") or "").lower(),
+          True)
+
+    asyncio.run(propose("business_hours", "Mon-Fri 9-5"))
+    pending = actions.list_approvals(status="pending", org_id=ORG)
+    hours = [row for row in pending if row.get("tool") == "profile_fact"]
+    denied = client.post("/api/approvals/%d/deny" % hours[0]["id"])
+    check("a suggestion can be denied", denied.status_code, 200)
+    check("and a denied fact is not saved",
+          (profile_mod.get_profile(ORG) or {}).get("business_hours"), "")
+
+
 if __name__ == "__main__":
     test_the_brief_is_compact_and_carries_the_rules()
     test_learning_saves_once_and_keeps_the_newest()
     test_every_turn_gets_it()
     test_the_tool_writes_to_the_jobs_client()
+    test_a_business_fact_waits_for_approval()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)

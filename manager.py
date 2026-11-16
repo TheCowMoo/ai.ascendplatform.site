@@ -42,6 +42,11 @@ SYSTEM = (
     "without asking and without waiting for them to say remember. Do not save one-off "
     "requests for the current draft, and do not repeat a rule already in the client "
     "context. If they correct the same thing twice, save the correction.\n"
+    "A factual change to the business - its name, description, address, phone, opening "
+    "hours, price, policy, audience or signature - is different: call "
+    "propose_business_fact instead. It creates a suggestion the client approves under "
+    "Business details; never claim the fact is saved until the tool says it was approved "
+    "or you are told it is live. Never silently overwrite a business fact.\n"
     "You can publish a website page. When the user asks, call publish_page; if the "
     "client has more than one site, ask which domain first. If the page is meant to be "
     "the site's front page, pass as_home=True; otherwise it lands at /<slug>.html. If "
@@ -84,8 +89,8 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
-           "create_form", "list_forms", "remember_preference", "publish_page",
-           "add_form_link", "apply_automation", "fetch_page", "start_build")
+           "create_form", "list_forms", "remember_preference", "propose_business_fact",
+           "publish_page", "add_form_link", "apply_automation", "fetch_page", "start_build")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "

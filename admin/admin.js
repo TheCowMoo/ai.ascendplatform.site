@@ -2085,14 +2085,19 @@
     var container = el('div', 'container');
     var owner = isOwner(state.user);
     var head = el('div', 'page-head');
-    head.innerHTML = owner
-      ? '<div><h2>Business Profile</h2><p>Everything here feeds your AI as its knowledge base.</p></div>'
-      : '<div><h2>Business details</h2><p>The facts and voice your team uses when it writes for you.</p></div>';
+    head.innerHTML = '<div><h2>Business details</h2><p>What your team knows about ' +
+      'your business, and how it should write for you. It can learn writing rules from ' +
+      'chat or voice; changes to facts wait for your approval.</p></div>';
     container.appendChild(head);
+
+    var pendingCard = el('div', 'panel-card');
+    pendingCard.style.display = 'none';
+    container.appendChild(pendingCard);
 
     var inputs = {};
     var services = [];
     var faq = [];
+    var rules = [];
     var SOCIAL_KEYS = ['facebook', 'instagram', 'x', 'linkedin', 'tiktok'];
 
     function section(title, hint) {
@@ -2120,7 +2125,8 @@
       return r;
     }
 
-    var identity = section('Identity');
+    var identity = section('Your business',
+      'The basics your team should never get wrong.');
     identity.appendChild(row(
       field('Business name', 'name', { placeholder: 'Acme Ltd' }),
       field('Industry', 'industry', { placeholder: 'Retail, SaaS, agency...' })
@@ -2132,7 +2138,8 @@
     }));
     container.appendChild(identity);
 
-    var branding = section('Branding', 'Used by your chatbot widget and any content the AI generates.');
+    var branding = section('Brand appearance (optional)',
+      'Used on your chatbot and any pages we generate.');
     branding.appendChild(row(
       field('Brand colour', 'brand_color', { type: 'color' }),
       field('Font family', 'brand_font', { placeholder: 'Inter, Poppins...' })
@@ -2140,33 +2147,57 @@
     branding.appendChild(field('Logo URL', 'logo_url', { placeholder: 'https://example.com/logo.png' }));
     container.appendChild(branding);
 
-    var voice = section('Audience & voice');
+    var voice = section('How your team should write',
+      'Who you help, and the voice you want people to hear.');
     voice.appendChild(field('Target audience', 'target_audience', {
       multiline: true, placeholder: 'Small business owners in the UK who want more leads.'
     }));
     voice.appendChild(field('Tone of voice', 'tone_of_voice', {
       multiline: true, placeholder: 'Friendly, concise, never pushy.'
     }));
-    container.appendChild(voice);
-
-    // Preferences are instructions, not facts: the Manager appends a line when it learns a
-    // lasting rule, and every agent turn reads them. Editable like any other field - a rule
-    // the AI wrote is not privileged, and a line deleted here stops being applied.
-    var preferences = section('How the AI works for this client',
-      'Rules the team follows on every turn. It adds a line here when it learns a lasting ' +
-      'preference - edit or delete anything.');
-    preferences.appendChild(field('Preferences and rules', 'preferences', {
-      multiline: true,
-      placeholder: 'Keep emails under 150 words.\nNever use exclamation marks.\n' +
-                   'Sign off as Nathanael.'
-    }));
-    preferences.appendChild(field('Signature', 'signature', {
+    voice.appendChild(field('Signature', 'signature', {
       multiline: true, placeholder: 'Nathanael\nFounder, Acme Ltd\nacme.com'
     }));
+    container.appendChild(voice);
+
+    // Rules are instructions, not facts. The Manager can add a line automatically when it
+    // learns a lasting preference; one row per rule makes that list reviewable by someone
+    // who is not technical. A line deleted here stops being applied.
+    var preferences = section('Rules your team has learned',
+      'Your team adds a rule here when you tell it something lasting in chat or by voice, ' +
+      'such as “keep emails short” or “never use exclamation marks.” Review or change ' +
+      'anything.');
+    var rulesWrap = el('div');
+    function renderRules() {
+      rulesWrap.innerHTML = '';
+      rules.forEach(function (rule, index) {
+        var row = el('div', 'repeat-row');
+        var input = el('input');
+        input.className = 'rule-input';
+        input.value = rule || '';
+        input.placeholder = 'A rule your team should follow';
+        input.oninput = function () { rules[index] = input.value; };
+        var del = el('button', 'btn btn-danger btn-sm', 'Remove');
+        del.onclick = function () { rules.splice(index, 1); renderRules(); };
+        row.appendChild(input);
+        row.appendChild(del);
+        rulesWrap.appendChild(row);
+      });
+      if (!rules.length) {
+        rulesWrap.appendChild(el('div', 'muted',
+          'No rules yet. When you tell your team something lasting in chat or by voice, ' +
+          'it will appear here.'));
+      }
+      var add = el('button', 'btn btn-ghost btn-sm', '+ Add a rule yourself');
+      add.onclick = function () { rules.push(''); renderRules(); };
+      rulesWrap.appendChild(add);
+    }
+    preferences.appendChild(rulesWrap);
     container.appendChild(preferences);
 
     // Offerings
-    var offerings = section('Offerings & pricing');
+    var offerings = section('What you offer',
+      'Services, products or packages your team can mention accurately.');
     var servicesWrap = el('div');
     function renderServices() {
       servicesWrap.innerHTML = '';
@@ -2193,7 +2224,7 @@
     }));
     container.appendChild(offerings);
 
-    var contact = section('Contact');
+    var contact = section('How customers reach you');
     contact.appendChild(row(
       field('Support email', 'support_email', { placeholder: 'hello@example.com' }),
       field('Support phone', 'support_phone', { placeholder: '+44 ...' })
@@ -2202,7 +2233,7 @@
     contact.appendChild(field('Business hours', 'business_hours', { placeholder: 'Mon-Fri 9:00-17:00' }));
     container.appendChild(contact);
 
-    var socialCard = section('Social links');
+    var socialCard = section('Social links (optional)');
     var socialRow = el('div', 'form-row');
     SOCIAL_KEYS.forEach(function (key) {
       socialRow.appendChild(field(key.charAt(0).toUpperCase() + key.slice(1), 'soc_' + key, { placeholder: 'https://' }));
@@ -2210,11 +2241,12 @@
     socialCard.appendChild(socialRow);
     container.appendChild(socialCard);
 
-    var policiesCard = section('Policies');
+    var policiesCard = section('Policies (optional)');
     policiesCard.appendChild(field('Refunds, shipping, guarantees', 'policies', { multiline: true }));
     container.appendChild(policiesCard);
 
-    var faqCard = section('FAQ');
+    var faqCard = section('Common questions',
+      'The questions customers ask most, with the answers you want them to hear.');
     var faqWrap = el('div');
     function renderFaq() {
       faqWrap.innerHTML = '';
@@ -2236,19 +2268,23 @@
     faqCard.appendChild(faqWrap);
     container.appendChild(faqCard);
 
-    var notesCard = section('Additional notes');
-    notesCard.appendChild(field('Anything else the AI should know', 'extra_notes', { multiline: true }));
+    var notesCard = section('Anything else your team should know');
+    notesCard.appendChild(field('Anything else your team should know', 'extra_notes',
+      { multiline: true }));
     container.appendChild(notesCard);
 
-    var previewCard = section('Knowledge base preview', 'This is the exact text your AI receives as its knowledge base.');
+    var previewCard = section('What your team will read',
+      'This is the information we combine for your team. You normally only edit the ' +
+      'sections above.');
     var previewBody = el('pre', 'kb-preview');
     previewBody.style.display = 'none';
+    var previewSummary = el('div', 'muted');
     var previewMeta = el('div', 'muted');
-    var toggle = el('button', 'btn btn-ghost btn-sm', 'Show');
+    var toggle = el('button', 'btn btn-ghost btn-sm', 'Show exact text');
     toggle.onclick = function () {
       var hidden = previewBody.style.display === 'none';
       previewBody.style.display = hidden ? 'block' : 'none';
-      toggle.textContent = hidden ? 'Hide' : 'Show';
+      toggle.textContent = hidden ? 'Hide exact text' : 'Show exact text';
     };
     var refresh = el('button', 'btn btn-ghost btn-sm', 'Refresh');
     refresh.onclick = function () { refreshPreview(); };
@@ -2256,16 +2292,19 @@
     previewBar.appendChild(toggle);
     previewBar.appendChild(refresh);
     previewCard.appendChild(previewBar);
+    previewCard.appendChild(previewSummary);
     previewCard.appendChild(previewMeta);
     previewCard.appendChild(previewBody);
     container.appendChild(previewCard);
 
     var actions = el('div');
     actions.style.cssText = 'display:flex;gap:8px;margin-bottom:24px;';
-    var saveBtn = el('button', 'btn btn-primary', 'Save profile');
-    var sampleBtn = el('button', 'btn btn-ghost', 'Load sample content');
+    var saveBtn = el('button', 'btn btn-primary', 'Save changes');
+    var sampleBtn = el('button', 'btn btn-ghost', 'Load example content');
+    var savedMeta = el('span', 'muted');
     actions.appendChild(saveBtn);
-    actions.appendChild(sampleBtn);
+    if (owner) actions.appendChild(sampleBtn);
+    actions.appendChild(savedMeta);
     container.appendChild(actions);
 
     function refreshPreview() {
@@ -2285,6 +2324,8 @@
       SOCIAL_KEYS.forEach(function (key) { payload.social[key] = inputs['soc_' + key].value; });
       payload.services = services;
       payload.faq = faq;
+      payload.preferences = rules.map(function (rule) { return String(rule || '').trim(); })
+        .filter(Boolean).join('\n');
       return payload;
     }
 
@@ -2299,30 +2340,96 @@
       });
       services = (prof.services || []).slice();
       faq = (prof.faq || []).slice();
+      rules = String(prof.preferences || '').split('\n')
+        .map(function (line) { return line.trim(); }).filter(Boolean);
+      savedMeta.textContent = prof.updated_at ? 'Last saved ' + prof.updated_at : '';
+      var known = [];
+      if (prof.name) known.push('your business name');
+      if (prof.description) known.push('what you do');
+      if ((prof.services || []).length) known.push('what you offer');
+      if (prof.support_email || prof.support_phone || prof.address) {
+        known.push('how to reach you');
+      }
+      if ((prof.faq || []).length) known.push('common questions');
+      if (rules.length) known.push('the rules you taught it');
+      previewSummary.textContent = known.length
+        ? 'This includes ' + known.join(', ') + '.'
+        : 'Fill in the sections above and your team will use them here.';
       renderServices();
       renderFaq();
+      renderRules();
     }
 
     saveBtn.onclick = function () {
       saveBtn.disabled = true;
       api('PUT', '/api/profile', collect())
-        .then(function (d) { toast('Profile saved', true); load(d.profile); refreshPreview(); })
+        .then(function (d) {
+          toast('Changes saved', true);
+          load(d.profile);
+          savedMeta.textContent = 'Saved just now';
+          refreshPreview();
+        })
         .catch(function (e) { toast(e.message, false); })
         .finally(function () { saveBtn.disabled = false; });
     };
 
     sampleBtn.onclick = function () {
-      if (!confirm('Replace the current profile with sample content?')) return;
+      if (!confirm('Replace the current profile with example content?')) return;
       api('POST', '/api/profile/seed-sample')
-        .then(function (d) { toast('Sample loaded', true); load(d.profile); refreshPreview(); })
+        .then(function (d) { toast('Example loaded', true); load(d.profile); refreshPreview(); })
         .catch(function (e) { toast(e.message, false); });
     };
 
+    function decidePending(id, decision) {
+      api('POST', '/api/approvals/' + id + '/' + decision).then(function () {
+        toast(decision === 'approve' ? 'Added to your business details' : 'Suggestion dismissed', true);
+        api('GET', '/api/profile').then(function (d) {
+          load(d.profile);
+          refreshPreview();
+        }).catch(function (e) { toast(e.message, false); });
+        refreshPending();
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function refreshPending() {
+      api('GET', '/api/profile/suggestions').then(function (d) {
+        var rows = d.suggestions || [];
+        pendingCard.innerHTML = '';
+        pendingCard.style.display = rows.length ? '' : 'none';
+        if (!rows.length) return;
+        pendingCard.innerHTML = '<h3>Waiting for your approval</h3>' +
+          '<p class="muted">Your team suggested a change to these details. ' +
+          'Nothing is saved until you approve it.</p>';
+        rows.forEach(function (approval) {
+          var row = el('div', 'approval-row');
+          var summary = el('div');
+          summary.appendChild(el('div', null, approval.summary || 'Business details update'));
+          var proposed = '';
+          try {
+            proposed = String((JSON.parse(approval.args_json || '{}') || {}).value || '');
+          } catch (e) { proposed = ''; }
+          if (proposed) summary.appendChild(el('div', 'muted', 'New value: ' + proposed));
+          row.appendChild(summary);
+          var buttons = el('div', 'card-actions');
+          var yes = el('button', 'btn btn-primary btn-sm', 'Add to my details');
+          yes.onclick = function () { yes.disabled = true; decidePending(approval.id, 'approve'); };
+          var no = el('button', 'btn btn-ghost btn-sm', 'Not now');
+          no.onclick = function () { no.disabled = true; decidePending(approval.id, 'deny'); };
+          buttons.appendChild(yes);
+          buttons.appendChild(no);
+          row.appendChild(buttons);
+          pendingCard.appendChild(row);
+        });
+      }).catch(function () { pendingCard.style.display = 'none'; });
+    }
+
     renderServices();
     renderFaq();
+    renderRules();
     api('GET', '/api/profile')
       .then(function (d) { load(d.profile); refreshPreview(); })
       .catch(function (e) { toast(e.message, false); });
+    refreshPending();
 
 
 

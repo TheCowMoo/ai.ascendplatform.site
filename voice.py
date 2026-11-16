@@ -216,6 +216,25 @@ def delegate_declaration():
     }
 
 
+def remember_declaration():
+    """Save a lasting writing rule the user states aloud."""
+    return {
+        "name": "remember_preference",
+        "description": (
+            "Save a lasting rule about how this client's work should be written - tone, "
+            "length, wording, a sign-off, something to always or never include. Call this "
+            "when the user states such a rule; do not use it for one-off requests or for "
+            "business facts such as an address, price or opening hours."),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "preference": {
+                    "type": "STRING",
+                    "description": "The rule, in one short sentence, in the user's words."}},
+            "required": ["preference"]},
+    }
+
+
 def answer_declaration():
     """Carry the user's answer back to the manager job that asked a question."""
     return {
@@ -276,7 +295,8 @@ def live_config(org_name="", page="", intro=False, role=""):
         "systemInstruction": {"parts": [{"text": instruction(org_name, page, intro,
                                                               role)}]},
         "tools": [{"functionDeclarations": [
-            delegate_declaration(), answer_declaration(), publish_declaration()]}],
+            delegate_declaration(), remember_declaration(), answer_declaration(),
+            publish_declaration()]}],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "realtimeInputConfig": {
@@ -339,9 +359,15 @@ def instruction(org_name="", page="", intro=False, role=""):
         "short numbered list. You explain what is on screen, answer questions about it, and can "
         "walk a new user through the product one step at a time.%s%s "
         "%s"
-        "You have three tools. Use delegate_to_team for new work: if the user asks for anything "
+        "You have four tools. Use delegate_to_team for new work: if the user asks for anything "
         "to be built, changed or sent, call it with one clear sentence, then say you are on "
         "it. Never claim work is done until a team update says it is. "
+        "Use remember_preference when the user states a lasting writing rule - tone, length, "
+        "wording, a sign-off, something to always or never include. Say you have saved it. "
+        "Do not use it for one-off requests. For a factual business detail - address, phone, "
+        "opening hours, price, policy - do not save it yourself: call "
+        "delegate_to_team with a request to propose that fact for approval in Business "
+        "details. "
         "publish_page is the one action you take yourself, and only after an explicit yes: "
         "say which page and which domain will go live, and whether it is the home page at "
         "the root or a subpage at /<slug>.html; ask shall I publish it now, and wait. If "

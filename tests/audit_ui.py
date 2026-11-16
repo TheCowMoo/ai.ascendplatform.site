@@ -133,6 +133,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Domains      ", "/api/sites/%d/dns-report" % site["id"], ["report", "records"], "ok"),
         ("Profile      ", "/api/profile", ["profile"], "ok"),
         ("Profile      ", "/api/profile/knowledge", [], "ok"),
+        ("Profile      ", "/api/profile/suggestions", ["suggestions"], "ok"),
         ("Settings     ", "/api/settings", [], "ok"),
         ("Team         ", "/api/users", ["users"], "ok"),
         ("Approvals    ", "/api/approvals?status=pending", [], "ok"),
