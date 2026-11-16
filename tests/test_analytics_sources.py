@@ -129,6 +129,10 @@ def main():
     check("the client gets a connect action", "Connect analytics" in js, True)
     check("the old dead-end copy is gone",
           "Sync site logs, or connect a GA4 property for this client" in js, False)
+    css = open(os.path.join(ROOT, "admin", "admin.css"), encoding="utf-8").read()
+    check("empty states are one centered column",
+          "flex-direction: column" in css and "align-items: center" in css, True)
+    check("the cramped empty-state measure is gone", "max-width: 46ch" in css, False)
 
     with db.get_connection() as conn:
         conn.execute("DELETE FROM users WHERE org_id IN (?, ?)", (alpha["id"], beta["id"]))

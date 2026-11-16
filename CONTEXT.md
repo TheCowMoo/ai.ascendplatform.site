@@ -238,6 +238,14 @@ token stored, plaintext returned once → GHL upserts the contact and sends → 
 <token>` sets the password and starts the session. Resend rotates the token and kills
 the old link. A failed email still leaves a usable invitation (502 *with* the link).
 
+## Empty states are centered (2026-11-17)
+
+There is one `.empty-state` contract: a centered flex column containing an icon, a
+title, body copy and an optional action row. Body text uses a 58ch measure and balanced
+wrapping so a two-line explanation does not leave a ragged second line. The older
+duplicate `.empty-state` rule and the `46ch` paragraph measure were removed; actions
+inside Analytics use `.empty-actions` so they stay centered beside each other.
+
 ## Analytics workspaces (2026-11-17)
 
 Analytics access is role-aware and workspace-scoped. Members may read the brief and

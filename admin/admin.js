@@ -4343,8 +4343,11 @@
           ' · Emails ' + (counts.email || 0) + ' · Websites ' + (counts.website || 0) +
           ' · Everything ' + (counts.all || 0)));
         if (!items.length) {
-          body.appendChild(el('p', 'muted',
-            'Nothing here yet. The team writes these, and you can add a draft yourself.'));
+          var empty = el('div', 'empty-state');
+          empty.innerHTML = '<div class="big">' + icon('library') + '</div>' +
+            '<strong>Nothing here yet.</strong>' +
+            '<p>The team writes these, and you can add a draft yourself.</p>';
+          body.appendChild(empty);
           return;
         }
         var table = el('table', 'table');
@@ -4850,8 +4853,9 @@
         count.textContent = rows.length + ' item(s)';
         if (!rows.length) {
           var empty = el('div', 'panel-card empty-state');
-          empty.innerHTML = '<p><strong>No media yet.</strong></p>' +
-            '<p class="muted">Upload an image, video or PDF to use it in an email or page.</p>';
+          empty.innerHTML = '<div class="big">' + icon('image') + '</div>' +
+            '<strong>No media yet.</strong>' +
+            '<p>Upload an image, video or PDF to use it in an email or page.</p>';
           grid.appendChild(empty);
           return;
         }
@@ -5434,17 +5438,22 @@
       api('GET', '/api/data-sources?org_id=' + encodeURIComponent(state.org))
         .then(function (d) {
           body.innerHTML = '';
+          var sources = d.sources || [];
           var add = el('button', 'btn btn-primary', '+ Add source');
           add.onclick = function () {
             analyticsSourceForm(null, d.kinds, state.org, true, loadSources);
           };
-          body.appendChild(add);
-          var sources = d.sources || [];
           if (!sources.length) {
-            body.appendChild(el('p', 'muted', 'Nothing configured. Add the client\'s ' +
-              'GHL sub-account, or their GA4 property, or read our own site logs.'));
+            var empty = el('div', 'empty-state');
+            empty.innerHTML = '<div class="big">' + icon('trend') + '</div>' +
+              '<strong>No analytics sources yet.</strong>' +
+              '<p>Connect the client\'s GHL sub-account, their GA4 property, or read our ' +
+              'own site logs.</p>';
+            empty.appendChild(add);
+            body.appendChild(empty);
             return;
           }
+          body.appendChild(add);
           var table = el('table', 'table');
           table.innerHTML = '<thead><tr><th>Kind</th><th>Account</th><th>Status</th>' +
             '<th>Last sync</th><th></th></tr></thead>';
@@ -5544,7 +5553,9 @@
       var panel = el('div', 'panel-card empty-state');
       panel.innerHTML = '<div class="big">' + icon('trend') + '</div>' +
         '<strong>' + esc(title) + '</strong><p>' + esc(text) + '</p>';
-      if (action) panel.appendChild(action);
+      var actions = el('div', 'empty-actions');
+      if (action) actions.appendChild(action);
+      panel.appendChild(actions);
       return panel;
     }
 
@@ -5643,18 +5654,19 @@
       if (!hasTraffic) {
         var hasSource = sources.length > 0;
         var action = canManage && !hasSource ? connectButton('Connect analytics') : null;
-        body.appendChild(emptyPanel(
+        var empty = emptyPanel(
           hasSource ? 'No visitors in the last ' + days + ' days.' : 'No traffic recorded yet.',
           hasSource
             ? 'Your analytics source is connected, but it has no visitors in this window.'
             : (canManage
                ? 'Connect Google Analytics, or let the automatic website logs do the work once your site is live.'
                : 'Your workspace admin can connect an analytics source for this workspace.'),
-          action));
+          action);
+        body.appendChild(empty);
         if (canManage && hasSource && days === 7) {
           var wider = el('button', 'btn btn-ghost btn-sm', 'View 30 days');
           wider.onclick = function () { days = 30; load(); };
-          body.lastChild.appendChild(wider);
+          empty.querySelector('.empty-actions').appendChild(wider);
         }
       } else {
         var grid = el('div', 'kpi-grid');
@@ -7237,7 +7249,9 @@
         body.innerHTML = '';
         var rows = d.contacts || [];
         if (!rows.length) {
-          body.innerHTML = '<div class="empty-state"><strong>No contacts yet</strong>' +
+          body.innerHTML = '<div class="empty-state">' +
+            '<div class="big">' + icon('user') + '</div>' +
+            '<strong>No contacts yet</strong>' +
             '<p>Post a form to the endpoint above, or add one by hand.</p></div>';
           return;
         }
@@ -8053,10 +8067,9 @@
         var rows = d.automations || [];
         if (!rows.length) {
           var blank = el('div', 'panel-card empty-state');
-          blank.innerHTML = '<div class="empty-icon">⌘</div>' +
-            '<p><strong>No automations yet.</strong></p>' +
-            '<p class="muted">Start from a template: draft with the team, approve, ' +
-            'then report.</p>';
+          blank.innerHTML = '<div class="big">' + icon('cog') + '</div>' +
+            '<strong>No automations yet.</strong>' +
+            '<p>Start from a template: draft with the team, approve, then report.</p>';
           body.appendChild(blank);
           return;
         }
@@ -8657,14 +8670,11 @@
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Forms</h2><p class="muted">Forms, surveys and quizzes. ' +
       'Each one lives at its own link, and every answer lands in the list beside it.</p></div>';
-    container.appendChild(head);
-
-    var bar = el('div', 'chip-input');
     var add = el('button', 'btn btn-primary', 'New form');
     var refresh = el('button', 'btn btn-ghost', 'Refresh');
-    bar.appendChild(add);
-    bar.appendChild(refresh);
-    container.appendChild(bar);
+    head.appendChild(add);
+    head.appendChild(refresh);
+    container.appendChild(head);
 
     var body = el('div');
     container.appendChild(body);
@@ -8675,8 +8685,9 @@
         var rows = d.forms || [];
         if (!rows.length) {
           var empty = el('div', 'panel-card empty-state');
-          empty.innerHTML = '<p><strong>No forms yet.</strong></p>' +
-            '<p class="muted">Create one, or ask the assistant for a quiz and it will draft it.</p>';
+          empty.innerHTML = '<div class="big">' + icon('form') + '</div>' +
+            '<strong>No forms yet.</strong>' +
+            '<p>Create one, or ask the assistant for a quiz and it will draft it.</p>';
           body.appendChild(empty);
           return;
         }
