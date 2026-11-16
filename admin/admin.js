@@ -47,7 +47,9 @@
         ] },
         { id: 'customers', label: 'Leads', icon: 'user', children: [
           { id: 'contacts', label: 'Contacts', hash: '#/app/contacts' },
-          { id: 'forms', label: 'Forms', hash: '#/app/forms' },
+          // Forms list/responses are client_admin-scoped; do not show members a page
+          // whose first API call would be a 403.
+          { id: 'forms', label: 'Forms', hash: '#/app/forms', adminOnly: true },
           { id: 'conversations', label: 'Conversations', hash: '#/app/conversations' },
           { id: 'bots', label: 'Chatbots', hash: '#/app/bots' }
         ] },
