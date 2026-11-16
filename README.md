@@ -1,13 +1,13 @@
-# CMBGrowthAI
+# AscendPlatform
 
-A self-hosted **AI growth platform**: a Business Profile that becomes your AI's
-knowledge base, multi-bot chat (web widget + Meta channels), background agent
-jobs with a live transcript, and (soon) built-in website hosting. Runs on your
-own Ubuntu VPS.
+A self-hosted **AI growth platform** for agency-managed clients: a Business Profile
+that becomes the AI's knowledge base, a Studio for building pages and content, forms
+and lead capture, website hosting with automatic TLS, multi-bot chat, and background
+agent jobs with live transcripts and approvals.
 
-> Migration in progress. Stages S1-S5 are documented in `SYSTEM_PLAN.md`.
-> The deploy section below still describes the pre-Caddy setup; it is replaced
-> in stage S2.
+> The production topology is Docker Compose: Caddy + ASGI app + PostgreSQL + Redis.
+> For launch operations, backups, restore drills and suspension, read
+> [`docs/operations.md`](docs/operations.md).
 
 Each chatbot has its own:
 - **Name, assistant name, brand color, logo** — fully rebrandable widget
@@ -31,8 +31,10 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 - 🎙️ **Voice mode** — talk to the assistant; Gemini Live answers and delegates, with live transcripts
 - 🖼️ **Media library** — upload images, video and PDFs for emails and pages; alt text and a description are required
 - 💬 **Assistant chats** — start a new chat, reopen an earlier one, and keep voice turns in the same history
-- 🗄️ **SQLite** storage — no separate database server
+- 🗄️ **PostgreSQL** in production; SQLite remains available for local development
 - ⚙️ Runs as a **Docker Compose** stack (Caddy + app + PostgreSQL + Redis)
+- 🔔 **Lead notifications** — a form submission emails the client's admins
+- 🧾 **Operator controls** — credits, plans, suspension and approval history
 
 ---
 
@@ -42,7 +44,7 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 [ Admin panel  /admin ]   +   [ Public widget  /widget.js ]
                 │
                 ▼
-[ Flask backend (Gunicorn) ]   container, proxied by Caddy
+[ ASGI: FastAPI + Flask ]   container, proxied by Caddy
       ├── PostgreSQL (SQLAlchemy + Alembic)  — users, bots, messages, channels,
       │                                         jobs, business_profiles
       ├── Redis                     — reserved for the S3 agent worker (arq)
@@ -90,8 +92,7 @@ knowledge/
 tests/                                # smoke, SSE, agent and dialect tests
 deploy/
   install.sh                          # one-command VPS installer (Docker + Caddy)
-  deepseek-chatbot.service            # DEPRECATED (pre-S2 reference)
-  nginx.conf_ai / nginx.ssl.conf_ai   # DEPRECATED (pre-S2 reference)
+  backup.sh / restore.sh              # encrypted backup and fail-closed restore
 Dockerfile / docker-compose.yml / Caddyfile   # production stack
 litellm-config.yaml                           # optional LiteLLM gateway models
 ```
@@ -127,7 +128,7 @@ Settings tab and press **Test** to confirm each one.
 
 On first run it seeds:
 - an **admin account** from `ADMIN_EMAIL` / `ADMIN_PASSWORD`,
-- a first sample bot ("Cheryl") from `knowledge/cheryl_ai_knowledgebase.txt`,
+- a first sample bot from `knowledge/cheryl_ai_knowledgebase.txt`,
 - a **Business Profile** for that account from the same sample document.
 
 Migrations (needed for PostgreSQL; SQLite is created automatically):
@@ -160,6 +161,7 @@ is why `tests/test_migrations.py` runs the whole chain against an empty database
 | `APPROVAL_TIMEOUT` | How long a live action waits for approval (seconds) |
 | `SSH_TIMEOUT` / `SSH_CMD_TIMEOUT` / `SSH_MAX_OUTPUT` | SSH connect timeout, command timeout, output cap |
 | `SMTP_*` | Outbound email for the `send_email` tool |
+| `NOTIFICATIONS_ENABLED` | Email client admins about new leads and automation notices (`1` by default) |
 | `ARTIFACTS_DIR` | Where generated images/files are written |
 | `PEXELS_API_KEY` | Pexels stock photography for `search_photos`, `fetch_photo` and `import_photo_to_media` (free key at pexels.com/api) |
 | `PEXELS_PER_PAGE` / `PEXELS_TIMEOUT` / `PEXELS_MAX_BYTES` | Search page size, request timeout, download size cap |
@@ -168,6 +170,7 @@ is why `tests/test_migrations.py` runs the whole chain against an empty database
 | `GEMINI_API_KEY` / `GEMINI_MODEL` / `GEMINI_IMAGE_MODEL` | Gemini chat + image (optional) |
 | `LLM_GATEWAY_URL` / `LLM_GATEWAY_KEY` | Route every provider through a LiteLLM gateway (optional) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Seeded admin login (first run only) |
+| `SESSION_COOKIE_SECURE` / `SESSION_HOURS` | Secure session cookie (on in Compose) and session lifetime |
 | `HOST` / `PORT` | Bind address (default `127.0.0.1:5000`) |
 | `MAX_KB_CHARS` | Cap on knowledge-base size injected into the prompt |
 | `GRAPH_API_VERSION` | Meta Graph API version (default `v21.0`) |
@@ -180,13 +183,11 @@ restart needed. Values that choose the topology (`DATABASE_URL`, `REDIS_URL`,
 `JOB_BACKEND`, `ARTIFACTS_DIR`, bind host/port, `LLM_GATEWAY_URL`) stay `.env`-only
 and appear read-only there.
 
-## Deploy to the VPS
+## Deploy to the VPS (Ubuntu, Docker Compose)
 
-## Deploy to the VPS (Ubuntu, no Hestia)
-
-The stack runs under Docker Compose: **Caddy** (reverse proxy + automatic TLS),
-the Flask app (gunicorn), **PostgreSQL** and **Redis**. Caddy replaces both nginx
-and certbot — nothing else to install, and no control panel required.
+The stack runs under Docker Compose: **Caddy** (reverse proxy + automatic TLS), the
+ASGI app (uvicorn), **PostgreSQL**, **Redis** and the worker. Caddy replaces nginx and
+certbot — nothing else to install, and no control panel required.
 
 ### Prerequisites
 - Ubuntu 22.04 / 24.04 VPS with ports **80** and **443** open.
@@ -230,10 +231,12 @@ so the database schema is created/migrated automatically.
 
 ```bash
 curl https://ai.example.com/api/health
-# {"status":"ok","api_key_configured":true,"bots":1,"users":1,...}
+# {"status":"ok","brand":"AscendPlatform","bots":1,"users":1,...}
 ```
 
-Then open `https://ai.example.com/admin/` and log in.
+Then open `https://ai.example.com/admin/` and log in. Before taking a paying client,
+follow [`docs/operations.md`](docs/operations.md): encrypted off-site backups, a
+restore drill, monitoring and a support path.
 
 > **Local development** keeps using SQLite (`DATABASE_URL=sqlite:///data/app.db`),
 > so none of the above is needed to run the app on your own machine.
@@ -245,9 +248,9 @@ Then open `https://ai.example.com/admin/` and log in.
 The dashboard is organised as left-sidebar tabs:
 
 1. **Log in** with your admin email/password.
-2. **Business Profile** → describe the business. This becomes the AI's knowledge
-   base and the widget's branding; use *Knowledge base preview* to see exactly
-   what the model reads.
+2. **Business details** → describe the business. This becomes the AI's knowledge
+   base and the widget's branding; use *Show exact text* to inspect what the model
+   reads. Rules can be edited one per row; AI-proposed facts wait for approval.
 3. **Chatbots** → **+ New Chatbot** → name, assistant name, colour, welcome
    message, suggested questions, knowledge base, personality. Click **Embed** for
    the `<script>` tag.
@@ -437,9 +440,7 @@ the web widget, and sends the reply back via the Graph API.
 ### 1. Expose the webhook
 
 The callback URL must be public HTTPS: `https://<your-domain>/webhooks/meta`.
-The nginx snippet proxies `/webhooks/`, so re-run the installer (or
-`v-rebuild-web-domains <user> yes`) after deploying if you upgraded an existing
-install.
+Caddy proxies `/webhooks/` to the app; no nginx snippet or control panel is involved.
 
 ### 2. Create the Meta app
 
@@ -502,30 +503,39 @@ curl https://<your-domain>/api/health
   verification.
 - **Signatures** — the webhook rejects requests whose signature does not match
   the configured app secret (`META_APP_SECRET` or the channel's own secret).
-- **Secrets at rest** — tokens are stored in SQLite (the DB file is `600` and
-  git-ignored).
+- **Secrets at rest** — channel tokens are stored in the database. Treat database dumps
+  as secrets; the backup script encrypts them. Encrypting individual token columns at
+  rest is still on the launch-hardening list.
 
 ---
 
 ## Updating the app
 
 ```bash
-cd /opt/cheryl_chat_ai
-sudo git pull
-sudo bash deploy/install.sh    # re-copies files + restarts service
+cd /opt/ascendplatform
+git status -sb          # must be "## main..." before pulling
+git pull --ff-only
+./deploy.sh             # build, recreate, verify through Caddy, roll back on failure
 ```
 
-Your bots/users/messages are preserved (they live in `/opt/ai-chatbot/data/app.db`).
+The deploy script stamps `GIT_COMMIT`, `BUILD_TIME` and `APP_VERSION`, waits for the
+public health URL, and reverts the commit if the site never answers. Database data lives
+in the Postgres volume; media and site files live in the bind-mounted directories.
 
 ---
 
 ## Operations
 
 ```bash
-sudo systemctl status deepseek-chatbot
-sudo journalctl -u deepseek-chatbot -f      # live logs
-sudo systemctl restart deepseek-chatbot
+cd /opt/ascendplatform
+docker compose ps
+docker compose logs -f app worker
+curl -fsS https://<ADMIN_DOMAIN>/api/health
 ```
+
+For backups, restore drills, suspension and notification setup, use the
+[operations runbook](docs/operations.md). The worker does not serve HTTP; a worker
+healthcheck should use its process/queue status, not port 8000.
 
 ---
 
@@ -533,19 +543,26 @@ sudo systemctl restart deepseek-chatbot
 
 | Symptom | Fix |
 |---------|-----|
-| `502 Bad Gateway` | App down — `sudo systemctl status deepseek-chatbot` |
-| Admin 404s | nginx snippet missing — re-run the installer (step 7) or `v-rebuild-web-domains <user> yes` |
-| Can't log in | Admin seeds only on first run; edit `.env` then delete `data/app.db` to re-seed (wipes data) |
+| `502 Bad Gateway` | `docker compose ps` / `docker compose logs --tail=100 app caddy` |
+| Admin shows an old build | Check `data-build` on `/admin/` and `/api/version`; rerun `./deploy.sh` |
+| Can't log in | The seeded admin exists only on a fresh database; use an operator password reset, do not delete the database |
 | Widget says "Bot not found" | Wrong `data-bot` id — copy it from the Embed modal |
-| `nginx -t` fails | Only `location` blocks belong in the snippet; never add `server`/`listen` |
+| Domain certificate pending | Check DNS, ports 80/443, then use Website → Domains → Check |
 
 ---
 
 ## Security notes
 
-- `DEEPSEEK_API_KEY` and admin credentials live only in `/opt/ai-chatbot/.env` (mode 600) — never committed.
-- The app binds to `127.0.0.1` only; it is never exposed directly to the internet.
-- Passwords are stored hashed (Werkzeug PBKDF2). SQLite lives at `data/app.db` (git-ignored).
+- Provider keys, admin credentials and `.env` stay on the server only; `.env` is mode
+  600 and git-ignored. The backup archive contains it, so keep the backup encrypted.
+- The app is only reachable through Caddy; do not expose port 8000 directly.
+- Passwords are stored hashed (Werkzeug PBKDF2). Production data is PostgreSQL; local
+  development can use SQLite.
+- Suspension is enforced on login and on authenticated requests; the public chatbot and
+  hosted-form endpoints also refuse a paused client. Published websites remain available
+  until you explicitly disconnect or remove them for abuse/termination.
+- Session cookies are HttpOnly/SameSite and Secure in the Compose stack. There is no
+  public forgot-password flow yet; an operator resets a client's password from Team.
 
 ## License
 

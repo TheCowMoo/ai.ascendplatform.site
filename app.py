@@ -112,6 +112,46 @@ def _load_or_create_secret():
 
 app.secret_key = _load_or_create_secret()
 
+
+def _env_flag(name, default=False):
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+# Session hardening. Secure cookies are on for the Compose stack (HTTPS through Caddy)
+# and can stay off for a plain-HTTP local checkout. The signed cookie still carries the
+# tenant, so HttpOnly/SameSite are not optional.
+try:
+    session_hours = max(1, int(os.environ.get("SESSION_HOURS", "12")))
+except (TypeError, ValueError):
+    session_hours = 12
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=_env_flag("SESSION_COOKIE_SECURE", False),
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=session_hours),
+)
+
+
+@app.after_request
+def _security_headers(response):
+    """Baseline headers for the console and API.
+
+    The public forms page already sets its own CSP. Do not set X-Frame-Options here:
+    a form or page may legitimately be embedded on a client's site, and blocking that
+    would break the product. The console itself is protected below in admin_slash.
+    """
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy",
+                                "camera=(), microphone=(self), geolocation=()")
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # The DeepSeek client is built on demand and then re-used, so rotating the key in
 # the Settings tab takes effect on the next message. Only one client is kept.
 _client_cache = {}
@@ -284,6 +324,9 @@ def login_required(f):
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
             return jsonify({"error": "Unauthorized"}), 401
+        if not account_is_active(session.get("role"), session.get("org_id")):
+            session.clear()
+            return _inactive_account()
         return f(*args, **kwargs)
 
     return wrapper
@@ -328,6 +371,24 @@ def is_owner():
     return is_owner_role(session.get("role"))
 
 
+def account_is_active(role, org_id):
+    """Whether a client account may use the workspace.
+
+    Suspension is a commercial control, not decoration: a suspended client must not be
+    able to log in or keep an existing session. The platform owner is never scoped to
+    an org, and a legacy login with no org keeps its existing (empty) scope.
+    """
+    if is_owner_role(role):
+        return True
+    return orgs_service.is_active(org_id)
+
+
+def _inactive_account():
+    return jsonify({
+        "error": "This client account is paused. Contact your agency to restore access."
+    }), 403
+
+
 def owner_required(f):
     """Platform-operator only: clients, servers, the agent roster, platform settings."""
 
@@ -349,6 +410,9 @@ def client_admin_required(f):
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
             return jsonify({"error": "Unauthorized"}), 401
+        if not account_is_active(session.get("role"), session.get("org_id")):
+            session.clear()
+            return _inactive_account()
         if not is_owner() and session.get("role") != CLIENT_ADMIN_ROLE:
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
@@ -485,6 +549,9 @@ def login():
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
     if row and check_password_hash(row["password_hash"], password):
+        if not account_is_active(row["role"], row["org_id"]):
+            return _inactive_account()
+        session.permanent = True
         session["user_id"] = row["id"]
         session["role"] = row["role"]
         session["name"] = row["name"]
@@ -594,7 +661,7 @@ def me():
         row = conn.execute(
             "SELECT id, email, name, role, org_id, onboarded_at FROM users WHERE id = ?", (uid,)
         ).fetchone()
-    if not row:
+    if not row or not account_is_active(row["role"], row["org_id"]):
         session.clear()
         return jsonify({"user": None})
     payload = as_dict(row)
@@ -1014,6 +1081,8 @@ def bot_public(bot_id):
         row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
     if not row:
         return jsonify({"error": "Not found"}), 404
+    if not orgs_service.is_active(row["org_id"]):
+        return jsonify({"error": "Not found"}), 404
     # Branding falls back to the client's Business Profile, so the widget inherits
     # the business identity without per-bot configuration.
     prof = profile_mod.get_profile(bot_profile_org(row))
@@ -1146,6 +1215,8 @@ def chat():
         return jsonify({"reply": "Chatbot not found."}), 404
 
     bot = bot_to_dict(row)
+    if not orgs_service.is_active(bot.get("org_id")):
+        return jsonify({"reply": "This assistant is unavailable right now."}), 503
     try:
         reply, conversation_id, _payload = generate_reply(bot, user_message, history, conversation_id)
     except Exception as exc:
@@ -1187,6 +1258,9 @@ def _process_meta_event(channel, event):
         return
 
     bot = bot_to_dict(bot_row)
+    if not orgs_service.is_active(bot.get("org_id")):
+        app.logger.info("Meta event dropped for a paused client")
+        return
     conversation_id = "meta:%s:%s:%s" % (event["platform"], event["external_id"], event["sender_id"])
     history = load_history(bot["id"], conversation_id, limit=10)
     try:
@@ -3469,7 +3543,7 @@ def _lead_rate_ok(ip, limit=10, window=60):
 def public_lead(token):
     """Unauthenticated: this is what a form on a customer's page posts to."""
     org = _lead_org(token)
-    if org is None:
+    if org is None or not orgs_service.is_active(org):
         return jsonify({"error": "Unknown form"}), 404
     ip = ((request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
           or request.remote_addr or "?")
@@ -3481,6 +3555,14 @@ def public_lead(token):
                                                source=(data.get("source") or "form"))
     except contacts_service.ContactError as exc:
         return jsonify({"error": str(exc)}), 400
+    # The pasted-form path has no forms row, but it is still a lead the client must
+    # hear about. Queue the same notification the hosted form uses.
+    try:
+        import notifications
+        notifications.notify_lead_async(
+            org, {"name": "Website form"}, contact_id=item["id"], answers=data)
+    except Exception:
+        pass
     return jsonify({"ok": True, "contact_id": item["id"]}), 201
 
 
@@ -3575,7 +3657,7 @@ def public_form_page(slug):
 
     preview = _wants_preview()
     form = _form_for(slug, preview=preview)
-    if not form:
+    if not form or not orgs_service.is_active(form.get("org_id")):
         return ("This form is not available.", 404,
                 {"Content-Type": "text/plain; charset=utf-8"})
     suffix = "?preview=1" if preview else ""
@@ -3604,7 +3686,7 @@ def public_form_step(slug):
     import forms_page
 
     form = _form_for(slug, preview=_wants_preview())
-    if not form:
+    if not form or not orgs_service.is_active(form.get("org_id")):
         return jsonify({"error": "Unknown form"}), 404
     data = request.get_json(silent=True) or {}
     answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
@@ -3621,7 +3703,7 @@ def public_form_submit(slug):
 
     preview = _wants_preview()
     form = _form_for(slug, preview=preview)
-    if not form:
+    if not form or not orgs_service.is_active(form.get("org_id")):
         return jsonify({"error": "Unknown form"}), 404
     data = request.get_json(silent=True) or request.form or {}
     if str(data.get("company") or "").strip():
@@ -4607,6 +4689,10 @@ def admin_slash():
     stamp = ("%s (%s)" % (label, commit)).replace('"', "&quot;")
     return page.replace("<html", '<html data-build="%s"' % stamp, 1), 200, {
         "Content-Type": "text/html; charset=utf-8",
+        # The console must not be framed. The public forms and widget stay embeddable.
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
     }
 
 

@@ -1,4 +1,4 @@
-# Caddyfile for CMBGrowthAI
+# Caddyfile for AscendPlatform
 #
 # Caddy obtains and renews TLS certificates automatically - there is no certbot,
 # no nginx and no control panel to install. Point the domain's A/AAAA record at

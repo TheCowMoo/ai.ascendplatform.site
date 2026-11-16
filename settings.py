@@ -233,6 +233,8 @@ SPEC = [
             _f("GHL_REPLY_TO", "Reply-to address"),
             _f("PLATFORM_URL", "Platform URL",
                help="Used to build invitation links, e.g. https://ai.example.com."),
+            _f("NOTIFICATIONS_ENABLED", "Send client notifications", kind="bool", default="1",
+               help="Email the client's admins about new leads and automation notices."),
             _f("INVITE_EXPIRES_DAYS", "Invitation lifetime (days)", kind="int", default="7"),
             _f("INVITE_SUBJECT", "Invitation subject",
                default="You're invited to AscendPlatform"),

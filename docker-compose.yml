@@ -43,6 +43,9 @@ services:
       JOB_BACKEND: ${JOB_BACKEND:-redis}
       HOST: 0.0.0.0
       PORT: "8000"
+      # Caddy terminates HTTPS in the production stack, so the session cookie is
+      # always Secure here. A bare-metal/local run can override this in .env.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-1}
       SERVER_IP: ${SERVER_IP:-}
       # Which build is being served. deploy.sh exports these before recreating the
       # container, so /api/version names the commit actually running.

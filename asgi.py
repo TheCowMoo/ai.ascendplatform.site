@@ -1,8 +1,8 @@
 """
-ASGI entry point for CMBGrowthAI (stage S4).
+ASGI entry point for AscendPlatform (stage S4).
 
 FastAPI now owns the routes that benefit most from true async handling — the SSE
-job stream (which no longer holds a gunicorn worker thread) and the provider
+job stream (which no longer holds a synchronous worker thread) and the provider
 catalogue — while every other route is still served by the existing Flask app,
 mounted at "/" via a2wsgi.
 
@@ -62,6 +62,12 @@ def require_session(request: Request):
     data = flask_session(request)
     if not data.get("user_id"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    # The SSE stream is served by FastAPI, outside Flask's decorators. It has to apply
+    # the same suspension rule or a paused client could keep watching a live transcript.
+    if not flask_module.account_is_active(data.get("role"), data.get("org_id")):
+        raise HTTPException(
+            status_code=403,
+            detail="This client account is paused. Contact your agency to restore access.")
     return data
 
 

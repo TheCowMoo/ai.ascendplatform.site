@@ -77,6 +77,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `ga4.py` | GA4 service-account adapter (key by path) |
 | `versions.py` | `site_versions` — snapshot on publish, one-call restore |
 | `platform_mail.py` | The operator's own mail through GHL (contact upsert → conversation message) |
+| `notifications.py` | Best-effort lead and automation notices to a client's admins; client GHL scope, platform fallback |
 | `invites.py` | Single-use hashed invite tokens, accept → set password |
 | `scheduler.py` | Daily source sync, weekly `site_review` queueing, quip-free guards. The hourly DNS sweep (`SITE_VERIFY_MINUTES`, default 60) also re-checks sites with `org_id NULL` — skipping them kept a correctly-pointed domain "pending dns" forever. |
 | `admin/admin.js` | Single-page console: `#/platform/*`, `#/app/*`, `#/accept/<token>` |
@@ -214,6 +215,14 @@ customers reach you, How your team should write, Rules your team has learned, Co
 questions). Rules are one editable row each, learned suggestions appear above the form, and the
 raw knowledge text is hidden behind **Show exact text**.
 
+**Suspension is enforced in the app.** `orgs.status` is checked at login, in
+`login_required`/`client_admin_required`, and in `/api/auth/me`; a suspended client's
+existing session is cleared and further requests receive 403. The owner can still inspect
+the account. Public chatbot, Meta and hosted-form endpoints also refuse a paused org;
+published static websites remain live until removed. Sessions are permanent and expire
+after `SESSION_HOURS`; cookies are HttpOnly/SameSite and Secure by default in Compose, and
+API responses are `no-store`.
+
 **The first login.** `users.onboarded_at` (migration `0025`) is per account, not per
 browser, so a second device does not replay the welcome. Boot and the login handler call
 `firstRun()`, which marks the account through `POST /api/auth/onboarded` (idempotent) and
@@ -228,6 +237,16 @@ welcome starts the existing five-stop tour.
 token stored, plaintext returned once → GHL upserts the contact and sends → `#/accept/
 <token>` sets the password and starts the session. Resend rotates the token and kills
 the old link. A failed email still leaves a usable invitation (502 *with* the link).
+
+## Client notifications (2026-11-16)
+
+`notifications.py` is the client-facing operational channel. A form submission queues a
+best-effort “New lead from …” email to the org's `client_admin` users (falling back to
+any user with an address), and automation `notify` steps use the same service. It sends
+through the client's GoHighLevel account when configured, otherwise the platform's; if
+mail is not configured the lead is still stored and the public form still succeeds. The
+send runs in a daemon thread from `forms.submit`, so a slow provider cannot hold up the
+visitor. `tests/test_launch_guards.py` pins the recipient, escaping and delivery path.
 
 ## Model layer rules
 
@@ -275,7 +294,9 @@ Structural, `.env` only, restart required: `DATABASE_URL`, `SECRET_KEY`, `JOB_BA
    skipped with a message.
 6. **GA4's live token exchange is unverified** (signing and report parsing are tested).
 7. **GHL and Meta metric adapters** report "no adapter yet".
-8. **No backups, alerting or HA.** The largest real risk to running this for clients.
+8. **Alerting and HA still missing.** `deploy/backup.sh` and `deploy/restore.sh` now
+   provide encrypted backups and a fail-closed restore path, but there is no monitoring,
+   off-site replication or high availability yet. Run a restore drill with the runbook.
 9. **Worker health check is wrong** — it curls port 8000 on an arq process that serves
    no HTTP, so the worker shows `unhealthy` while working.
 10. **Caddy must log to a file** (`log { output file /var/log/caddy/access.log }`) and
@@ -290,6 +311,9 @@ git pull --ff-only
 docker compose up -d --build       # app runs alembic upgrade head first
 docker compose exec app python -c "import app, jobs; print(sorted(jobs.TASKS))"
 ```
+
+Backups and restore are in `deploy/backup.sh` / `deploy/restore.sh`; the operator runbook is
+`docs/operations.md`. A restore drill is required before the first paying client.
 
 `TASKS` should list `agent_team`, `echo`, `site_provision`, `site_review`.
 

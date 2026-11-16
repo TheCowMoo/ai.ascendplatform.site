@@ -305,6 +305,16 @@ def submit(form, answers, ip_hash=None, create_contact=True, store=True):
             })
         except Exception:
             pass
+        # A lead that only lands in the database is easy to miss. This is queued so a
+        # slow mail provider can never hold up the visitor's submit button.
+        if contact_id:
+            try:
+                import notifications
+                notifications.notify_lead_async(
+                    org_id, form, contact_id=contact_id, response_id=response_id,
+                    answers=answers)
+            except Exception:
+                pass
     return {"response_id": response_id, "contact_id": contact_id,
             "score": result, "outcome": bucket}
 

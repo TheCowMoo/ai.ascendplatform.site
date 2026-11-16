@@ -16,6 +16,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# Suites must never send real lead notices from a developer's configured mailbox.
+os.environ.setdefault("NOTIFICATIONS_ENABLED", "0")
+
 FAST_SUITES = (
     "test_model_info",
     "test_db_dialect",
@@ -39,6 +42,7 @@ FAST_SUITES = (
     "test_caddy_reload",
     "smoke_provisioner",
     "smoke_profile",
+    "test_launch_guards",
     "test_client_brief",
     "test_read_only_jobs",
     "test_publish_live",

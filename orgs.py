@@ -74,6 +74,22 @@ def count_orgs():
         return conn.execute("SELECT COUNT(*) FROM orgs").fetchone()[0]
 
 
+def is_active(org_id):
+    """Whether a client is allowed to use the workspace and its public endpoints.
+
+    A missing org is treated as active for legacy/owner-less rows; a row with status
+    ``suspended`` or ``cancelled`` is not. Deleting an org is already refused while it
+    has users or sites, so a missing client is not a normal live-account state.
+    """
+    if org_id is None:
+        return True
+    with get_connection() as conn:
+        row = conn.execute("SELECT status FROM orgs WHERE id = ?", (org_id,)).fetchone()
+    # Legacy/orphan rows have no org row but are still readable; only an explicit
+    # suspended/cancelled status closes the door.
+    return not row or (row["status"] or "active") == "active"
+
+
 def _clean(name, plan, status):
     name = (name or "").strip()
     if not name:

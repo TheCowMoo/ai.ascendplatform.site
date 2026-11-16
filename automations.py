@@ -9,6 +9,7 @@ allowed downstream of a `gate` node. The model may propose a graph without one, 
 validator refuses it. That is the whole safety story, in one function.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -469,7 +470,15 @@ async def _execute(step, automation, emit, job_id=None, context=None):
         jobs.submit(child)
         return "Started job #%d." % child
     if kind == "notify":
-        return "Would report: %s" % (config.get("message") or step.get("title") or "done")
+        message = str(config.get("message") or step.get("title") or "Automation finished.")
+        import notifications
+        result = await asyncio.to_thread(
+            notifications.notify_org, automation.get("org_id"),
+            "Update: %s" % (automation.get("name") or "your automation"), message)
+        if result.get("ok"):
+            return "Notified %s: %s" % (", ".join(result.get("sent") or []), message)
+        return "Could not notify the client: %s" % (
+            result.get("error") or "email is not configured")
     if kind == "condition":
         _, note = evaluate_condition(step, automation.get("org_id"))
         return note
