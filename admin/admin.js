@@ -1087,7 +1087,10 @@
     var container = el('div', 'container');
     var head = el('div', 'page-head');
     var hwrap = el('div');
-    hwrap.innerHTML = '<h2>Chatbots</h2><p>Create and manage chatbots for your clients.</p>';
+    hwrap.innerHTML = '<h2>Chatbots</h2><p>' +
+      (isOwner(state.user)
+        ? 'Create and manage chatbots for your clients.'
+        : 'Create and manage chatbots for your business.') + '</p>';
     head.appendChild(hwrap);
     var newBtn = el('button', 'btn btn-primary', '+ New Chatbot');
     newBtn.onclick = function () { location.hash = '#/bot/new'; };
@@ -2660,9 +2663,13 @@
     head.innerHTML = owner
       ? '<div><h2>Sites</h2><p>Point a domain at this server and the platform serves it over HTTPS.</p></div>'
       : '<div><h2>Website</h2><p>Connect your domain and we will set up the secure site for you.</p></div>';
-    var addBtn = el('button', 'btn btn-primary', owner ? '+ New site' : '+ Connect a domain');
-    addBtn.onclick = function () { siteEditor(null, refresh); };
-    head.appendChild(addBtn);
+    var manager = canAdmin(state.user);
+    if (manager) {
+      var addBtn = el('button', 'btn btn-primary',
+        owner ? '+ New site' : '+ Connect a domain');
+      addBtn.onclick = function () { siteEditor(null, refresh); };
+      head.appendChild(addBtn);
+    }
     container.appendChild(head);
 
     var banner = el('div', 'panel-card');
@@ -2689,7 +2696,12 @@
         grid.innerHTML = '';
         var sites = d.sites || [];
         if (!sites.length) {
-          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' + icon('globe') + '</div><strong>No websites yet</strong><p>Add a domain and point its DNS at this server to go live.</p></div>';
+          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="big">' +
+            icon('globe') + '</div><strong>No websites yet</strong><p>' +
+            (manager
+              ? 'Add a domain and point its DNS at this server to go live.'
+              : 'Ask a workspace admin to connect your website.') +
+            '</p></div>';
           return;
         }
         sites.forEach(function (site) { grid.appendChild(siteCard(site, refresh)); });
@@ -2703,6 +2715,7 @@
 
   function siteCard(site, refresh) {
     var owner = isOwner(state.user);
+    var manager = canAdmin(state.user);
     var card = el('div', 'bot-card');
     var top = el('div', 'bot-card-top');
     var av = el('div', 'bot-avatar');
@@ -2765,13 +2778,13 @@
     };
     actions.appendChild(dns);
     actions.appendChild(check);
-    actions.appendChild(provision);
+    if (manager) actions.appendChild(provision);
     if (owner) {
       var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
       edit.onclick = function () { siteEditor(site, refresh); };
       actions.appendChild(edit);
     }
-    if (canAdmin(state.user)) {
+    if (manager) {
       var del = el('button', 'btn btn-danger btn-sm', 'Remove domain');
       del.onclick = function () {
         if (!confirm('Remove ' + site.domain + '? ' +
@@ -5304,6 +5317,70 @@
     return container;
   }
 
+  // Shared source editor for the operator's Platform page and the client's Analytics
+  // page. The client only supplies the GA4 property; the service-account key is a
+  // platform setting, so a non-technical client is not asked for a server file path.
+  function analyticsSourceForm(source, kinds, orgId, operator, onSaved, ga4Email) {
+    var isEdit = !!(source && source.id);
+    var fields = [];
+    if (operator) {
+      fields.push({
+        name: 'kind', label: 'Source', type: 'select',
+        options: (kinds || []).map(function (k) { return k.kind; }),
+        value: source ? source.kind : ((kinds && kinds[0]) ? kinds[0].kind : 'ga4')
+      });
+    }
+    fields.push({
+      name: 'external_id',
+      label: operator ? 'Account / property / location ID' : 'Google Analytics property ID',
+      value: source ? source.external_id : '',
+      placeholder: operator ? 'Location, property or ad account ID' : 'e.g. 123456789',
+      help: operator
+        ? 'GHL: location id. GA4: properties/123456789. Meta: act_1234567890.'
+        : 'Find this in Google Analytics under Admin → Property settings.' +
+          (ga4Email
+            ? ' First share the property with ' + ga4Email + ' (Viewer is enough).'
+            : ' Ask your agency for the service-account email, then share the property with it.')
+    });
+    fields.push({
+      name: 'label',
+      label: operator ? 'Label (optional)' : 'Name this connection (optional)',
+      value: source ? source.label : '',
+      placeholder: 'e.g. Main website'
+    });
+    if (operator) {
+      fields.push({
+        name: 'credential_ref', label: 'Credential reference (advanced)',
+        value: source ? source.credential_ref : '',
+        help: 'Optional path to a mounted key file. Leave blank to use the platform key.'
+      });
+    }
+    formModal(isEdit ? 'Edit analytics source' : 'Connect analytics', fields,
+      function (data, fail, ok) {
+        var kind = operator ? data.kind : (source ? source.kind : 'ga4');
+        var external_id = String(data.external_id || '').trim();
+        // The GA4 API addresses a property as "properties/<id>". A client enters the
+        // numeric ID from GA4 Admin; the operator can type the full resource name.
+        if (!operator && kind === 'ga4' && external_id &&
+            external_id.indexOf('properties/') !== 0) {
+          external_id = 'properties/' + external_id.replace(/^\/+/, '');
+        }
+        var payload = {
+          kind: kind,
+          external_id: external_id,
+          label: data.label,
+          credential_ref: operator ? (data.credential_ref || '') : ''
+        };
+        if (source && source.id) payload.id = source.id;
+        if (operator && orgId) payload.org_id = Number(orgId);
+        api('POST', '/api/data-sources', payload).then(function () {
+          ok();
+          toast('Analytics connection saved', true);
+          if (onSaved) onSaved();
+        }).catch(function (e) { fail(e.message); });
+      });
+  }
+
   // ---------- Platform: data sources ----------
   // A page of its own rather than a card inside viewClient: sources are per-org data
   // with their own sync state, and this keeps the client detail view untouched.
@@ -5356,7 +5433,9 @@
         .then(function (d) {
           body.innerHTML = '';
           var add = el('button', 'btn btn-primary', '+ Add source');
-          add.onclick = function () { sourceForm(d.kinds, null); };
+          add.onclick = function () {
+            analyticsSourceForm(null, d.kinds, state.org, true, loadSources);
+          };
           body.appendChild(add);
           var sources = d.sources || [];
           if (!sources.length) {
@@ -5379,6 +5458,11 @@
               '<td>' + (source.enabled ? 'enabled' : 'disabled') + '</td>' +
               '<td class="muted">' + esc((source.last_sync_at || 'never').slice(0, 16)) + '</td>';
             var td = el('td', 'row-actions');
+            var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+            edit.onclick = function () {
+              analyticsSourceForm(source, d.kinds, state.org, true, loadSources);
+            };
+            td.appendChild(edit);
             var del = el('button', 'btn btn-danger btn-sm', 'Remove');
             del.onclick = function () {
               api('DELETE', '/api/data-sources/' + source.id).then(loadSources)
@@ -5393,33 +5477,7 @@
         }).catch(function (e) { toast(e.message, false); });
     }
 
-    function sourceForm(kinds, source) {
-      formModal(source ? 'Edit source' : 'Add a data source', [
-        { name: 'kind', label: 'Kind', type: 'select',
-          options: kinds.map(function (k) { return k.kind; }) },
-        { name: 'external_id', label: 'Account / property / location id',
-          value: source ? source.external_id : '',
-          help: 'GHL: the location id. GA4: properties/123456789. Meta: act_1234567890.' },
-        { name: 'label', label: 'Label (optional)', value: source ? source.label : '' },
-        { name: 'credential_ref', label: 'Credential reference',
-          value: source ? source.credential_ref : '',
-          help: 'Path to a mounted key file. Secrets are references here, not values.' }
-      ], function (data, fail, ok) {
-        var payload = {
-          kind: data.kind,
-          external_id: data.external_id,
-          label: data.label,
-          credential_ref: data.credential_ref
-        };
-        if (state.org) payload.org_id = Number(state.org);
-        api('POST', '/api/data-sources', payload).then(function () {
-          ok();
-          toast('Source saved', true);
-          loadSources();
-        }).catch(function (e) { fail(e.message); });
-      });
-    }
-
+    // The shared editor lives above; this page is the operator's cross-client view.
     // Start on the client picked in the sidebar switcher, so this page and the rest of
     // the console agree. The picker stays: syncing and configuring sources is per client
     // and the operator may well want to look at a different one without leaving.
@@ -5433,9 +5491,20 @@
   // ---------- Analytics: the brief, for humans ----------
   function viewAnalytics() {
     var container = el('div', 'container');
+    var owner = isOwner(state.user);
+    var canManage = owner || canAdmin(state.user);
+    var days = 7;
+    var sources = [];
+    var sourceKinds = [];
+    var ga4Email = '';
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Analytics</h2><p class="muted">This window against the ' +
-      'one before it. Same numbers the weekly review reads.</p></div>';
+    head.innerHTML = '<div><h2>Analytics</h2><p class="muted">' +
+      (owner ? 'Traffic for this client, compared with the previous 7 days.'
+             : 'How your website is doing, compared with the previous 7 days.') +
+      '</p></div>';
+    var refresh = el('button', 'btn btn-ghost', 'Refresh');
+    refresh.onclick = function () { load(); };
+    head.appendChild(refresh);
     container.appendChild(head);
 
     // The tenant comes from the session, like every other page: the sidebar switcher is
@@ -5443,7 +5512,16 @@
     var body = el('div');
     container.appendChild(body);
 
-    function money(n) {
+    var SOURCE_LABELS = {
+      caddy: 'Website logs', ga4: 'Google Analytics 4',
+      ghl: 'GoHighLevel', meta: 'Meta ads'
+    };
+
+    function sourceLabel(kind) {
+      return SOURCE_LABELS[kind] || String(kind || 'Analytics source');
+    }
+
+    function shortNumber(n) {
       n = Number(n || 0);
       return n >= 10000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     }
@@ -5454,34 +5532,143 @@
       var cls = d === 0 ? 'pill flat' : (d > 0 ? 'pill up' : 'pill down');
       box.innerHTML =
         '<div class="kpi-label">' + esc(label) + '</div>' +
-        '<div class="kpi-value">' + esc(money(value)) + '</div>' +
+        '<div class="kpi-value">' + esc(shortNumber(value)) + '</div>' +
         '<div class="' + cls + '">' + (d > 0 ? '▲ ' : (d < 0 ? '▼ ' : '')) +
           Math.abs(d) + '%</div>';
       return box;
     }
 
-    function render() {
-      var q = '/api/analytics/summary?days=7';
-      api('GET', q).then(function (d) {
-        body.innerHTML = '';
-        var now = d.current || {};
-        var change = d.change || {};
-        if (!now.pageviews && !now.sessions) {
-          var blank = el('div', 'panel-card empty-state');
-          blank.innerHTML = '<div class="empty-icon">◔</div>' +
-            '<p><strong>No traffic recorded yet.</strong></p>' +
-            '<p class="muted">Sync site logs, or connect a GA4 property for this client.</p>';
-          body.appendChild(blank);
-          return;
+    function emptyPanel(title, text, action) {
+      var panel = el('div', 'panel-card empty-state');
+      panel.innerHTML = '<div class="big">' + icon('trend') + '</div>' +
+        '<strong>' + esc(title) + '</strong><p>' + esc(text) + '</p>';
+      if (action) panel.appendChild(action);
+      return panel;
+    }
+
+    function connectButton(label) {
+      var button = el('button', 'btn btn-primary btn-sm', label || 'Connect analytics');
+      button.onclick = function () {
+        analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email);
+      };
+      return button;
+    }
+
+    function syncSource(source, button) {
+      if (!source || !source.id) return;
+      button.disabled = true;
+      api('POST', '/api/data-sources/' + source.id + '/sync', {})
+        .then(function (result) {
+          toast(result.rows ? 'Refreshed ' + result.rows + ' rows' : 'Analytics refreshed', true);
+          load();
+        })
+        .catch(function (e) { toast(e.message, false); })
+        .finally(function () { button.disabled = false; });
+    }
+
+    function sourceCard(hasTraffic) {
+      // With no traffic and no source, the empty state already owns the primary action;
+      // a second "connect" card below it would compete with it.
+      if (!sources.length && !hasTraffic) return null;
+      if (!canManage && !sources.length) return null;
+      var panel = el('div', 'panel-card');
+      var headRow = el('div', 'panel-head');
+      headRow.appendChild(el('h3', 'card-title', 'Traffic sources'));
+      if (canManage) {
+        var add = el('button', 'btn btn-ghost btn-sm', '+ Connect source');
+        add.onclick = function () {
+          analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email);
+        };
+        headRow.appendChild(add);
+      }
+      panel.appendChild(headRow);
+      if (!sources.length) {
+        panel.appendChild(el('p', 'muted', canManage
+          ? 'Connect a source to start measuring traffic for this workspace.'
+          : 'Your workspace admin can connect an analytics source.'));
+        return panel;
+      }
+      sources.forEach(function (source) {
+        var row = el('div', 'source-row');
+        var copy = el('div');
+        copy.innerHTML = '<strong>' + esc(source.label || sourceLabel(source.kind)) + '</strong>' +
+          '<div class="muted">' + esc(sourceLabel(source.kind)) +
+          (source.external_id ? ' · ' + esc(source.external_id) : '') +
+          (source.last_sync_at ? ' · Updated ' + esc(String(source.last_sync_at).slice(0, 16))
+                               : ' · Not synced yet') + '</div>' +
+          (source.last_error
+            ? '<div class="form-error">' +
+              esc(owner ? String(source.last_error).slice(0, 140)
+                        : 'This connection needs attention. Try Refresh or ask your admin.') +
+              '</div>'
+            : '');
+        row.appendChild(copy);
+        var actions = el('div', 'row-actions');
+        // Client admins manage the GA4 connection in this workspace; an older
+        // platform-managed source (GHL/Meta/Caddy) stays visible but read-only.
+        if (canManage && (owner || source.kind === 'ga4')) {
+          if (source.kind === 'ga4') {
+            var sync = el('button', 'btn btn-ghost btn-sm', 'Refresh');
+            sync.onclick = function () { syncSource(source, sync); };
+            actions.appendChild(sync);
+          }
+          var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+          edit.onclick = function () {
+            analyticsSourceForm(source, sourceKinds, null, owner, load, ga4Email);
+          };
+          actions.appendChild(edit);
+          var remove = el('button', 'btn btn-danger btn-sm', 'Remove');
+          remove.onclick = function () {
+            if (!confirm('Remove this analytics connection?')) return;
+            api('DELETE', '/api/data-sources/' + source.id)
+              .then(load).catch(function (e) { toast(e.message, false); });
+          };
+          actions.appendChild(remove);
+        } else if (canManage) {
+          actions.appendChild(el('span', 'muted', 'Managed by your agency'));
         }
+        row.appendChild(actions);
+        panel.appendChild(row);
+      });
+      return panel;
+    }
+
+    function render(d) {
+      body.innerHTML = '';
+      var now = d.current || {};
+      var change = d.change || {};
+      var hasTraffic = !!(now.pageviews || now.sessions);
+      if (!hasTraffic) {
+        var hasSource = sources.length > 0;
+        var action = canManage && !hasSource ? connectButton('Connect analytics') : null;
+        body.appendChild(emptyPanel(
+          hasSource ? 'No visitors in the last ' + days + ' days.' : 'No traffic recorded yet.',
+          hasSource
+            ? 'Your analytics source is connected, but it has no visitors in this window.'
+            : (canManage
+               ? 'Connect Google Analytics, or let the automatic website logs do the work once your site is live.'
+               : 'Your workspace admin can connect an analytics source for this workspace.'),
+          action));
+        if (canManage && hasSource && days === 7) {
+          var wider = el('button', 'btn btn-ghost btn-sm', 'View 30 days');
+          wider.onclick = function () { days = 30; load(); };
+          body.lastChild.appendChild(wider);
+        }
+      } else {
         var grid = el('div', 'kpi-grid');
         grid.appendChild(card('Pageviews', now.pageviews, change.pageviews));
         grid.appendChild(card('Sessions', now.sessions, change.sessions));
         grid.appendChild(card('Errors', now.errors, change.errors));
         body.appendChild(grid);
-        body.appendChild(el('p', 'fine-print', 'Sources: ' + (d.sources || []).join(', ') +
+        var measured = (d.sources || []).map(sourceLabel).join(', ');
+        body.appendChild(el('p', 'fine-print',
+          'Measured from ' + (measured || 'no connected source') +
           ' · since ' + esc(d.since)));
-
+        if (days === 7) {
+          var toggle = el('button', 'btn btn-ghost btn-sm', 'View 30 days');
+          toggle.onclick = function () { days = 30; load(); };
+          body.appendChild(toggle);
+        }
         var pages = now.top_pages || [];
         if (pages.length) {
           var top = Math.max.apply(null, pages.map(function (p) { return p.views || 0; })) || 1;
@@ -5499,18 +5686,42 @@
           cardBox.appendChild(list);
           body.appendChild(cardBox);
         }
-      }).catch(function (e) { toast(e.message, false); });
+      }
+      var panel = sourceCard(hasTraffic);
+      if (panel) body.appendChild(panel);
     }
 
-    api('GET', '/api/session/org').then(function (state) {
-      if (state && state.acting_org) { render(); return; }
-      var hint = el('div', 'panel-card empty-state');
-      hint.innerHTML = '<div class="empty-icon">◔</div>' +
-        '<p><strong>Pick a client to see its traffic.</strong></p>' +
-        '<p class="muted">Use the workspace switcher under the logo.</p>';
-      body.appendChild(hint);
-    }).catch(function () { render(); });
+    function load() {
+      var workspace = owner ? state.user.acting_org
+                            : (state.user.org && state.user.org.id);
+      if (!workspace) {
+        body.innerHTML = '';
+        body.appendChild(emptyPanel(
+          owner ? 'Choose a client to see analytics.' : 'No workspace is attached.',
+          owner ? 'Use the workspace switcher under the logo.'
+                : 'Ask your agency to attach this login to a workspace.'));
+        return;
+      }
+      body.innerHTML = '<div class="muted" style="padding:16px">Loading analytics…</div>';
+      Promise.all([
+        api('GET', '/api/analytics/summary?days=' + days),
+        api('GET', '/api/data-sources')
+      ]).then(function (results) {
+        var data = results[0] || {};
+        var sourceData = results[1] || {};
+        sources = sourceData.sources || [];
+        sourceKinds = sourceData.kinds || [];
+        ga4Email = sourceData.ga4_email || '';
+        canManage = canManage || !!sourceData.can_manage;
+        render(data);
+      }).catch(function (e) {
+        body.innerHTML = '';
+        body.appendChild(emptyPanel('Analytics is unavailable.',
+          e.message || 'Please try again in a moment.'));
+      });
+    }
 
+    load();
     return container;
   }
 
@@ -8440,10 +8651,10 @@
   // are the three things a client checks. Editing arrives next; today a form can be created,
   // published and read, which is enough to start collecting real answers.
   function viewForms() {
-    var container = el('div');
-    var head = el('div');
-    head.innerHTML = '<h2>Forms</h2><p class="muted">Forms, surveys and quizzes. Each one ' +
-      'lives at its own link, and every answer lands in the list beside it.</p>';
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Forms</h2><p class="muted">Forms, surveys and quizzes. ' +
+      'Each one lives at its own link, and every answer lands in the list beside it.</p></div>';
     container.appendChild(head);
 
     var bar = el('div', 'chip-input');

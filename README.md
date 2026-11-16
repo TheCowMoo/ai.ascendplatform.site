@@ -162,6 +162,8 @@ is why `tests/test_migrations.py` runs the whole chain against an empty database
 | `SSH_TIMEOUT` / `SSH_CMD_TIMEOUT` / `SSH_MAX_OUTPUT` | SSH connect timeout, command timeout, output cap |
 | `SMTP_*` | Outbound email for the `send_email` tool |
 | `NOTIFICATIONS_ENABLED` | Email client admins about new leads and automation notices (`1` by default) |
+| `GA4_SERVICE_ACCOUNT_KEY_PATH` | Mounted Google Analytics service-account JSON used by GA4 source sync |
+| `GA4_SERVICE_ACCOUNT_EMAIL` | Service-account email shown to clients so they can grant GA4 property access |
 | `ARTIFACTS_DIR` | Where generated images/files are written |
 | `PEXELS_API_KEY` | Pexels stock photography for `search_photos`, `fetch_photo` and `import_photo_to_media` (free key at pexels.com/api) |
 | `PEXELS_PER_PAGE` / `PEXELS_TIMEOUT` / `PEXELS_MAX_BYTES` | Search page size, request timeout, download size cap |

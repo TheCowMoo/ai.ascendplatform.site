@@ -43,6 +43,7 @@ FAST_SUITES = (
     "smoke_provisioner",
     "smoke_profile",
     "test_launch_guards",
+    "test_analytics_sources",
     "test_client_brief",
     "test_read_only_jobs",
     "test_publish_live",

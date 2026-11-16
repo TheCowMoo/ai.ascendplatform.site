@@ -243,6 +243,21 @@ SPEC = [
         ],
     },
     {
+        "id": "analytics",
+        "label": "Analytics",
+        "icon": "trend",
+        "blurb": "The platform-owned Google Analytics service account. Clients connect "
+                 "their own property; this key lets the sync read it.",
+        "fields": [
+            _f("GA4_SERVICE_ACCOUNT_KEY_PATH", "GA4 service-account key path",
+               help="Path to the mounted service-account JSON inside the app container. "
+                    "Clients only need to share their GA4 property with its client_email."),
+            _f("GA4_SERVICE_ACCOUNT_EMAIL", "GA4 service-account email",
+               help="Shown to clients in the connection form so they can grant read access "
+                    "to their GA4 property."),
+        ],
+    },
+    {
         "id": "hosting",
         "label": "Servers & hosting",
         "icon": "server",

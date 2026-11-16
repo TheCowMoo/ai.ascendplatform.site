@@ -13,6 +13,10 @@ no user-level rows, so no PII can accumulate here even by accident.
 from db import get_connection, now_str
 
 KINDS = ("ghl", "caddy", "ga4", "meta")
+# A client workspace may configure only the adapters that are actually ready for it.
+# Caddy logs are platform infrastructure (and are read automatically); GHL/Meta adapters
+# are not written yet. The operator can still configure the full catalogue.
+CLIENT_KINDS = ("ga4",)
 
 LABELS = {
     "ghl": "GoHighLevel sub-account",
@@ -68,6 +72,14 @@ def save_source(data, source_id=None, org_id=None):
     label = (data.get("label") or "").strip()
     credential = (data.get("credential_ref") or "").strip()
     enabled = 1 if data.get("enabled", True) else 0
+    if source_id is not None:
+        existing = get_source(source_id)
+        if not existing:
+            raise SourceError("That data source no longer exists.")
+        # A tenant may only edit its own binding. Without this check, a client could
+        # change another workspace's source by guessing its id.
+        if org_id is not None and existing.get("org_id") != org_id:
+            raise SourceError("That data source was not found for this workspace.")
     with get_connection() as conn:
         if source_id is None:
             cur = conn.execute(

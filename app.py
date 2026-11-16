@@ -4497,7 +4497,7 @@ def manager_chat():
 
 
 @app.route("/api/analytics/summary", methods=["GET"])
-@client_admin_required
+@login_required
 def analytics_summary():
     """The weekly brief as data: current vs previous window, deltas, pages, errors.
 
@@ -4522,21 +4522,32 @@ def analytics_summary():
 
 
 @app.route("/api/data-sources", methods=["GET"])
-@client_admin_required
+@login_required
 def list_data_sources():
-    """Where this client's numbers come from. The operator may pass ?org_id=."""
+    """Where this workspace's numbers come from.
+
+    Members may read this list; only a client admin or the operator may change it.
+    A login attached to no workspace gets an empty list, never the unscoped catalogue.
+    """
     org = current_org()
-    if org is None and is_owner() and request.args.get("org_id"):
+    if org is None:
+        if not is_owner() or not request.args.get("org_id"):
+            return jsonify({"sources": [], "kinds": [], "can_manage": False})
         try:
             org = int(request.args["org_id"])
         except ValueError:
             return jsonify({"error": "org_id must be a number"}), 400
+    kinds = analytics_service.KINDS if is_owner() else analytics_service.CLIENT_KINDS
     return jsonify({
         "sources": analytics_service.sources(org),
         "kinds": [
             {"kind": kind, "label": analytics_service.LABELS[kind]}
-            for kind in analytics_service.KINDS
+            for kind in kinds
         ],
+        "can_manage": is_owner() or session.get("role") == CLIENT_ADMIN_ROLE,
+        # A public service-account address, not a secret. The client needs it to grant
+        # read access to their GA4 property before the first sync can work.
+        "ga4_email": settings.get("GA4_SERVICE_ACCOUNT_EMAIL") or "",
     })
 
 
@@ -4546,15 +4557,32 @@ def save_data_source():
     data = request.get_json(silent=True) or {}
     org = current_org()
     if org is None:
+        # Only the operator may choose a workspace explicitly. A client login with no
+        # workspace must never turn payload org_id into access to someone else's data.
+        if not is_owner():
+            return jsonify({"error": "Pick a client first"}), 400
         org = data.get("org_id")
-        org = int(org) if org not in (None, "") else None
+        try:
+            org = int(org) if org not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "org_id must be a number"}), 400
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    kind = str(data.get("kind") or "").strip().lower()
+    if not is_owner() and kind not in analytics_service.CLIENT_KINDS:
+        return jsonify({"error": "That analytics source is not available here."}), 400
+    source_id = data.get("id") or None
+    if source_id:
+        existing = analytics_service.get_source(source_id)
+        if not existing or not can_access_org(existing.get("org_id")):
+            return jsonify({"error": "Not found"}), 404
     try:
         source = analytics_service.save_source(
-            data, source_id=data.get("id") or None, org_id=org
+            data, source_id=source_id, org_id=org
         )
     except analytics_service.SourceError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"source": source}), 200 if data.get("id") else 201
+    return jsonify({"source": source}), 200 if source_id else 201
 
 
 @app.route("/api/sites/<int:site_id>/versions", methods=["GET"])
@@ -4601,12 +4629,44 @@ def sync_data_sources():
     return jsonify(site_logs.sync())
 
 
+@app.route("/api/data-sources/<int:source_id>/sync", methods=["POST"])
+@client_admin_required
+def sync_data_source(source_id):
+    """Refresh one workspace-owned source without touching the global log sweep."""
+    source = analytics_service.get_source(source_id)
+    if not source or not can_access_org(source.get("org_id")):
+        return jsonify({"error": "Not found"}), 404
+    kind = source.get("kind")
+    if kind == "caddy":
+        if not is_owner():
+            return jsonify({"error": "Site logs refresh automatically."}), 403
+        import site_logs
+
+        return jsonify(site_logs.sync())
+    if kind != "ga4":
+        return jsonify({"error": "This source refreshes automatically."}), 400
+    run = analytics_service.start_sync(source["id"])
+    try:
+        import ga4
+
+        result = ga4.sync(source)
+    except Exception as exc:
+        analytics_service.finish_sync(run, "error", error=str(exc))
+        app.logger.warning("GA4 source %s sync failed: %s", source["id"], exc)
+        return jsonify({"error": "Google Analytics could not be refreshed. Check the "
+                                 "connection details."}), 502
+    analytics_service.finish_sync(run, "ok", rows=result.get("rows", 0))
+    return jsonify(result)
+
+
 @app.route("/api/data-sources/<int:source_id>", methods=["DELETE"])
 @client_admin_required
 def delete_data_source(source_id):
     existing = analytics_service.get_source(source_id)
     if not existing or not can_access_org(existing.get("org_id")):
         return jsonify({"error": "Not found"}), 404
+    if not is_owner() and existing.get("kind") not in analytics_service.CLIENT_KINDS:
+        return jsonify({"error": "That source is managed by your agency."}), 403
     analytics_service.delete_source(source_id)
     return jsonify({"ok": True})
 

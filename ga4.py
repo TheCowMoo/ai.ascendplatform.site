@@ -12,6 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import settings
+
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 
@@ -107,7 +109,18 @@ def sync(source):
     """Pull one GA4 source and store it. Returns a summary; raises on failure."""
     import analytics
 
-    token = access_token(source["credential_ref"])
+    # A client only needs to share their GA4 property with the platform's service
+    # account; the operator configures this key once. Per-source paths remain possible
+    # for an operator whose deployment uses a different key per client.
+    key_path = (source.get("credential_ref") or "").strip()
+    if not key_path:
+        key_path = settings.get("GA4_SERVICE_ACCOUNT_KEY_PATH")
+    if not key_path:
+        raise RuntimeError(
+            "Google Analytics is not configured: add the service-account key path in "
+            "Platform settings, then try again."
+        )
+    token = access_token(key_path)
     report = run_report(source["external_id"], token)
     rows = analytics.record_metrics(source["org_id"], "ga4", to_points(report))
     return {"ok": True, "rows": rows}

@@ -238,6 +238,17 @@ token stored, plaintext returned once → GHL upserts the contact and sends → 
 <token>` sets the password and starts the session. Resend rotates the token and kills
 the old link. A failed email still leaves a usable invitation (502 *with* the link).
 
+## Analytics workspaces (2026-11-17)
+
+Analytics access is role-aware and workspace-scoped. Members may read the brief and
+source labels; client admins may add/edit/remove their own GA4 source and refresh it;
+the operator may do the same for any client and keeps the global site-log sync. GA4
+uses `GA4_SERVICE_ACCOUNT_KEY_PATH` as a platform fallback, so a client only supplies a
+property ID after sharing the property with the service account. `save_source` and the
+data-source routes verify ownership before updates; a no-workspace login gets an empty
+source list, never the unscoped catalogue. The Analytics empty state is state-aware and
+offers only actions the current role can perform.
+
 ## Client notifications (2026-11-16)
 
 `notifications.py` is the client-facing operational channel. A form submission queues a

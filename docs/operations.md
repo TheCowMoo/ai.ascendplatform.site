@@ -73,6 +73,24 @@ The platform owner is never blocked, so support can still inspect the account. I
 client loses their password, an operator resets it from the client's Team page; there is
 no public forgot-password flow yet. Keep that support path in the onboarding email.
 
+## Analytics sources
+
+Analytics is workspace-scoped. A client admin can connect a Google Analytics 4
+property from Workspace → Analytics → Traffic sources; a member sees the numbers and
+source labels read-only. The operator can do the same for any client from Platform →
+Data sources, or while acting as that client.
+
+Before clients connect GA4, set `GA4_SERVICE_ACCOUNT_KEY_PATH` and
+`GA4_SERVICE_ACCOUNT_EMAIL` under Platform → Analytics. The client shares their GA4
+property with that service account's email (Viewer is enough) and enters only the
+numeric property ID.
+The daily scheduler refreshes GA4 sources; the per-source **Refresh** action is for a
+client admin or the operator. Site logs are platform infrastructure and are refreshed
+by the operator's global sync, not by a client.
+
+All source reads and writes are scoped to the acting workspace. A source update with an
+id from another workspace must return 404.
+
 ## Notifications
 
 Form submissions now queue a “New lead” email to the client's `client_admin` users.
