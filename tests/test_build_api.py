@@ -19,8 +19,10 @@ os.environ.pop("REDIS_URL", None)
 import app as appmod  # noqa: E402
 import builds  # noqa: E402
 import db  # noqa: E402
+import forms as forms_service  # noqa: E402
 import jobs  # noqa: E402
 import orgs as orgs_service  # noqa: E402
+import sites as sites_service  # noqa: E402
 import templates_service  # noqa: E402
 
 db.init_db()
@@ -113,6 +115,59 @@ def test_a_designed_template_preview_is_not_escaped():
     check("plain template text is still escaped", "&lt;b&gt;world&lt;/b&gt;" in legacy["html"], True)
 
 
+def test_a_builds_form_link_follows_the_domain_as_it_goes_live():
+    """A completed build must not freeze the platform URL in its result.
+
+    The website build often creates the site before it is live, so the form link it
+    stores is the safe platform fallback. Once the domain is live, every consumer of
+    the build (the card, the Manager) has to read the same live link as the Forms tab.
+    """
+    org = orgs_service.create_org({"name": "API Form Links"})["id"]
+    form = forms_service.create_form({
+        "name": "Build callback", "kind": "form",
+        "questions": [{"id": "email", "label": "Email", "type": "email",
+                       "page": 0, "required": True}],
+    }, org)
+    form = forms_service.update_form(form["id"], org, {"status": "published"})
+    site = sites_service.create_site({"domain": "build-links.test"}, org_id=org)
+    platform = forms_service.public_url(form)
+    slug = form["slug"]
+
+    build = builds.create(org, 0, "website", {"business_name": "Links"})
+    builds.finish(build["id"], {
+        "kind": "website",
+        "form_id": form["id"],
+        "form_url": platform,
+        "form_links": [{"label": "Contact us", "form_id": form["id"],
+                        "slug": slug, "url": "/f/" + slug,
+                        "public_url": platform}],
+    })
+    c = client(org)
+    before = c.get("/api/builds/%d" % build["id"]).get_json()["build"]
+    check("a build made before the domain is live keeps the platform link",
+          before["result"]["form_url"], platform)
+
+    sites_service.update_site(site["id"], {"status": "live"})
+    after = c.get("/api/builds/%d" % build["id"]).get_json()["build"]
+    live = "https://build-links.test/f/" + slug
+    check("the build's form URL follows the live domain", after["result"]["form_url"], live)
+    check("and so does its form button",
+          after["result"]["form_links"][0]["public_url"], live)
+
+    # Results written before form_id/slug metadata existed still stored a usable URL.
+    legacy = builds.create(org, 0, "form", {"purpose": "leads"})
+    builds.finish(legacy["id"], {
+        "kind": "form", "form_url": platform,
+        "form_links": [{"label": "Old button", "url": "/f/" + slug,
+                        "public_url": platform}],
+    })
+    old = c.get("/api/builds/%d" % legacy["id"]).get_json()["build"]
+    check("a legacy result is resolved by its stored slug",
+          old["result"]["form_url"], live)
+    check("a legacy form button is resolved too",
+          old["result"]["form_links"][0]["public_url"], live)
+
+
 def test_another_client_cannot_see_it():
     first = orgs_service.create_org({"name": "API First"})["id"]
     second = orgs_service.create_org({"name": "API Second"})["id"]
@@ -127,6 +182,7 @@ if __name__ == "__main__":
     test_requires_login_and_a_client()
     test_the_interview_advances_and_a_job_starts()
     test_a_designed_template_preview_is_not_escaped()
+    test_a_builds_form_link_follows_the_domain_as_it_goes_live()
     test_another_client_cannot_see_it()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

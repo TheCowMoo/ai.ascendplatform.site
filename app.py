@@ -3750,6 +3750,66 @@ def _build_for_request(build_id, org_id):
                               step=request.args.get("step"))
 
 
+def _with_current_form_links(build, org):
+    """Point a stored build result at its forms' current public links.
+
+    A build records the link it saw at the time it ran. A guided website often creates
+    the site before that site is live, so the stored link is the platform fallback. When
+    the domain goes live later, a build card that replayed the stored result kept sending
+    people to the platform even though the Forms tab already used the client domain.
+    Resolving here keeps one link decision (``forms.public_url``) for both views.
+    """
+    import forms as forms_service
+
+    if not build:
+        return build
+    result = build.get("result") or {}
+    if not result:
+        return build
+
+    def form_for(link):
+        form_id = link.get("form_id")
+        if form_id:
+            try:
+                found = forms_service.get_form(int(form_id), org)
+            except (TypeError, ValueError):
+                found = None
+            if found:
+                return found
+        slug = str(link.get("slug") or "").strip()
+        if not slug:
+            for key in ("public_url", "url"):
+                value = str(link.get(key) or "")
+                if "/f/" in value:
+                    slug = (value.split("/f/", 1)[1].split("?", 1)[0]
+                            .split("#", 1)[0].strip("/"))
+                    break
+        if not slug:
+            return None
+        return forms_service.get_by_slug(slug, published_only=False, org_id=org)
+
+    for link in result.get("form_links") or []:
+        if not isinstance(link, dict):
+            continue
+        form = form_for(link)
+        if form:
+            link["public_url"] = forms_service.link_for_org(form, org)
+            link.setdefault("form_id", form["id"])
+            link.setdefault("slug", form["slug"])
+
+    form = None
+    if result.get("form_id"):
+        try:
+            form = forms_service.get_form(int(result["form_id"]), org)
+        except (TypeError, ValueError):
+            form = None
+    elif result.get("form_url"):
+        form = form_for({"public_url": result.get("form_url")})
+    if form:
+        result["form_url"] = forms_service.link_for_org(form, org)
+    return build
+
+
 def _forms_public_site(org):
     """The live site whose domain should carry this client's forms, if any."""
     for site in sites_service.list_sites(org):
@@ -3907,7 +3967,7 @@ def api_build_get(build_id):
     org, problem = _builds_org()
     if problem:
         return problem
-    build = _build_for_request(build_id, org)
+    build = _with_current_form_links(_build_for_request(build_id, org), org)
     if not build:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"build": build})
@@ -3952,10 +4012,12 @@ def api_build_start(build_id):
     if not row:
         return jsonify({"error": "Not found"}), 404
     if row.get("status") == "building" and row.get("job_id"):
-        return jsonify({"build": builds_service.get(build_id, org),
+        return jsonify({"build": _with_current_form_links(
+                            builds_service.get(build_id, org), org),
                         "job_id": row["job_id"], "already": True})
     if row.get("status") == "done":
-        return jsonify({"build": builds_service.get(build_id, org),
+        return jsonify({"build": _with_current_form_links(
+                            builds_service.get(build_id, org), org),
                         "already": True})
     answers = build_guides.effective_answers(
         row.get("kind"), builds_service._json(row.get("answers_json"), {}))
@@ -3967,7 +4029,8 @@ def api_build_start(build_id):
         "selector", "build", org_id=org)
     builds_service.mark_building(build_id, job_id)
     jobs.submit(job_id)
-    return jsonify({"build": builds_service.get(build_id, org),
+    return jsonify({"build": _with_current_form_links(
+                        builds_service.get(build_id, org), org),
                     "job_id": job_id}), 201
 
 

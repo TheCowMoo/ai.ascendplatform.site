@@ -247,7 +247,11 @@ function collect() {
 }
 
 function post(url, done) {
-  var body = { answers: answers, company: document.querySelector('.hp input').value };
+  // The honeypot is the input itself (<input class="hp">), not a wrapper around
+  // one. The old selector returned null and threw before fetch(), which made every
+  // Next/Submit click do nothing.
+  var honeypot = document.querySelector('input.hp');
+  var body = { answers: answers, company: honeypot ? honeypot.value : '' };
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify(body) })
     .then(function (response) {

@@ -85,6 +85,12 @@ def main():
     check("the scoring rules are not on the page", "correct" not in body.lower())
     check("the page locks itself down",
           "default-src 'none'" in resp.headers["Content-Security-Policy"])
+    # The honeypot is the input itself; the old `.hp input` selector matched nothing,
+    # threw before fetch(), and made every Next/Submit click silently do nothing.
+    check("the page reads the honeypot input itself",
+          "document.querySelector('input.hp')" in body, True)
+    check("the broken descendant selector is gone",
+          "document.querySelector('.hp input')" in body, False)
 
     # The page's JavaScript is 6KB of untested code unless something parses it. Node is not
     # guaranteed on a server, so this check skips rather than failing when it is missing.
@@ -102,6 +108,38 @@ def main():
         check("the page's JavaScript parses", result.returncode, 0)
         check("and the step and submit URLs are baked in",
               ('"step": "/api/public/forms/%s/step"' % slug) in body, True)
+
+        # Run the real post() function with a fake honeypot. `.hp input` used to
+        # dereference null here, before fetch() could send the step or submission.
+        source = script.group(1)
+        post_body = source.split("function post(url, done) {", 1)[1].split(
+            "function send() {", 1)[0]
+        harness = chr(10).join([
+            "var answers = { email: 'a@b.test' };",
+            "var err = { textContent: '' };",
+            "var document = { querySelector: function (selector) {",
+            "  if (selector === 'input.hp') return { value: '' };",
+            "  throw new Error('unexpected selector: ' + selector);",
+            "} };",
+            "var fetch = function (url, options) {",
+            "  console.log('URL ' + url);",
+            "  console.log('BODY ' + options.body);",
+            "  return Promise.resolve({ ok: true, json: function () {",
+            "    return Promise.resolve({ ok: true });",
+            "  } });",
+            "};",
+            "function post(url, done) {",
+            post_body,
+            "post('/api/public/forms/test/step', function () { console.log('DONE'); });",
+        ])
+        harness_path = os.path.join(tempfile.gettempdir(), "form_page_post_%s.js" % TOKEN)
+        with open(harness_path, "w", encoding="utf-8") as handle:
+            handle.write(harness)
+        posted = subprocess.run(["node", harness_path], capture_output=True, text=True)
+        check("the submit handler reads the honeypot without throwing",
+              posted.returncode, 0)
+        check("and sends the browser's answers", '"company":""' in posted.stdout, True)
+        check("to the step URL", "/api/public/forms/test/step" in posted.stdout, True)
 
     resp = client.get("/f/%s" % draft_slug)
     check("an unpublished form answers nobody", resp.status_code, 404)

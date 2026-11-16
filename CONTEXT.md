@@ -422,6 +422,19 @@ writes/reloads `preapproved` so a synchronous Flask handler cannot block the eve
 the route and the link choice. The public page remains on the platform too, which is what
 the logged-in `?preview=1` uses.
 
+Build results store the form links they saw when they ran, and a guided website often
+creates its site before that domain is live. `app._with_current_form_links()` resolves
+`result.form_url` and `result.form_links[].public_url` against the client's current live
+site whenever a build is read, including results written before `form_id`/`slug` metadata
+existed (it recovers the slug from the stored `/f/<slug>` link). The platform link remains
+the fallback until `sites.status` is `live`, because a pending domain does not serve `/f/*`
+yet. `tests/test_build_api.py` pins both the live-domain refresh and the legacy fallback.
+
+The hosted form's honeypot is the `<input class="hp">` itself; reading it with
+`document.querySelector('input.hp')` is what allows the page's step/submit `fetch()` to run.
+`tests/smoke_forms.py` pins that selector, because `'.hp input'` matched nothing and threw
+before every Next/Submit click.
+
 ## Guided builds - plain questions, safe drafts (2026-11-13, phase 1)
 
 The Manager no longer invents a website interview. `build_guides.py` owns four small,

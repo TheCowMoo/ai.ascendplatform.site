@@ -217,6 +217,8 @@ def _prepare_site(org_id, user_id, answers, profile, emit):
         form_ids.append(form["id"])
         form_links.append({
             "label": "Send us a message",
+            "form_id": form["id"],
+            "slug": form["slug"],
             "url": link if not site or site.get("status") == "live"
                    else "/f/" + form["slug"],
             "public_url": link,
@@ -231,6 +233,8 @@ def _prepare_site(org_id, user_id, answers, profile, emit):
         form_ids.append(form["id"])
         form_links.append({
             "label": "Join our newsletter",
+            "form_id": form["id"],
+            "slug": form["slug"],
             "url": link if not site or site.get("status") == "live"
                    else "/f/" + form["slug"],
             "public_url": link,
