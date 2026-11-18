@@ -205,6 +205,14 @@ SPEC = [
             _f("GHL_CLIENT_FROM_EMAIL", "From address",
                help="Must be verified in this client's GoHighLevel account."),
             _f("GHL_CLIENT_REPLY_TO", "Reply-to address"),
+            _f("GHL_CLIENT_OPPORTUNITIES", "Mirror form leads as opportunities",
+               kind="bool", default="1",
+               help="Create or update one opportunity for each contact with a lead "
+                    "status. A client never sees this integration."),
+            _f("GHL_CLIENT_OPPORTUNITY_PIPELINE_ID", "Opportunity pipeline id (optional)",
+               help="Leave blank to use the first pipeline in the sub-account."),
+            _f("GHL_CLIENT_OPPORTUNITY_STAGE_ID", "Opportunity stage id (optional)",
+               help="Leave blank to use the first stage in that pipeline."),
         ],
     },
     {

@@ -688,6 +688,15 @@ def contact_sync_task(job, emit):
                                  "updated": 0, "skipped": 0,
                                  "failed": [], "warnings": [],
                                  "error": _safe_error(exc)}
+        try:
+            import opportunity_sync
+
+            result["opportunities"] = opportunity_sync.sync_org(org_id, emit=emit)
+        except Exception as exc:
+            result["opportunities"] = {"ok": False, "total": 0, "created": 0,
+                                       "updated": 0, "skipped": 0,
+                                       "failed": [], "warnings": [],
+                                       "error": _safe_error(exc)}
     except SyncError as exc:
         raise RuntimeError(str(exc))
     return json.dumps(result, default=str)

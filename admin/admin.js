@@ -7373,6 +7373,21 @@
           syncBox.appendChild(el('p', 'fine-print', warning));
         });
       }
+
+      var opportunities = result.opportunities || {};
+      if (opportunities.total || opportunities.error) {
+        syncBox.appendChild(el('p', 'fine-print',
+          'Opportunities mirrored: ' + (opportunities.created || 0) + ' created, ' +
+          (opportunities.updated || 0) + ' updated, ' + (opportunities.skipped || 0) +
+          ' unchanged, ' + (opportunities.failed || []).length + ' failed.' +
+          (opportunities.error ? ' ' + opportunities.error : '')));
+        report('Opportunity failures', opportunities.failed, function (row) {
+          return (row.contact || 'contact') + ': ' + (row.error || 'mirror failed');
+        });
+        (opportunities.warnings || []).forEach(function (warning) {
+          syncBox.appendChild(el('p', 'fine-print', warning));
+        });
+      }
       syncBox.hidden = false;
     }
 

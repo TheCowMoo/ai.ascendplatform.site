@@ -467,6 +467,14 @@ warning instead of failing the whole run. Native GHL forms/funnels/workflows are
 creatable through their APIs, so the custom object is the visible workspace mirror.
 Opportunities, appointments and other native GHL objects remain later phases; they need
 a real Ascend-side record and a configured pipeline/calendar mapping first.
+Phase 3 adds native opportunities for contacts that already have a remote contact id.
+`opportunity_sync.py` uses the configured `GHL_CLIENT_OPPORTUNITY_PIPELINE_ID` and
+`GHL_CLIENT_OPPORTUNITY_STAGE_ID`, or discovers the first usable pipeline/stage. One
+opportunity per contact is created or updated through `/opportunities/upsert`; status
+maps new/contacted/qualified to open, customer to won and archived to lost. Mappings
+reuse `ghl_object_links` with `object_kind='opportunity'`. The hidden client GHL settings
+group has a switch and optional pipeline/stage ids. Appointments remain later because
+Ascend has no appointment record to mirror yet.
 
 
 ## Guided builds - plain questions, safe drafts (2026-11-13, phase 1)

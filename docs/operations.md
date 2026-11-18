@@ -114,6 +114,16 @@ If the client's token cannot create object schemas, contacts still sync and the 
 shows a workspace warning. The native GHL forms/funnels/workflows APIs are read-only, so
 the custom object is the supported visible mirror.
 
+## Opportunities
+
+When the client's GHL token can write opportunities, the mirror creates one opportunity
+per contact that has a remote contact id. Configure `GHL_CLIENT_OPPORTUNITY_PIPELINE_ID`
+and `GHL_CLIENT_OPPORTUNITY_STAGE_ID` in the hidden Client email settings group; when
+blank, the first usable pipeline and stage are used. The `GHL_CLIENT_OPPORTUNITIES` switch
+turns this off. Customer contacts map to won, archived to lost, and the rest to open. This
+is still outbound from AscendPlatform; GHL opportunity edits are not written back to the
+contact. Appointments have no Ascend-side source yet, so none are invented.
+
 ## Notifications
 
 Form submissions now queue a “New lead” email to the client's `client_admin` users.
