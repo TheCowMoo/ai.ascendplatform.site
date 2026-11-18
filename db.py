@@ -337,14 +337,33 @@ contacts = Table(
     Column("status", Text, nullable=False, server_default=_literal("new")),
     Column("tags", Text, nullable=False, server_default=_literal("[]")),
     Column("notes", Text, nullable=False, server_default=_literal("")),
+    # The mirror's contact fields. ``custom_fields`` holds the location's arbitrary
+    # contact custom fields as JSON; ``ghl_snapshot`` is the last values both sides
+    # agreed on, which is what makes a two-way merge possible without a second table.
+    Column("custom_fields", Text, nullable=False, server_default=_literal("{}")),
     Column("ghl_contact_id", Text),
     Column("ghl_synced_at", Text),
+    Column("ghl_remote_updated_at", Text),
+    Column("ghl_snapshot", Text, nullable=False, server_default=_literal("{}")),
     Column("ghl_error", Text, nullable=False, server_default=_literal("")),
     _created_at(),
     Column("updated_at", Text),
 )
 
 Index("idx_contacts_org", contacts.c.org_id)
+
+# One row per workspace: when the last mirror ran and what it did. Per-contact state
+# lives on ``contacts``; this keeps the banner honest even when a run finds no contacts.
+contact_sync_state = Table(
+    "contact_sync_state",
+    metadata,
+    Column("org_id", Integer, primary_key=True),
+    Column("last_started_at", Text),
+    Column("last_finished_at", Text),
+    Column("last_status", Text, nullable=False, server_default=_literal("")),
+    Column("last_result", Text, nullable=False, server_default=_literal("{}")),
+    Column("last_error", Text, nullable=False, server_default=_literal("")),
+)
 
 # Reusable email templates: what a "send an email from my templates" step points at.
 email_templates = Table(
@@ -1254,6 +1273,11 @@ _ADDITIVE_COLUMNS = (
     ("business_profiles", "org_id", "org_id INTEGER"),
     ("business_profiles", "preferences", "preferences TEXT NOT NULL DEFAULT ''"),
     ("business_profiles", "signature", "signature TEXT NOT NULL DEFAULT ''"),
+    # Contact mirror (migration 0030). A dev SQLite file predates the revision; the
+    # insert path must not fail just because the columns arrived after the table.
+    ("contacts", "custom_fields", "custom_fields TEXT NOT NULL DEFAULT '{}'"),
+    ("contacts", "ghl_remote_updated_at", "ghl_remote_updated_at TEXT"),
+    ("contacts", "ghl_snapshot", "ghl_snapshot TEXT NOT NULL DEFAULT '{}'"),
 )
 
 
@@ -1308,6 +1332,11 @@ def _ensure_columns():
         if "client_settings" not in tables:
             try:
                 metadata.tables["client_settings"].create(bind=engine)
+            except Exception:
+                pass
+        if "contact_sync_state" not in tables:
+            try:
+                metadata.tables["contact_sync_state"].create(bind=engine)
             except Exception:
                 pass
 

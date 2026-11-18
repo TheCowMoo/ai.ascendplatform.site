@@ -91,6 +91,18 @@ by the operator's global sync, not by a client.
 All source reads and writes are scoped to the acting workspace. A source update with an
 id from another workspace must return 404.
 
+## Contact mirror
+
+The Contacts page has **Sync with AscendPlatform** for a client admin or the operator.
+It is a two-way contact mirror: shared fields merge against the last snapshot, and a
+conflict where both sides changed the same field is resolved by the newer timestamp
+(ties go to AscendPlatform) and listed in the result. Form answers travel outbound as
+AscendPlatform activity. The upstream provider is never named in client-facing copy.
+
+The run is a `contact_sync` job. If the workspace has no upstream credentials, the
+button returns a plain-language setup message instead of starting a job. A remote
+deletion is reported and retained locally; it is not a local delete.
+
 ## Notifications
 
 Form submissions now queue a “New lead” email to the client's `client_admin` users.

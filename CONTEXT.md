@@ -435,6 +435,27 @@ The hosted form's honeypot is the `<input class="hp">` itself; reading it with
 `tests/smoke_forms.py` pins that selector, because `'.hp input'` matched nothing and threw
 before every Next/Submit click.
 
+## Two-way contact mirror (2026-11-17)
+
+The Contacts tab has a **Sync with AscendPlatform** action for client admins and the
+operator. The client-facing name is intentional: the upstream CRM is an implementation
+detail. `contact_sync.py` pulls the remote contact list, merges each contact against the
+last agreed local snapshot, and pushes the result back. The local snapshot and custom
+fields live on `contacts` (`ghl_snapshot`, `custom_fields`, `ghl_remote_updated_at`);
+`contact_sync_state` records the workspace run for the banner. `POST /api/contacts/sync`
+starts the `contact_sync` job, and the Contacts page polls its events and shows pushed,
+pulled, conflicts, skipped and failed rows.
+
+Shared contact fields are two-way: name, email, phone, tags, notes, status, source and
+arbitrary custom fields. Ascend-only form responses are pushed as the managed
+`AscendPlatform activity` field. A conflict where both sides changed a field is resolved
+by the newer timestamp, with ties going to AscendPlatform, and is always reported. Remote
+deletions are retained locally and surfaced as a failure, never silently deleted.
+
+GHL/Facebook etc. object mirroring (forms, websites, automations, opportunities,
+appointments) is a later phase; it needs a mapping per upstream object. `0030_contact_sync`
+adds the schema and `_ensure_columns()` repairs a dev SQLite file that predates it.
+
 ## Guided builds - plain questions, safe drafts (2026-11-13, phase 1)
 
 The Manager no longer invents a website interview. `build_guides.py` owns four small,

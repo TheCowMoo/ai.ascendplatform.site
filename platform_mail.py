@@ -131,6 +131,15 @@ def _call(method, path, payload=None, org_id=None):
     return body
 
 
+def api_call(method, path, payload=None, org_id=None):
+    """Public GHL call for the contact mirror.
+
+    Mail owns the credentials and transport; the mirror must not duplicate either.
+    The call keeps the same client/platform scope rules as every mail operation.
+    """
+    return _call(method, path, payload=payload, org_id=org_id)
+
+
 def _describe_failure(method, path, status, raw):
     """A message that names the layer that actually refused.
 

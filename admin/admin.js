@@ -7210,8 +7210,20 @@
     head.innerHTML = '<div><h2>Contacts</h2><p class="muted">Leads captured by a form, ' +
       'the widget, a webhook or by hand.</p></div>';
     var add = el('button', 'btn btn-primary', '+ New contact');
+    var canSync = canAdmin(state.user);
+    var sync = null;
+    if (canSync) {
+      sync = el('button', 'btn btn-ghost', 'Sync with AscendPlatform');
+      head.appendChild(sync);
+    }
     head.appendChild(add);
     container.appendChild(head);
+
+    // The sync result belongs beside the list, not in a toast that disappears before
+    // somebody can read a conflict. It starts hidden and is filled when a run finishes.
+    var syncBox = el('div', 'panel-card');
+    syncBox.hidden = true;
+    container.appendChild(syncBox);
 
     var capture = el('div', 'panel-card');
     container.appendChild(capture);
@@ -7310,6 +7322,91 @@
       }).catch(function (e) {
         body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
       });
+    }
+
+    function renderSyncReport(result) {
+      result = result || {};
+      syncBox.innerHTML = '<h3 class="card-title">Sync with AscendPlatform</h3>' +
+        '<p class="muted">' + (result.pushed || 0) + ' sent | ' +
+        (result.pulled || 0) + ' received | ' + (result.conflicts || []).length +
+        ' conflict' + ((result.conflicts || []).length === 1 ? '' : 's') + ' | ' +
+        (result.failed || []).length + ' failed | ' +
+        (result.skipped || []).length + ' skipped</p>';
+      (result.warnings || []).forEach(function (warning) {
+        syncBox.appendChild(el('p', 'fine-print', warning));
+      });
+      function report(title, rows, describe) {
+        if (!rows || !rows.length) return;
+        var details = el('details');
+        details.appendChild(el('summary', null, title + ' (' + rows.length + ')'));
+        var list = el('ul');
+        rows.forEach(function (row) {
+          var li = el('li', 'fine-print', describe(row));
+          list.appendChild(li);
+        });
+        details.appendChild(list);
+        syncBox.appendChild(details);
+      }
+      report('Conflicts', result.conflicts, function (row) {
+        return (row.contact || 'contact') + ': ' + (row.field || 'field') +
+          ' - ' + (row.resolution || 'resolved');
+      });
+      report('Needs attention', result.failed, function (row) {
+        return (row.contact || 'contact') + ': ' + (row.error || 'sync failed');
+      });
+      report('Skipped', result.skipped, function (row) {
+        return (row.contact || 'contact') + ': ' + (row.reason || 'not matched');
+      });
+      syncBox.hidden = false;
+    }
+
+    function pollSync(jobId) {
+      var after = 0;
+      function tick() {
+        api('GET', '/api/jobs/' + jobId + '/events?after=' + after).then(function (d) {
+          (d.events || []).forEach(function (ev) {
+            after = Math.max(after, Number(ev.seq) || 0);
+            if (ev.type === 'progress' && ev.content) {
+              syncBox.hidden = false;
+              syncBox.innerHTML = '<p class="muted">' + esc(ev.content) + '</p>';
+            }
+          });
+          var job = d.job || {};
+          if (['done', 'failed', 'cancelled'].indexOf(job.status) === -1) {
+            setTimeout(tick, 1200);
+            return;
+          }
+          sync.disabled = false;
+          if (job.status === 'done') {
+            var result = {};
+            try { result = JSON.parse(job.result || '{}'); } catch (e) { result = {}; }
+            renderSyncReport(result);
+            refresh();
+          } else {
+            syncBox.hidden = false;
+            syncBox.innerHTML = '<p class="form-error">' +
+              esc(job.error || 'The sync stopped before it finished.') + '</p>';
+          }
+        }).catch(function (e) {
+          sync.disabled = false;
+          toast(e.message, false);
+        });
+      }
+      tick();
+    }
+
+    if (sync) {
+      sync.onclick = function () {
+        sync.disabled = true;
+        syncBox.hidden = false;
+        syncBox.innerHTML = '<p class="muted">Starting the contact mirror...</p>';
+        api('POST', '/api/contacts/sync').then(function (d) {
+          pollSync(d.job_id);
+        }).catch(function (e) {
+          sync.disabled = false;
+          syncBox.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+        });
+      };
     }
 
     add.onclick = function () {

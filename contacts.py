@@ -11,7 +11,7 @@ from db import get_connection, now_str
 STATUSES = ("new", "contacted", "qualified", "customer", "archived")
 SOURCES = ("form", "widget", "webhook", "manual", "ghl")
 TEXT_FIELDS = ("name", "email", "phone", "source", "status", "notes",
-               "ghl_contact_id", "ghl_synced_at", "ghl_error")
+               "ghl_contact_id", "ghl_synced_at", "ghl_remote_updated_at", "ghl_error")
 
 
 class ContactError(ValueError):
@@ -27,11 +27,38 @@ def contact_out(row):
         out["tags"] = json.loads(raw) if isinstance(raw, str) else (raw or [])
     except (TypeError, ValueError):
         out["tags"] = []
+    raw = out.get("custom_fields") or "{}"
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        out["custom_fields"] = parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        out["custom_fields"] = {}
+    raw = out.get("ghl_snapshot") or "{}"
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        out["ghl_snapshot"] = parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        out["ghl_snapshot"] = {}
     return out
 
 
-def create_contact(data, org_id, source=None):
-    """Insert a contact. ``email`` is the only thing that has to be there."""
+def public_contact(contact):
+    """A contact safe for the console: mirror bookkeeping is not user-facing."""
+    if not contact:
+        return contact
+    out = dict(contact)
+    for key in ("ghl_contact_id", "ghl_synced_at", "ghl_remote_updated_at",
+                "ghl_snapshot", "ghl_error"):
+        out.pop(key, None)
+    return out
+
+
+def create_contact(data, org_id, source=None, fire_event=True):
+    """Insert a contact. ``email`` is the only thing that has to be there.
+
+    ``fire_event=False`` is for a contact imported from the mirror: it is not a new
+    lead in this workspace, so a ``contact.created`` automation must not fire for it.
+    """
     data = data or {}
     email = (data.get("email") or "").strip().lower()
     if not email and not (data.get("name") or "").strip():
@@ -46,25 +73,42 @@ def create_contact(data, org_id, source=None):
     if isinstance(tags, str):
         tags = [part.strip() for part in tags.split(",") if part.strip()]
     with get_connection() as conn:
+        custom = data.get("custom_fields")
+        if isinstance(custom, str):
+            try:
+                custom = json.loads(custom or "{}")
+            except ValueError:
+                custom = {}
         cur = conn.execute(
             "INSERT INTO contacts (org_id, name, email, phone, source, status, tags, notes, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "custom_fields, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (org_id, (data.get("name") or "").strip()[:200], email[:200],
              (data.get("phone") or "").strip()[:60], src, status, json.dumps(tags or []),
-             (data.get("notes") or "")[:4000], now_str(), now_str()),
+             (data.get("notes") or "")[:4000], json.dumps(custom or {}),
+             now_str(), now_str()),
         )
         row = conn.execute("SELECT * FROM contacts WHERE id = ?", (cur.lastrowid,)).fetchone()
     item = contact_out(row)
     # The event fires *after* the row exists, and cannot fail the capture: a broken
     # automation must never lose a lead.
-    try:
-        import automations
+    if fire_event:
+        try:
+            import automations
 
-        automations.start_for_event(org_id, "contact.created",
-                                    context={"contact.id": item["id"]})
-    except Exception:
-        pass
+            automations.start_for_event(org_id, "contact.created",
+                                        context={"contact.id": item["id"]})
+        except Exception:
+            pass
     return item
+
+
+def list_all_contacts(org_id):
+    """Every contact for a mirror run. The console list stays capped; this is the sync."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM contacts WHERE org_id = ? ORDER BY id ASC", (org_id,)
+        ).fetchall()
+    return [contact_out(row) for row in rows]
 
 
 def list_contacts(org_id, status=None, limit=200):
@@ -101,6 +145,15 @@ def update_contact(contact_id, org_id, data):
             raw = [part.strip() for part in raw.split(",") if part.strip()]
         sets.append("tags = ?")
         values.append(json.dumps(raw or []))
+    if "custom_fields" in (data or {}):
+        raw = data.get("custom_fields")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw or "{}")
+            except ValueError:
+                raw = {}
+        sets.append("custom_fields = ?")
+        values.append(json.dumps(raw or {}))
     if not sets:
         return get_contact(contact_id, org_id)
     sets.append("updated_at = ?")

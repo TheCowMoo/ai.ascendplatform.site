@@ -30,6 +30,7 @@ import manager  # noqa: F401  (registers chat)
 import automations  # noqa: F401  (registers automation)
 import review  # noqa: F401  (registers site_review)
 import build_service  # noqa: F401  (registers the guided build task)
+import contact_sync  # noqa: F401  (registers the contact mirror task)
 
 REDIS_URL = (os.environ.get("REDIS_URL") or "redis://localhost:6379/0").strip()
 JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "900"))

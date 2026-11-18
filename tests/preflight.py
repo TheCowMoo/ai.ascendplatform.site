@@ -58,6 +58,7 @@ FAST_SUITES = (
     "test_build_api",
     "test_build_tool",
     "test_client_ghl",
+    "test_contact_sync",
     "smoke_onboarding",
     "smoke_voice",
     "smoke_automations",
@@ -104,8 +105,8 @@ def check_worker_tasks():
     """
     if not shutil.which("git") and os.name != "nt":
         pass    # keep going: this check needs no git
-    expected = {"agent_team", "automation", "build", "chat", "echo", "site_provision",
-                "site_review"}
+    expected = {"agent_team", "automation", "build", "chat", "contact_sync", "echo",
+                "site_provision", "site_review"}
     code = (
         "import json, os\n"
         "os.environ.pop('ALLOW_LIVE_ACTIONS', None)\n"

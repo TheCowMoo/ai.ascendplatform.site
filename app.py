@@ -53,6 +53,7 @@ import provisioner
 import servers as servers_service
 import sites as sites_service
 import contacts as contacts_service
+import contact_sync
 import media_library as media_service
 import assistant_sessions as assistant_service
 from tools import policy as tool_policy
@@ -4215,7 +4216,9 @@ def list_contacts():
         limit = min(500, max(1, int(request.args.get("limit") or 200)))
     except (TypeError, ValueError):
         limit = 200
-    return jsonify({"contacts": contacts_service.list_contacts(org, status, limit),
+    rows = [contacts_service.public_contact(row)
+            for row in contacts_service.list_contacts(org, status, limit)]
+    return jsonify({"contacts": rows,
                     "statuses": list(contacts_service.STATUSES), "limit": limit})
 
 
@@ -4230,7 +4233,7 @@ def create_contact():
                                                source="manual")
     except contacts_service.ContactError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"contact": item}), 201
+    return jsonify({"contact": contacts_service.public_contact(item)}), 201
 
 
 @app.route("/api/contacts/<int:contact_id>", methods=["PUT"])
@@ -4242,7 +4245,36 @@ def update_contact(contact_id):
     item = contacts_service.update_contact(contact_id, org, request.get_json(silent=True) or {})
     if not item:
         return jsonify({"error": "Not found"}), 404
-    return jsonify({"contact": item})
+    return jsonify({"contact": contacts_service.public_contact(item)})
+
+
+@app.route("/api/contacts/sync", methods=["GET", "POST"])
+@login_required
+def contacts_sync():
+    """Read the last mirror result, or start a two-way sync for this workspace.
+
+    A member may read the status; only a client admin (or the operator) may start a
+    write. The route never accepts an org id from the request body.
+    """
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client in the workspace switcher first"}), 400
+    import platform_mail
+
+    if request.method == "GET":
+        return jsonify({"state": contact_sync.state(org),
+                        "configured": platform_mail.client_configured(org)})
+    if not (is_owner() or session.get("role") == CLIENT_ADMIN_ROLE):
+        return jsonify({"error": "Forbidden"}), 403
+    if not platform_mail.client_configured(org):
+        return jsonify({"error": "Sync with AscendPlatform is not set up for this "
+                                 "workspace yet. Ask your agency to connect it."}), 400
+    try:
+        job_id = contact_sync.start_sync(org, session.get("user_id"))
+    except Exception as exc:
+        return jsonify({"error": "Sync with AscendPlatform could not start. Please "
+                                 "try again.", "detail": str(exc)[:300]}), 502
+    return jsonify({"ok": True, "job_id": job_id}), 202
 
 
 @app.route("/api/automations/proposals", methods=["GET"])
