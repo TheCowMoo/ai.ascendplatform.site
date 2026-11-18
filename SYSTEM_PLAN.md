@@ -1535,8 +1535,9 @@ resolve or overwrite the GHL token - the SMTP group remains the only client-scop
   one afterwards. Resending retires the previous link.
 - Status is **derived** (`pending | accepted | revoked | expired`) from timestamps
   rather than stored, so an invitation cannot read as pending after it has expired.
-- Roles are limited to `client_admin` and `client_member`. A stray `owner` here would be
-  a privilege escalation delivered by email.
+- Roles are limited to `client_admin` and `member` (`client_member` is the legacy
+  spelling, normalised on write). A stray `owner` here would be a privilege escalation
+  delivered by email.
 - A failed send returns **502 with the invite and its link**, because the invitation is
   real and usable; making the operator start again would be the worse outcome.
 

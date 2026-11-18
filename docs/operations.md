@@ -73,6 +73,25 @@ The platform owner is never blocked, so support can still inspect the account. I
 client loses their password, an operator resets it from the client's Team page; there is
 no public forgot-password flow yet. Keep that support path in the onboarding email.
 
+## People and Team
+
+**Platform -> People** is the agency-wide directory. Add an agency owner (no client),
+a client admin or a member; filter by client, role or status; edit, move, reset a
+password, disable/enable or remove. **Workspace -> Account -> Team** is the same table
+for a client admin, permanently scoped to their own workspace. A member cannot open it.
+
+A new client gets its first `client_admin` when it is created under Platform -> Clients.
+A client admin can add teammates or invite them from Team; invitations create only
+client admins/members, never an agency owner. If platform email is not configured, the
+invitation is still created and the one-time link is shown so it can be copied by hand.
+
+Per-user `suspended` status is separate from the client's own status: suspending one
+person clears their existing session on the next request and blocks their next login
+without pausing the whole workspace. Re-enable them from the same row; they sign in
+again. The last active owner and the last active client admin cannot be removed,
+disabled or demoted, so a workspace is never left with nobody able to administer it.
+Every change is visible in `user_events` for support and audit.
+
 ## Analytics sources
 
 Analytics is workspace-scoped. A client admin can connect a Google Analytics 4

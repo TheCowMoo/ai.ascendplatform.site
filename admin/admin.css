@@ -303,6 +303,12 @@ input[type=color] {
 .table tr:last-child td { border-bottom: none; }
 .table th.check, .table td.check { width: 44px; padding-right: 8px; }
 .table td .muted { font-size: var(--fs-sm); }
+/* People/Team can have four row actions; let them wrap rather than squeeze the email. */
+.people-table { min-width: 760px; }
+.people-table .row-actions { flex-wrap: wrap; }
+.page-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.chip-input { flex-wrap: wrap; }
+.chip-input select { min-width: 150px; }
 
 /* ---------- Badges ---------- */
 .badge {
@@ -312,6 +318,8 @@ input[type=color] {
 }
 .badge-admin { background: var(--accent-50); color: var(--accent-700); border-color: #dcd9fb; }
 .badge-member { background: var(--raised); color: var(--ink-500); }
+.badge-success { background: var(--success-50); color: var(--success-700); border-color: #cdebd8; }
+.badge-danger { background: var(--danger-50); color: var(--danger-700); border-color: #f7d4d4; }
 .badge-warn { background: var(--warn-50); color: var(--warn-600); border-color: #f6e3b4; }
 .badge-status { background: var(--raised); color: var(--ink-500); }
 .badge-queued { background: var(--warn-50); color: var(--warn-600); border-color: #f6e3b4; }

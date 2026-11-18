@@ -61,7 +61,8 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 |---|---|
 | `db.py` | Engine, `Connection` adapter (`?` placeholders, `RETURNING id` on Postgres), all `Table` definitions, `init_db()`, `seed_lock()` |
 | `settings.py` | SPEC of every setting, panel→env→default resolution, `all_for_ui(org_id)` (client sees only `scope=client`), write guard, audit history, per-group live tests |
-| `orgs.py` | Tenants (clients) + their users; `client_admin` / `client_member` / `owner` |
+| `orgs.py` | Tenants (clients) and their first admin; `client_admin` / `member` / `owner` |
+| `user_service.py` | User administration for both planes: scoped listing, create/update/status/password/delete, last-owner and last-client-admin guards, `user_events` audit. The role aliases `admin` and `client_member` are normalised here. |
 | `profile.py` | Business Profile per org — the brand facts the agents write from |
 | `llm.py` | `PROVIDERS` (the single source of truth for capabilities), `get_model_client()`, `_clean_messages()` + `without_empty_blocks()` payload repair for Anthropic. Also wraps the SDK response to capture the raw usage AutoGen folds away, and returns metered client subclasses. |
 | `rates.py` | The price list in dollars per 1M tokens / minute / image; `price_model`, `price_unit`, `missing_rates`, `python -m rates import <file>`. |
@@ -88,7 +89,8 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 
 | Table | Notes |
 |---|---|
-| `users` | `role` ∈ owner / client_admin / client_member, `org_id` |
+| `users` | `role` ∈ owner / client_admin / member, `org_id`, `status` ∈ active / suspended, `last_login_at` |
+| `user_events` | append-only people audit: actor, target, client scope, action, JSON detail |
 | `orgs` | the clients; `slug` unique |
 | `business_profiles` | one per org |
 | `bots`, `messages`, `channels`, `meta_events` | chat widget |
@@ -122,6 +124,29 @@ assigned to a client from there (or with `repair_orphans.py`). A draft's kind is
 `save_deliverable` enforces the tab brief in the job prompt, so a job started from Funnels
 cannot save as a website. Existing wrong-tab rows are fixed with
 `repair_deliverable_kinds.py --apply`.
+
+## People and Team
+
+Two management planes share `user_service.py`, and the server - not the console - is the
+boundary:
+
+- **Platform -> People** is owner-only and agency-wide. `GET|POST /api/platform/users`,
+  `PUT|DELETE /api/platform/users/<id>`, `POST .../status` and `POST .../password`.
+  The owner can create agency owners (no org), client admins and members, move a person
+  between clients, and filter the directory by client, role and status.
+- **Workspace -> Account -> Team** is `client_admin_required` and always scoped to the
+  session's org. The same verbs live under `/api/users`; a client admin cannot create an
+  owner, use another `org_id`, or touch a person outside their client.
+- Invitations (`invites.py`) are client-only. A client admin may invite their own
+  workspace's admins/members; the owner may invite for any client. `client_member` is
+  accepted as the legacy spelling and stored as `member`; an owner is never invited.
+- Sessions are re-read on every authenticated request (`_session_account`). A suspended
+  user loses the existing cookie on the next request, a role change applies immediately,
+  and a client move refreshes `session["org_id"]`.
+- Safety rules: the last active agency owner cannot be deleted, disabled or demoted; the
+  last active client admin of a workspace cannot be stranded; the acting user cannot
+  delete their own login. Every successful change writes `user_events` (actor, target,
+  org, action, detail), including password resets and status changes.
 
 ## The three core flows
 

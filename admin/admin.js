@@ -70,6 +70,7 @@
       home: '#/platform/clients',
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
+        { id: 'people', label: 'People', icon: 'user', hash: '#/platform/people' },
         { id: 'domains', label: 'Domains', icon: 'globe', hash: '#/platform/domains' },
         { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/platform/usage' },
         { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
@@ -1545,62 +1546,347 @@
     return container;
   }
 
-  // ---------- Users ----------
+  // ---------- People ----------
+  // The same table serves the agency directory and a client's Team page. The only
+  // difference is whether the row carries a client and whether the owner role is an
+  // option. The server enforces the same split; this is not the security boundary.
+  function personRoleLabel(role) {
+    if (role === 'owner' || role === 'admin') return 'Agency owner';
+    if (role === 'client_admin') return 'Client admin';
+    if (role === 'member' || role === 'client_member') return 'Member';
+    return String(role || '').replace(/_/g, ' ');
+  }
+
+  function personRoleBadge(role) {
+    return '<span class="badge ' + (role === 'member' || role === 'client_member'
+      ? 'badge-member' : 'badge-admin') + '">' + esc(personRoleLabel(role)) + '</span>';
+  }
+
+  function personStatusBadge(status) {
+    var paused = status === 'suspended';
+    return '<span class="badge ' + (paused ? 'badge-danger' : 'badge-success') + '">' +
+      (paused ? 'Suspended' : 'Active') + '</span>';
+  }
+
+  function linkModal(title, message, link, failed) {
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal');
+    modal.appendChild(el('h3', null, title));
+    modal.appendChild(el('p', failed ? 'form-error' : 'muted', message));
+    if (link) {
+      // The database only keeps a hash, so this is the only moment the link exists.
+      var input = el('input');
+      input.value = link;
+      input.readOnly = true;
+      modal.appendChild(input);
+      var copy = el('button', 'btn btn-primary', 'Copy link');
+      copy.onclick = function () { copyText(link, copy); };
+      modal.appendChild(copy);
+    }
+    var close = el('button', 'btn btn-ghost', 'Close');
+    close.onclick = function () { backdrop.remove(); };
+    modal.appendChild(close);
+    backdrop.appendChild(modal);
+    backdrop.onclick = function (e) { if (e.target === backdrop) backdrop.remove(); };
+    document.body.appendChild(backdrop);
+  }
+
+  function personModal(person, platformMode, orgs, onSaved) {
+    var isEdit = !!(person && person.id);
+    var roleOptions = platformMode
+      ? [{ value: 'owner', label: 'Agency owner' },
+         { value: 'client_admin', label: 'Client admin' },
+         { value: 'member', label: 'Member' }]
+      : [{ value: 'client_admin', label: 'Client admin' },
+         { value: 'member', label: 'Member' }];
+    var fields = [
+      { name: 'name', label: 'Name', value: isEdit ? person.name : '' },
+      { name: 'email', label: 'Email', type: 'email', value: isEdit ? person.email : '' }
+    ];
+    if (!isEdit) {
+      fields.push({ name: 'password', label: 'Initial password', type: 'password',
+        help: 'At least 8 characters. They can change it after signing in.' });
+    }
+    fields.push({ name: 'role', label: 'Role', type: 'select', options: roleOptions,
+      value: isEdit ? person.role : 'member' });
+    if (platformMode) {
+      fields.push({
+        name: 'org_id', label: 'Client', type: 'select',
+        options: [{ value: '', label: 'No client (agency)' }].concat(
+          (orgs || []).map(function (o) { return { value: String(o.id), label: o.name }; })
+        ),
+        value: isEdit && person.org_id ? String(person.org_id) : '',
+        help: 'Agency owners have no client. Client roles need a workspace.'
+      });
+    }
+    formModal(isEdit ? 'Edit person' : 'Add person', fields, function (data, fail, ok) {
+      var payload = { name: data.name, email: data.email, role: data.role };
+      if (!isEdit) payload.password = data.password;
+      if (platformMode) {
+        if (data.role !== 'owner' && !data.org_id) {
+          fail('Choose a client for a client-admin or member account.');
+          return;
+        }
+        payload.org_id = data.role === 'owner' ? null : (data.org_id || null);
+      }
+      var url = platformMode ? '/api/platform/users' : '/api/users';
+      if (isEdit) url += '/' + person.id;
+      api(isEdit ? 'PUT' : 'POST', url, payload).then(function () {
+        ok();
+        toast(isEdit ? 'Person updated' : 'Person added', true);
+        onSaved();
+      }).catch(function (e) { fail(e.message); });
+    }, isEdit ? 'Save changes' : 'Add person');
+  }
+
+  function passwordModal(person, platformMode, onSaved) {
+    formModal('Reset password for ' + person.name, [
+      { name: 'new_password', label: 'New password', type: 'password',
+        help: 'At least 8 characters. They will use it the next time they sign in.' }
+    ], function (data, fail, ok) {
+      var url = (platformMode ? '/api/platform/users/' : '/api/users/') +
+        person.id + '/password';
+      api('POST', url, { new_password: data.new_password }).then(function () {
+        ok();
+        toast('Password reset', true);
+        if (onSaved) onSaved();
+      }).catch(function (e) { fail(e.message); });
+    }, 'Reset password');
+  }
+
+  function changePersonStatus(person, platformMode, onSaved) {
+    var next = person.status === 'active' ? 'suspended' : 'active';
+    if (next === 'suspended' && !confirm('Suspend ' + person.email +
+        '? They will be signed out and cannot sign in until re-enabled.')) return;
+    var base = platformMode ? '/api/platform/users/' : '/api/users/';
+    api('POST', base + person.id + '/status', { status: next }).then(function () {
+      toast(next === 'active' ? 'Person re-enabled' : 'Person suspended', true);
+      onSaved();
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function removePerson(person, platformMode, onSaved) {
+    if (!confirm('Remove ' + person.email + '? This cannot be undone.')) return;
+    var base = platformMode ? '/api/platform/users/' : '/api/users/';
+    api('DELETE', base + person.id).then(function () {
+      toast('Person removed', true);
+      onSaved();
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function peopleTable(users, platformMode, orgs, onChanged) {
+    var table = el('table', 'table people-table');
+    table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Role</th>' +
+      (platformMode ? '<th>Client</th>' : '') +
+      '<th>Status</th><th>Last login</th><th></th></tr></thead>';
+    var tbody = el('tbody');
+    if (!users.length) {
+      var empty = el('tr');
+      empty.innerHTML = '<td colspan="' + (platformMode ? 7 : 6) +
+        '" class="muted">No people match this view.</td>';
+      tbody.appendChild(empty);
+    }
+    users.forEach(function (u) {
+      var tr = el('tr');
+      tr.innerHTML = '<td><strong>' + esc(u.name) + '</strong></td>' +
+        '<td>' + esc(u.email) + '</td>' +
+        '<td>' + personRoleBadge(u.role) + '</td>' +
+        (platformMode ? '<td class="muted">' + esc(u.org_name || 'Agency') + '</td>' : '') +
+        '<td>' + personStatusBadge(u.status) + '</td>' +
+        '<td class="muted">' + (u.last_login_at ? esc(shortTime(u.last_login_at)) : 'Never') + '</td>';
+      var td = el('td', 'row-actions');
+      var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+      edit.onclick = function () {
+        personModal(u, platformMode, orgs || [], onChanged);
+      };
+      td.appendChild(edit);
+      var pw = el('button', 'btn btn-ghost btn-sm', 'Reset password');
+      pw.onclick = function () { passwordModal(u, platformMode, onChanged); };
+      td.appendChild(pw);
+      var toggle = el('button', 'btn btn-ghost btn-sm',
+        u.status === 'active' ? 'Disable' : 'Enable');
+      toggle.onclick = function () { changePersonStatus(u, platformMode, onChanged); };
+      td.appendChild(toggle);
+      if (!state.user || u.id !== state.user.id) {
+        var del = el('button', 'btn btn-danger btn-sm', 'Remove');
+        del.onclick = function () { removePerson(u, platformMode, onChanged); };
+        td.appendChild(del);
+      }
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function inviteRows(invites, orgs, onChanged) {
+    var wrap = el('div');
+    if (!invites.length) {
+      wrap.appendChild(el('p', 'muted', 'No pending invitations.'));
+      return wrap;
+    }
+    var table = el('table', 'table');
+    table.innerHTML = '<thead><tr><th>Email</th><th>Role</th>' +
+      (orgs ? '<th>Client</th>' : '') + '<th>Status</th><th>Expires</th><th></th></tr></thead>';
+    var tbody = el('tbody');
+    var names = {};
+    (orgs || []).forEach(function (o) { names[o.id] = o.name; });
+    invites.forEach(function (invite) {
+      var tr = el('tr');
+      tr.innerHTML = '<td>' + esc(invite.email) + '</td>' +
+        '<td>' + personRoleBadge(invite.role) + '</td>' +
+        (orgs ? '<td class="muted">' + esc(names[invite.org_id] || '—') + '</td>' : '') +
+        '<td><span class="badge">' + esc(invite.status) + '</span></td>' +
+        '<td class="muted">' + esc((invite.expires_at || '').slice(0, 10)) + '</td>';
+      var td = el('td', 'row-actions');
+      if (invite.status !== 'accepted') {
+        var resend = el('button', 'btn btn-ghost btn-sm', 'Resend');
+        resend.onclick = function () {
+          resend.disabled = true;
+          api('POST', '/api/invites/' + invite.id + '/resend', {}).then(function (res) {
+            linkModal('New link', 'Emailed to ' + res.invite.email + '.', res.link, false);
+            onChanged();
+          }).catch(function (e) {
+            var body = e.data || {};
+            if (body.link) {
+              linkModal('Email not sent', e.message, body.link, true);
+              onChanged();
+            } else {
+              toast(e.message, false);
+              resend.disabled = false;
+            }
+          });
+        };
+        td.appendChild(resend);
+        if (invite.status === 'pending') {
+          var revoke = el('button', 'btn btn-danger btn-sm', 'Revoke');
+          revoke.onclick = function () {
+            api('POST', '/api/invites/' + invite.id + '/revoke', {}).then(onChanged)
+              .catch(function (e) { toast(e.message, false); });
+          };
+          td.appendChild(revoke);
+        }
+      } else {
+        td.appendChild(el('span', 'muted',
+          'accepted ' + (invite.accepted_at || '').slice(0, 10)));
+      }
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function invitePersonModal(platformMode, orgs, defaultOrgId, onSaved) {
+    var fields = [
+      { name: 'email', label: 'Email address', type: 'email' },
+      { name: 'name', label: 'Their name (optional)' },
+      { name: 'role', label: 'Role', type: 'select',
+        options: [{ value: 'client_admin', label: 'Client admin' },
+                  { value: 'member', label: 'Member' }] }
+    ];
+    if (platformMode) {
+      fields.push({
+        name: 'org_id', label: 'Client', type: 'select',
+        options: [{ value: '', label: 'Choose a client…' }].concat(
+          (orgs || []).map(function (o) {
+            return { value: String(o.id), label: o.name };
+          })
+        ),
+        value: defaultOrgId ? String(defaultOrgId) : ''
+      });
+    }
+    formModal('Invite someone', fields, function (data, fail, ok) {
+      var payload = { email: data.email, name: data.name, role: data.role };
+      if (platformMode) {
+        if (!data.org_id) { fail('Choose a client to invite.'); return; }
+        payload.org_id = data.org_id;
+      }
+      api('POST', '/api/invites', payload).then(function (res) {
+        ok();
+        linkModal('Invitation sent', 'Emailed to ' + res.invite.email + '.', res.link, false);
+        onSaved();
+      }).catch(function (e) {
+        var body = e.data || {};
+        if (body.invite) {
+          ok();
+          linkModal('Invitation created, email not sent', e.message, body.link, true);
+          onSaved();
+        } else {
+          fail(e.message);
+        }
+      });
+    }, 'Send invitation');
+  }
+
   function viewUsers() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Users</h2><p>Team accounts (admin only).</p></div>';
+    head.innerHTML = '<div><h2>Team</h2><p>People who can sign in to this workspace.</p></div>';
+    var actions = el('div', 'page-actions');
+    var add = el('button', 'btn btn-primary', '+ Add person');
+    add.onclick = function () { personModal(null, false, [], load); };
+    var invite = el('button', 'btn btn-ghost', 'Invite someone');
+    invite.onclick = function () { invitePersonModal(false, [], null, load); };
+    actions.appendChild(add);
+    actions.appendChild(invite);
+    head.appendChild(actions);
     container.appendChild(head);
 
-    var form = el('div', 'form-card');
-    form.innerHTML = '<h3>Add user</h3>';
-    function f(label, input) { var d = el('div', 'field'); d.innerHTML = '<label>' + label + '</label>'; d.appendChild(input); return d; }
-    var name = el('input'); name.placeholder = 'Name';
-    var email = el('input'); email.type = 'email'; email.placeholder = 'Email';
-    var pw = el('input'); pw.type = 'password'; pw.placeholder = 'Password';
-    var role = el('select'); role.innerHTML = '<option value="member">Member</option><option value="admin">Admin</option>';
-    form.appendChild(f('Name', name));
-    form.appendChild(f('Email', email));
-    form.appendChild(f('Password', pw));
-    form.appendChild(f('Role', role));
-    var addBtn = el('button', 'btn btn-primary', 'Add User');
-    addBtn.onclick = function () {
-      api('POST', '/api/users', { name: name.value, email: email.value, password: pw.value, role: role.value })
-        .then(function () { toast('User added', true); render(); })
-        .catch(function (e) { toast(e.message, false); });
-    };
-    form.appendChild(addBtn);
-    container.appendChild(form);
+    var people = [];
+    var invites = [];
+    var search = el('input');
+    search.type = 'search';
+    search.placeholder = 'Search team by name or email';
+    search.className = 'search-input';
+    var role = el('select');
+    role.innerHTML = '<option value="">All roles</option>' +
+      '<option value="client_admin">Client admin</option><option value="member">Member</option>';
+    var status = el('select');
+    status.innerHTML = '<option value="">All statuses</option>' +
+      '<option value="active">Active</option><option value="suspended">Suspended</option>';
+    var bar = el('div', 'chip-input');
+    bar.appendChild(search); bar.appendChild(role); bar.appendChild(status);
+    container.appendChild(bar);
 
-    var tableWrap = el('div', 'mt');
-    container.appendChild(tableWrap);
+    var body = el('div', 'mt');
+    var inviteBox = el('div', 'mt');
+    container.appendChild(body);
+    container.appendChild(inviteBox);
 
-    api('GET', '/api/users').then(function (d) {
-      var users = d.users || [];
-      var table = el('table', 'table');
-      table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>';
-      var tbody = el('tbody');
-      users.forEach(function (u) {
-        var tr = el('tr');
-        tr.innerHTML = '<td>' + esc(u.name) + '</td><td>' + esc(u.email) + '</td><td><span class="badge ' + (u.role === 'member' ? 'badge-member' : 'badge-admin') + '">' + esc(u.role) + '</span></td>';
-        var td = el('td');
-        if (u.id !== state.user.id) {
-          var del = el('button', 'btn btn-danger btn-sm', 'Remove');
-          del.onclick = function () {
-            if (confirm('Remove ' + u.email + '?')) {
-              api('DELETE', '/api/users/' + u.id).then(function () { toast('Removed', true); render(); }).catch(function (e) { toast(e.message, false); });
-            }
-          };
-          td.appendChild(del);
-        }
-        tr.appendChild(td);
-        tbody.appendChild(tr);
+    function draw() {
+      var needle = (search.value || '').trim().toLowerCase();
+      var shown = people.filter(function (u) {
+        if (needle && (u.name + ' ' + u.email).toLowerCase().indexOf(needle) === -1) return false;
+        if (role.value && u.role !== role.value) return false;
+        if (status.value && u.status !== status.value) return false;
+        return true;
       });
-      table.appendChild(tbody);
-      tableWrap.innerHTML = '';
-      tableWrap.appendChild(table);
-    }).catch(function (e) { toast(e.message, false); });
+      body.innerHTML = '';
+      body.appendChild(peopleTable(shown, false, [], load));
+      inviteBox.innerHTML = '';
+      var heading = el('div', 'page-head');
+      heading.innerHTML = '<div><h3>Pending invitations</h3><p class="muted">' +
+        'Each link works once. Resending retires the previous link.</p></div>';
+      inviteBox.appendChild(heading);
+      inviteBox.appendChild(inviteRows(invites, null, load));
+    }
 
+    function load() {
+      api('GET', '/api/users').then(function (d) {
+        people = d.users || [];
+        draw();
+      }).catch(function (e) { toast(e.message, false); });
+      api('GET', '/api/invites').then(function (d) {
+        invites = d.invites || [];
+        draw();
+      }).catch(function () { /* Team still works if invitations are unavailable */ });
+    }
+    search.oninput = draw;
+    role.onchange = draw;
+    status.onchange = draw;
+    load();
     return container;
   }
 
@@ -3662,8 +3948,7 @@
             var tr = el('tr');
             tr.innerHTML = '<td>' + esc(user.name) + '</td>' +
               '<td>' + esc(user.email) + '</td>' +
-              '<td><span class="badge ' + (user.role === 'member' ? 'badge-member' : 'badge-admin') + '">' +
-              esc(user.role) + '</span></td>';
+              '<td>' + personRoleBadge(user.role) + '</td>';
             var td = el('td', 'row-actions');
             var reset = el('button', 'btn btn-ghost btn-sm', 'Set password');
             reset.onclick = function () { showPasswordForm(user); };
@@ -5047,6 +5332,106 @@
     field.focus();
   }
 
+  // ---------- Platform: every person in the agency ----------
+  function viewPlatformPeople() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>People</h2><p class="muted">Agency staff and every ' +
+      'client contact in one directory. Client admins manage their own Team page; ' +
+      'this is the agency-wide view.</p></div>';
+    var actions = el('div', 'page-actions');
+    var add = el('button', 'btn btn-primary', '+ Add person');
+    add.onclick = function () { personModal(null, true, orgs, loadAll); };
+    var invite = el('button', 'btn btn-ghost', 'Invite someone');
+    invite.onclick = function () { invitePersonModal(true, orgs, null, loadAll); };
+    actions.appendChild(add);
+    actions.appendChild(invite);
+    head.appendChild(actions);
+    container.appendChild(head);
+
+    var orgs = [];
+    var people = [];
+    var invites = [];
+    var search = el('input');
+    search.type = 'search';
+    search.placeholder = 'Search people by name or email';
+    search.className = 'search-input';
+    var orgFilter = el('select');
+    orgFilter.innerHTML = '<option value="">All clients</option>' +
+      '<option value="agency">Agency only</option>';
+    var roleFilter = el('select');
+    roleFilter.innerHTML = '<option value="">All roles</option>' +
+      '<option value="owner">Agency owner</option>' +
+      '<option value="client_admin">Client admin</option>' +
+      '<option value="member">Member</option>';
+    var statusFilter = el('select');
+    statusFilter.innerHTML = '<option value="">All statuses</option>' +
+      '<option value="active">Active</option><option value="suspended">Suspended</option>';
+    var bar = el('div', 'chip-input');
+    bar.appendChild(search); bar.appendChild(orgFilter);
+    bar.appendChild(roleFilter); bar.appendChild(statusFilter);
+    container.appendChild(bar);
+
+    var body = el('div', 'mt');
+    var inviteBox = el('div', 'mt');
+    container.appendChild(body);
+    container.appendChild(inviteBox);
+
+    function drawOrgs() {
+      orgFilter.innerHTML = '<option value="">All clients</option>' +
+        '<option value="agency">Agency only</option>' +
+        orgs.map(function (o) {
+          return '<option value="' + esc(String(o.id)) + '">' + esc(o.name) + '</option>';
+        }).join('');
+    }
+
+    function draw() {
+      var needle = (search.value || '').trim().toLowerCase();
+      var shown = people.filter(function (u) {
+        if (needle && ((u.name || '') + ' ' + (u.email || '')).toLowerCase()
+            .indexOf(needle) === -1) return false;
+        if (orgFilter.value === 'agency' && u.org_id) return false;
+        if (orgFilter.value && orgFilter.value !== 'agency' &&
+            String(u.org_id || '') !== orgFilter.value) return false;
+        if (roleFilter.value && u.role !== roleFilter.value) return false;
+        if (statusFilter.value && u.status !== statusFilter.value) return false;
+        return true;
+      });
+      body.innerHTML = '';
+      body.appendChild(peopleTable(shown, true, orgs, loadAll));
+      inviteBox.innerHTML = '';
+      var heading = el('div', 'page-head');
+      heading.innerHTML = '<div><h3>Pending invitations</h3><p class="muted">' +
+        'Invitations only create client admins and members. Agency owners are added ' +
+        'directly so a link can never grant platform access.</p></div>';
+      inviteBox.appendChild(heading);
+      inviteBox.appendChild(inviteRows(invites, orgs, loadAll));
+    }
+
+    function loadAll() {
+      api('GET', '/api/platform/users').then(function (d) {
+        people = d.users || [];
+        draw();
+      }).catch(function (e) { toast(e.message, false); });
+      api('GET', '/api/invites').then(function (d) {
+        invites = d.invites || [];
+        draw();
+      }).catch(function () { /* the directory still works without invites */ });
+    }
+
+    api('GET', '/api/orgs').then(function (d) {
+      orgs = d.orgs || [];
+      drawOrgs();
+      loadAll();
+    }).catch(function (e) { toast(e.message, false); });
+
+    search.oninput = draw;
+    orgFilter.onchange = draw;
+    roleFilter.onchange = draw;
+    statusFilter.onchange = draw;
+    return container;
+  }
+
   // ---------- Platform: email and invitations ----------
   function viewPlatformEmail() {
     var container = el('div', 'container');
@@ -5095,37 +5480,7 @@
 
     function inviteForm() {
       api('GET', '/api/orgs').then(function (d) {
-        var orgs = d.orgs || [];
-        var names = ['(no client - platform staff)'].concat(
-          orgs.map(function (o) { return o.name; })
-        );
-        formModal('Invite someone', [
-          { name: 'email', label: 'Email address' },
-          { name: 'name', label: 'Their name (optional)' },
-          { name: 'org', label: 'Client', type: 'select', options: names },
-          { name: 'role', label: 'Role', type: 'select',
-            options: ['client_admin', 'client_member'] }
-        ], function (data, fail, ok) {
-          var chosen = orgs.filter(function (o) { return o.name === data.org; })[0];
-          var payload = { email: data.email, name: data.name, role: data.role };
-          if (chosen) payload.org_id = chosen.id;
-          api('POST', '/api/invites', payload).then(function (res) {
-            ok();
-            linkModal('Invitation sent', 'Emailed to ' + res.invite.email + '.', res.link, false);
-            load();
-          }).catch(function (e) {
-            var body = e.data || {};
-            if (body.invite) {
-              // Created, but the mail did not go out: the account and link are real,
-              // so show them rather than making the operator start again.
-              ok();
-              linkModal('Invitation created, email not sent', e.message, body.link, true);
-              load();
-            } else {
-              fail(e.message);
-            }
-          });
-        });
+        invitePersonModal(true, d.orgs || [], null, load);
       }).catch(function (e) { toast(e.message, false); });
     }
 
@@ -5273,7 +5628,7 @@
         var tr = el('tr');
         tr.innerHTML = '<td>' + esc(invite.email) +
           (invite.name ? '<div class="muted">' + esc(invite.name) + '</div>' : '') + '</td>' +
-          '<td><span class="badge">' + esc(invite.role) + '</span></td>' +
+          '<td>' + personRoleBadge(invite.role) + '</td>' +
           '<td><span class="badge">' + esc(invite.status) + '</span></td>' +
           '<td class="muted">' + esc((invite.expires_at || '').slice(0, 10)) + '</td>';
         var td = el('td', 'row-actions');
@@ -9687,8 +10042,10 @@
       location.replace('#/app/studio');
       return;
     }
-    // Settings is admin-only (nav hides it); a bookmark should not collect a 403 toast.
-    if (parts[0] === 'app' && parts[1] === 'settings' && !canAdmin(state.user)) {
+    // Settings and Team are admin-only (nav hides them); a bookmark should not collect
+    // a 403 toast.
+    if (parts[0] === 'app' && (parts[1] === 'settings' || parts[1] === 'team')
+        && !canAdmin(state.user)) {
       location.replace(AREAS.app.home);
       return;
     }
@@ -9715,6 +10072,7 @@
     var view;
     if (area === 'platform') {
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
+      else if (tab === 'people') view = viewPlatformPeople();
       else if (tab === 'domains') view = viewPlatformDomains();
       else if (tab === 'usage') view = viewPlatformUsage();
       else if (tab === 'servers') view = viewServers();

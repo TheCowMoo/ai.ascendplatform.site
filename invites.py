@@ -19,8 +19,15 @@ import settings
 from db import get_connection, now_str
 
 # Whoever is invited joins a client, never the platform: a stray role here would be a
-# privilege escalation delivered by email.
-ROLES = ("client_admin", "client_member")
+# privilege escalation delivered by email. `client_member` is the pre-user-management
+# spelling and is still accepted from older console links.
+ROLES = ("client_admin", "member")
+LEGACY_ROLES = {"client_member": "member"}
+
+
+def normalize_role(role):
+    role = (role or "").strip()
+    return LEGACY_ROLES.get(role, role)
 
 # The merge values a template can use, in the order the editor offers them. The label
 # and sample are for the console (chips + live preview); the key is what `render`
@@ -160,7 +167,7 @@ def create(email, name="", org_id=None, role="client_admin", invited_by=None):
     """
     email = (email or "").strip().lower()
     name = (name or "").strip()
-    role = (role or "client_admin").strip()
+    role = normalize_role(role or "client_admin")
     if not email or "@" not in email:
         raise InviteError("A valid email address is required")
     if role not in ROLES:
@@ -172,8 +179,8 @@ def create(email, name="", org_id=None, role="client_admin", invited_by=None):
             # Unusable on purpose: the account exists so the email is unique and the
             # org is fixed, but nobody knows this password until the invite is accepted.
             cur = conn.execute(
-                "INSERT INTO users (email, name, password_hash, role, org_id) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO users (email, name, password_hash, role, org_id, status) "
+                "VALUES (?, ?, ?, ?, ?, 'active')",
                 (
                     email,
                     name or email.split("@")[0],
@@ -184,12 +191,19 @@ def create(email, name="", org_id=None, role="client_admin", invited_by=None):
             )
             user_id = cur.lastrowid
         else:
-            if (existing["org_id"] or None) != (org_id or None):
+            if (existing["org_id"] or None) != (org_id or None) or existing["role"] not in (
+                    "client_admin", "member", "client_member"):
                 raise InviteError(
                     "That email already belongs to another client. Remove them there first."
                 )
             user_id = existing["id"]
             name = name or existing["name"]
+            # An invitation is also how an existing member is promoted. The role is
+            # stored on both rows so the invited link and the eventual login agree.
+            conn.execute(
+                "UPDATE users SET role = ?, name = ? WHERE id = ?",
+                (role, name, user_id),
+            )
 
         # One live link per address: an older one is withdrawn rather than left usable.
         conn.execute(
@@ -250,21 +264,30 @@ def accept(token, password):
         raise InviteError("That invitation was withdrawn - ask for a new one.")
     if invite["status"] == "expired":
         raise InviteError("That invitation has expired - ask for a new one.")
+    if normalize_role(invite.get("role")) not in ROLES:
+        raise InviteError("That invitation does not grant a client role.")
     with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT id, status FROM users WHERE id = ?", (invite["user_id"],)
+        ).fetchone()
+        if existing is None:
+            raise InviteError("The account behind that invitation no longer exists.")
+        if (existing["status"] or "active") != "active":
+            raise InviteError("This account has been paused. Contact your administrator.")
         conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (generate_password_hash(password), invite["user_id"]),
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (generate_password_hash(password), now_str(), invite["user_id"]),
         )
         conn.execute(
             "UPDATE invites SET accepted_at = ? WHERE id = ?", (now_str(), invite["id"])
         )
         user = conn.execute(
-            "SELECT id, email, name, role, org_id FROM users WHERE id = ?",
+            "SELECT id, email, name, role, org_id, status, onboarded_at FROM users WHERE id = ?",
             (invite["user_id"],),
         ).fetchone()
-    if user is None:
-        raise InviteError("The account behind that invitation no longer exists.")
-    return {key: user[key] for key in user.keys()}
+    result = {key: user[key] for key in user.keys()}
+    result["role"] = normalize_role(result["role"])
+    return result
 
 
 def preview(token):

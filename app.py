@@ -47,6 +47,7 @@ import rates as rates_service
 import usage as usage_service
 import analytics as analytics_service
 import invites as invites_service
+import user_service
 import tools as tool_registry
 import actions
 import provisioner
@@ -320,13 +321,46 @@ def _extract_webhook_payload(reply):
     return payload, "\n".join(cleaned).strip()
 
 
+def _refresh_session(user):
+    """Keep the signed session's identity hints in step with the user row."""
+    session["user_id"] = user["id"]
+    session["role"] = user["role"]
+    session["name"] = user["name"]
+    session["email"] = user["email"]
+    session["org_id"] = user["org_id"]
+
+
+def _session_account():
+    """Resolve and revalidate the caller on every request.
+
+    The returned code is ``401`` for a signed-out/deleted account and ``403`` for a
+    suspended account. Re-reading the row is what makes a role change, a client move
+    and a disable take effect immediately rather than at the next login.
+    """
+    uid = session.get("user_id")
+    if not uid:
+        return None, 401
+    user = user_service.session_user(uid)
+    if not user:
+        session.clear()
+        return None, 401
+    if user.get("status") != "active":
+        session.clear()
+        return None, 403
+    if not account_is_active(user.get("role"), user.get("org_id")):
+        session.clear()
+        return None, 403
+    _refresh_session(user)
+    return user, None
+
+
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
+        _user, error = _session_account()
+        if error == 401:
             return jsonify({"error": "Unauthorized"}), 401
-        if not account_is_active(session.get("role"), session.get("org_id")):
-            session.clear()
+        if error:
             return _inactive_account()
         return f(*args, **kwargs)
 
@@ -395,9 +429,12 @@ def owner_required(f):
 
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
+        user, error = _session_account()
+        if error == 401:
             return jsonify({"error": "Unauthorized"}), 401
-        if not is_owner():
+        if error:
+            return _inactive_account()
+        if not user_service.is_owner_role(user["role"]):
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
 
@@ -409,12 +446,13 @@ def client_admin_required(f):
 
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
+        user, error = _session_account()
+        if error == 401:
             return jsonify({"error": "Unauthorized"}), 401
-        if not account_is_active(session.get("role"), session.get("org_id")):
-            session.clear()
+        if error:
             return _inactive_account()
-        if not is_owner() and session.get("role") != CLIENT_ADMIN_ROLE:
+        if (not user_service.is_owner_role(user["role"])
+                and user["role"] != CLIENT_ADMIN_ROLE):
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
 
@@ -547,27 +585,32 @@ def login():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    row = user_service.login_user(email)
     if row and check_password_hash(row["password_hash"], password):
+        if row.get("status") != "active":
+            return jsonify({
+                "error": "This account has been paused. Contact your agency administrator."
+            }), 403
         if not account_is_active(row["role"], row["org_id"]):
             return _inactive_account()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+                (now_str(), now_str(), row["id"]),
+            )
         session.permanent = True
-        session["user_id"] = row["id"]
-        session["role"] = row["role"]
-        session["name"] = row["name"]
-        session["email"] = row["email"]
-        # The tenant lives in the signed session, never in request input.
-        session["org_id"] = row["org_id"]
+        _refresh_session(row)
         # A fresh login starts at the all-clients overview: inheriting the previous
         # session's client would mean the operator silently creating work for the wrong one.
         session.pop("acting_org_id", None)
         return jsonify({"user": {
             "id": row["id"], "email": row["email"], "name": row["name"],
             "role": row["role"], "org_id": row["org_id"],
-            "onboarded_at": row["onboarded_at"],
+            "onboarded_at": row.get("onboarded_at"),
+            "status": row.get("status") or "active",
+            "last_login_at": row.get("last_login_at"),
             # Sent with the login too, so the nav is correct without a reload.
-            "is_owner": is_owner_role(row["role"]),
+            "is_owner": user_service.is_owner_role(row["role"]),
         }})
     return jsonify({"error": "Invalid email or password"}), 401
 
@@ -624,49 +667,45 @@ def change_password():
 @app.route("/api/users/<int:user_id>/password", methods=["POST"])
 @client_admin_required
 def reset_user_password(user_id):
-    """Set someone else's password - a client admin for their own team.
-
-    No current password is asked for: the caller is an admin acting on their own
-    org, and an admin who cannot get in has no way to recover otherwise.
-    """
+    """Set someone else's password - a client admin for their own team."""
+    actor_id, actor_owner, actor_org = _user_actor()
     data = request.get_json(silent=True) or {}
     new = data.get("new_password") or data.get("password") or ""
     problem = _check_new_password(new)
     if problem:
         return jsonify({"error": problem}), 400
+    try:
+        user_service.reset_password(user_id, new, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    app.logger.info("Password reset for user %s by %s", user_id, session.get("email"))
+    return jsonify({"ok": True})
 
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, role, org_id FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-        if not row:
-            return jsonify({"error": "Not found"}), 404
-        # Same rule as deleting a user: confined to your own org, never an operator.
-        if not is_owner() and (row["role"] not in (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
-                               or not can_access_org(row["org_id"])):
-            return jsonify({"error": "Forbidden"}), 403
-        conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (generate_password_hash(new), user_id),
-        )
+
+@app.route("/api/platform/users/<int:user_id>/password", methods=["POST"])
+@owner_required
+def platform_reset_user_password(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    data = request.get_json(silent=True) or {}
+    new = data.get("new_password") or data.get("password") or ""
+    problem = _check_new_password(new)
+    if problem:
+        return jsonify({"error": problem}), 400
+    try:
+        user_service.reset_password(user_id, new, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
     app.logger.info("Password reset for user %s by %s", user_id, session.get("email"))
     return jsonify({"ok": True})
 
 
 @app.route("/api/auth/me", methods=["GET"])
 def me():
-    uid = session.get("user_id")
-    if not uid:
+    row, error = _session_account()
+    if error:
         return jsonify({"user": None})
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, email, name, role, org_id, onboarded_at FROM users WHERE id = ?", (uid,)
-        ).fetchone()
-    if not row or not account_is_active(row["role"], row["org_id"]):
-        session.clear()
-        return jsonify({"user": None})
-    payload = as_dict(row)
-    payload["is_owner"] = is_owner_role(row["role"])
+    payload = dict(row)
+    payload["is_owner"] = user_service.is_owner_role(row["role"])
     payload["org"] = orgs_service.get_org(row["org_id"]) if row["org_id"] else None
     # The client the operator is acting as. The Studio keys its remembered chat and draft
     # by this, not by the operator's own login: one login works across every client, and a
@@ -676,71 +715,164 @@ def me():
 
 
 # ---------------------------------------------------------------------------
-# Users - a client's own team. The platform owner sees every client.
+# Users - a client's own team, plus the platform owner's People directory.
 # ---------------------------------------------------------------------------
+def _user_actor():
+    return session.get("user_id"), is_owner(), session.get("org_id")
+
+
+def _user_error(exc):
+    if isinstance(exc, user_service.UserPermissionError):
+        return jsonify({"error": str(exc)}), 403
+    return jsonify({"error": str(exc)}), 400
+
+
+def _user_scope(owner_wide=False):
+    """The org filter for this request, never taken from a client-supplied value."""
+    actor_owner = is_owner()
+    if owner_wide:
+        if not actor_owner:
+            return None, (jsonify({"error": "Forbidden"}), 403)
+        org_id = request.args.get("org_id")
+        if org_id in (None, ""):
+            return None, None
+        try:
+            return int(org_id), None
+        except (TypeError, ValueError):
+            return None, (jsonify({"error": "org_id must be a number"}), 400)
+    if actor_owner:
+        return current_org(), None
+    return session.get("org_id"), None
+
+
+def _list_people(owner_wide=False):
+    org_id, error = _user_scope(owner_wide=owner_wide)
+    if error:
+        return error
+    if not is_owner() and not org_id:
+        return jsonify({"error": "Pick a client before managing its team"}), 400
+    people = user_service.list_users(
+        org_id=org_id,
+        q=request.args.get("q") or "",
+        role=request.args.get("role") or "",
+        status=request.args.get("status") or "",
+    )
+    payload = {"users": people, "roles": list(user_service.ROLES)}
+    if is_owner():
+        payload["events"] = user_service.events(org_id=org_id, limit=30)
+    return jsonify(payload)
+
+
 @app.route("/api/users", methods=["GET"])
 @client_admin_required
 def list_users():
-    clause, params = org_filter()
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, email, name, role, org_id, created_at FROM users "
-            "WHERE 1 = 1" + clause + " ORDER BY created_at",
-            params,
-        ).fetchall()
-    return jsonify({"users": [as_dict(r) for r in rows]})
+    return _list_people(owner_wide=False)
 
 
 @app.route("/api/users", methods=["POST"])
 @client_admin_required
 def create_user():
+    actor_id, actor_owner, actor_org = _user_actor()
     data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    name = (data.get("name") or "").strip() or email
-    password = data.get("password") or ""
-    if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
-
-    # A client admin can only create client roles, and only inside their own org.
-    # The platform owner may create another operator (no org) if they omit org_id.
-    allowed = ROLES if is_owner() else (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
-    role = data.get("role") or MEMBER_ROLE
-    if role not in allowed:
-        role = MEMBER_ROLE
-    org_id = data.get("org_id") if is_owner() else current_org()
-
+    # The account endpoint belongs to the acting workspace. An owner who uses it while
+    # acting as a client should add that client's person, not a no-org legacy account.
+    if actor_owner and "org_id" not in data and current_org() is not None:
+        data["org_id"] = current_org()
     try:
-        with get_connection() as conn:
-            cur = conn.execute(
-                "INSERT INTO users (email, name, password_hash, role, org_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (email, name, generate_password_hash(password), role, org_id),
-            )
-            uid = cur.lastrowid
-        return jsonify({"user": {
-            "id": uid, "email": email, "name": name, "role": role, "org_id": org_id,
-        }}), 201
-    except Exception as exc:
-        return jsonify({"error": "Could not create user (email may already exist): %s" % exc}), 400
+        person = user_service.create_user(data, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person}), 201
+
+
+@app.route("/api/users/<int:user_id>", methods=["PUT"])
+@client_admin_required
+def update_user(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    try:
+        person = user_service.update_user(
+            user_id, request.get_json(silent=True) or {}, actor_id, actor_owner, actor_org
+        )
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person})
+
+
+@app.route("/api/users/<int:user_id>/status", methods=["POST"])
+@client_admin_required
+def set_user_status(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    status = (request.get_json(silent=True) or {}).get("status")
+    try:
+        person = user_service.set_status(user_id, status, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person})
 
 
 @app.route("/api/users/<int:user_id>", methods=["DELETE"])
 @client_admin_required
 def delete_user(user_id):
-    if user_id == session.get("user_id"):
-        return jsonify({"error": "You cannot delete your own account"}), 400
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, role, org_id FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-        if not row:
-            return jsonify({"error": "Not found"}), 404
-        # A client admin may only remove their own org's staff, and never a platform
-        # operator. Without this a client admin could delete the owner's account.
-        if not is_owner() and (row["role"] not in (CLIENT_ADMIN_ROLE, MEMBER_ROLE)
-                               or not can_access_org(row["org_id"])):
-            return jsonify({"error": "Forbidden"}), 403
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    actor_id, actor_owner, actor_org = _user_actor()
+    try:
+        user_service.delete_user(user_id, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/platform/users", methods=["GET"])
+@owner_required
+def platform_list_users():
+    return _list_people(owner_wide=True)
+
+
+@app.route("/api/platform/users", methods=["POST"])
+@owner_required
+def platform_create_user():
+    actor_id, actor_owner, actor_org = _user_actor()
+    try:
+        person = user_service.create_user(
+            request.get_json(silent=True) or {}, actor_id, actor_owner, actor_org
+        )
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person}), 201
+
+
+@app.route("/api/platform/users/<int:user_id>", methods=["PUT"])
+@owner_required
+def platform_update_user(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    try:
+        person = user_service.update_user(
+            user_id, request.get_json(silent=True) or {}, actor_id, actor_owner, actor_org
+        )
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person})
+
+
+@app.route("/api/platform/users/<int:user_id>/status", methods=["POST"])
+@owner_required
+def platform_set_user_status(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    status = (request.get_json(silent=True) or {}).get("status")
+    try:
+        person = user_service.set_status(user_id, status, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
+    return jsonify({"user": person})
+
+
+@app.route("/api/platform/users/<int:user_id>", methods=["DELETE"])
+@owner_required
+def platform_delete_user(user_id):
+    actor_id, actor_owner, actor_org = _user_actor()
+    try:
+        user_service.delete_user(user_id, actor_id, actor_owner, actor_org)
+    except user_service.UserError as exc:
+        return _user_error(exc)
     return jsonify({"ok": True})
 
 
@@ -2067,22 +2199,37 @@ def _invite_link(token):
 
 
 @app.route("/api/invites", methods=["GET"])
-@owner_required
+@client_admin_required
 def list_invites():
-    return jsonify({"invites": invites_service.list_invites()})
+    org_id = request.args.get("org_id")
+    if not is_owner():
+        org_id = session.get("org_id")
+        if not org_id:
+            return jsonify({"error": "Pick a client before viewing invitations"}), 400
+    else:
+        try:
+            org_id = int(org_id) if org_id not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "org_id must be a number"}), 400
+    return jsonify({"invites": invites_service.list_invites(org_id=org_id)})
 
 
 @app.route("/api/invites", methods=["POST"])
-@owner_required
+@client_admin_required
 def create_invite():
     import platform_mail
 
     data = request.get_json(silent=True) or {}
     org_id = data.get("org_id")
-    try:
-        org_id = int(org_id) if org_id not in (None, "") else None
-    except (TypeError, ValueError):
-        return jsonify({"error": "org_id must be a number"}), 400
+    if not is_owner():
+        org_id = session.get("org_id")
+        if not org_id:
+            return jsonify({"error": "Pick a client before inviting people"}), 400
+    else:
+        try:
+            org_id = int(org_id) if org_id not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "org_id must be a number"}), 400
     try:
         invite, token = invites_service.create(
             data.get("email"),
@@ -2108,11 +2255,20 @@ def create_invite():
     return jsonify({"invite": invite, "link": _invite_link(token), "delivery": delivery}), 201
 
 
+def _can_manage_invite(invite):
+    if not invite:
+        return False
+    return is_owner() or (session.get("org_id") is not None
+                          and invite.get("org_id") == session.get("org_id"))
+
+
 @app.route("/api/invites/<int:invite_id>/resend", methods=["POST"])
-@owner_required
+@client_admin_required
 def resend_invite(invite_id):
     import platform_mail
 
+    if not _can_manage_invite(invites_service.get_invite(invite_id)):
+        return jsonify({"error": "Not found"}), 404
     try:
         invite, token = invites_service.resend(invite_id)
     except invites_service.InviteError as exc:
@@ -2128,8 +2284,10 @@ def resend_invite(invite_id):
 
 
 @app.route("/api/invites/<int:invite_id>/revoke", methods=["POST"])
-@owner_required
+@client_admin_required
 def revoke_invite(invite_id):
+    if not _can_manage_invite(invites_service.get_invite(invite_id)):
+        return jsonify({"error": "Not found"}), 404
     return jsonify({"invite": invites_service.revoke(invite_id)})
 
 
@@ -2156,12 +2314,15 @@ def accept_invite():
     except invites_service.InviteError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    if not account_is_active(user["role"], user["org_id"]):
+        return _inactive_account()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+            (now_str(), now_str(), user["id"]),
+        )
     session.clear()
-    session["user_id"] = user["id"]
-    session["role"] = user["role"]
-    session["name"] = user["name"]
-    session["email"] = user["email"]
-    session["org_id"] = user["org_id"]
+    _refresh_session(user)
     return jsonify({
         "ok": True,
         "user": {
@@ -2169,7 +2330,7 @@ def accept_invite():
             "email": user["email"],
             "name": user["name"],
             "role": user["role"],
-            "is_owner": False,
+            "is_owner": user_service.is_owner_role(user["role"]),
         },
     })
 

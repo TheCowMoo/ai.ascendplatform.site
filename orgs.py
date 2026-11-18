@@ -223,32 +223,20 @@ def list_org_users(org_id):
 
 
 def add_org_user(org_id, data):
-    """Add a login to a client - used by the platform console and the Team tab."""
+    """Add a login to a client - used by the platform console and the Team tab.
+
+    This used to be a second INSERT with its own weaker rules. It now goes through
+    ``user_service`` so the password length, role validation, status and audit are the
+    same as every other user-management path.
+    """
     if not get_org(org_id):
         raise OrgError("No such client")
-    data = data or {}
-    email = (data.get("email") or "").strip().lower()
-    password = data.get("password") or ""
-    if not email or not password:
-        raise OrgError("Email and password are required")
-    role = data.get("role") or "member"
-    if role not in ("client_admin", "member"):
-        raise OrgError("Role must be client_admin or member")
-    if not _check_email_free(email):
-        raise OrgError("That email is already in use")
+    from user_service import UserError, create_user
 
-    from werkzeug.security import generate_password_hash
-
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO users (email, name, password_hash, role, org_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                email,
-                data.get("name") or email,
-                generate_password_hash(password),
-                role,
-                org_id,
-            ),
-        )
+    payload = dict(data or {})
+    payload["org_id"] = org_id
+    try:
+        create_user(payload, actor_id=None, actor_owner=True, actor_org=None)
+    except UserError as exc:
+        raise OrgError(str(exc))
     return list_org_users(org_id)

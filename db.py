@@ -119,11 +119,33 @@ users = Table(
     # client_admin = a client's admin; member = a client's staff.
     Column("role", Text, nullable=False, server_default=_literal("member")),
     Column("org_id", Integer),
+    # Per-user administration: a suspended user is stopped even when the client account
+    # itself is active. last_login_at gives the operator a real activity signal.
+    Column("status", Text, nullable=False, server_default=_literal("active")),
+    Column("last_login_at", Text),
     # The first login gets a short spoken welcome. Per account, not per browser: a second
     # device must not replay it, and clearing localStorage must not bring it back.
     Column("onboarded_at", Text),
     _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
+
+# User administration is an audited action. A row names the actor, the target and the
+# client scope, so an agency can answer "who changed this account and when".
+user_events = Table(
+    "user_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("actor_id", Integer),
+    Column("target_id", Integer),
+    Column("org_id", Integer),
+    Column("action", Text, nullable=False),
+    Column("detail", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+
+Index("idx_user_events_target", user_events.c.target_id)
+Index("idx_user_events_org", user_events.c.org_id)
 
 bots = Table(
     "bots", metadata,
@@ -1286,6 +1308,9 @@ _ADDITIVE_COLUMNS = (
     ("automation_runs", "wake_at", "wake_at TEXT"),
     ("users", "org_id", "org_id INTEGER"),
     ("users", "onboarded_at", "onboarded_at TEXT"),
+    ("users", "status", "status TEXT NOT NULL DEFAULT 'active'"),
+    ("users", "last_login_at", "last_login_at TEXT"),
+    ("users", "updated_at", "updated_at TEXT"),
     ("bots", "org_id", "org_id INTEGER"),
     ("sites", "org_id", "org_id INTEGER"),
     ("jobs", "org_id", "org_id INTEGER"),
@@ -1363,6 +1388,20 @@ def _ensure_columns():
         if "ghl_object_links" not in tables:
             try:
                 metadata.tables["ghl_object_links"].create(bind=engine)
+            except Exception:
+                pass
+        if "user_events" not in tables:
+            try:
+                metadata.tables["user_events"].create(bind=engine)
+            except Exception:
+                pass
+        # The old invitation spelling. A dev database does not run migration 0032,
+        # so normalise it here too; the UI already labels both spellings as Member.
+        if "invites" in tables:
+            try:
+                conn.execute(
+                    "UPDATE invites SET role = 'member' WHERE role = 'client_member'"
+                )
             except Exception:
                 pass
 
