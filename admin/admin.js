@@ -7357,6 +7357,22 @@
       report('Skipped', result.skipped, function (row) {
         return (row.contact || 'contact') + ': ' + (row.reason || 'not matched');
       });
+
+      var objects = result.objects || {};
+      if (objects.total || objects.error) {
+        syncBox.appendChild(el('p', 'fine-print',
+          'Workspace records mirrored: ' + (objects.created || 0) + ' created, ' +
+          (objects.updated || 0) + ' updated, ' + (objects.skipped || 0) +
+          ' unchanged, ' + (objects.failed || []).length + ' failed.' +
+          (objects.error ? ' ' + objects.error : '')));
+        report('Workspace failures', objects.failed, function (row) {
+          return (row.title || row.object || 'record') + ': ' +
+            (row.error || 'mirror failed');
+        });
+        (objects.warnings || []).forEach(function (warning) {
+          syncBox.appendChild(el('p', 'fine-print', warning));
+        });
+      }
       syncBox.hidden = false;
     }
 

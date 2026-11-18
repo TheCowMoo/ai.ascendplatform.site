@@ -108,7 +108,7 @@ def _short(text, limit=400):
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
-def _call(method, path, payload=None, org_id=None):
+def _call(method, path, payload=None, org_id=None, version=None):
     """Call the GHL API and return the decoded body, or raise MailError."""
     conn = connection(org_id)
     if org_id is not None and not client_configured(org_id):
@@ -121,7 +121,10 @@ def _call(method, path, payload=None, org_id=None):
             "GoHighLevel is not configured: set the API token and location id in "
             "Settings -> Platform email."
         )
-    status, raw = _transport(method, conn["base"] + path, _headers(conn), payload)
+    headers = _headers(conn)
+    if version:
+        headers["Version"] = str(version)
+    status, raw = _transport(method, conn["base"] + path, headers, payload)
     try:
         body = json.loads(raw) if raw.strip() else {}
     except ValueError:
@@ -131,13 +134,15 @@ def _call(method, path, payload=None, org_id=None):
     return body
 
 
-def api_call(method, path, payload=None, org_id=None):
-    """Public GHL call for the contact mirror.
+def api_call(method, path, payload=None, org_id=None, version=None):
+    """Public GHL call for the mirror modules.
 
     Mail owns the credentials and transport; the mirror must not duplicate either.
     The call keeps the same client/platform scope rules as every mail operation.
+    ``version`` lets the newer custom-object endpoints use their v3 header without
+    changing the version the mail and contact endpoints already use.
     """
-    return _call(method, path, payload=payload, org_id=org_id)
+    return _call(method, path, payload=payload, org_id=org_id, version=version)
 
 
 def _describe_failure(method, path, status, raw):

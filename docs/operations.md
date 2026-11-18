@@ -103,6 +103,17 @@ The run is a `contact_sync` job. If the workspace has no upstream credentials, t
 button returns a plain-language setup message instead of starting a job. A remote
 deletion is reported and retained locally; it is not a local delete.
 
+## Workspace object mirror
+
+The same **Sync with AscendPlatform** action also mirrors forms, form responses, content
+drafts, sites and automations as records of a GHL custom object named **AscendPlatform
+item**. The schema and its fields are created on the first run. `ghl_object_links`
+remembers each local row's remote record, and an unchanged record is skipped. This is an
+outbound mirror; editing one of those records in GHL does not change the source document.
+If the client's token cannot create object schemas, contacts still sync and the result
+shows a workspace warning. The native GHL forms/funnels/workflows APIs are read-only, so
+the custom object is the supported visible mirror.
+
 ## Notifications
 
 Form submissions now queue a “New lead” email to the client's `client_admin` users.

@@ -59,6 +59,7 @@ FAST_SUITES = (
     "test_build_tool",
     "test_client_ghl",
     "test_contact_sync",
+    "test_workspace_sync",
     "smoke_onboarding",
     "smoke_voice",
     "smoke_automations",

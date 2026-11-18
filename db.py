@@ -365,6 +365,27 @@ contact_sync_state = Table(
     Column("last_error", Text, nullable=False, server_default=_literal("")),
 )
 
+# The workspace-object mirror: one mapping row per local form, content draft,
+# automation, site or form response that has a custom-object record in GHL.
+# ``sync_hash`` makes a no-change run cheap and ``error`` keeps one bad record
+# from hiding the rest of the workspace.
+ghl_object_links = Table(
+    "ghl_object_links",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("object_kind", Text, nullable=False),
+    Column("local_id", Integer, nullable=False),
+    Column("remote_record_id", Text),
+    Column("schema_key", Text, nullable=False, server_default=_literal("")),
+    Column("sync_hash", Text, nullable=False, server_default=_literal("")),
+    Column("synced_at", Text),
+    Column("error", Text, nullable=False, server_default=_literal("")),
+    UniqueConstraint("org_id", "object_kind", "local_id", name="uq_ghl_object_links"),
+)
+
+Index("idx_ghl_object_links_org", ghl_object_links.c.org_id)
+
 # Reusable email templates: what a "send an email from my templates" step points at.
 email_templates = Table(
     "email_templates",
@@ -1337,6 +1358,11 @@ def _ensure_columns():
         if "contact_sync_state" not in tables:
             try:
                 metadata.tables["contact_sync_state"].create(bind=engine)
+            except Exception:
+                pass
+        if "ghl_object_links" not in tables:
+            try:
+                metadata.tables["ghl_object_links"].create(bind=engine)
             except Exception:
                 pass
 

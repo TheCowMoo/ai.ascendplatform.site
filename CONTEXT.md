@@ -452,9 +452,22 @@ arbitrary custom fields. Ascend-only form responses are pushed as the managed
 by the newer timestamp, with ties going to AscendPlatform, and is always reported. Remote
 deletions are retained locally and surfaced as a failure, never silently deleted.
 
-GHL/Facebook etc. object mirroring (forms, websites, automations, opportunities,
-appointments) is a later phase; it needs a mapping per upstream object. `0030_contact_sync`
-adds the schema and `_ensure_columns()` repairs a dev SQLite file that predates it.
+`0030_contact_sync` adds the contact schema and `_ensure_columns()` repairs a dev SQLite
+file that predates it. Phase 2 (`0031_object_mirror`) adds a GHL custom object named
+`AscendPlatform item`. `workspace_sync.py`
+creates the schema and its typed fields once, then mirrors one record per form, form
+response, content deliverable, site and automation. Record mappings live in
+`ghl_object_links` (migration `0031_object_mirror`), keyed by org, kind and local id.
+The `sync_hash` makes a no-change run skip every record; a changed local row updates its
+existing remote record. Custom-object endpoints use the v3 header while contact/mail calls
+keep their configured version. The object mirror is outbound: GHL edits to these records
+are not allowed to overwrite the source document. If the client token lacks
+`objects/schema.write`, contacts still sync and the result carries a clear workspace
+warning instead of failing the whole run. Native GHL forms/funnels/workflows are not
+creatable through their APIs, so the custom object is the visible workspace mirror.
+Opportunities, appointments and other native GHL objects remain later phases; they need
+a real Ascend-side record and a configured pipeline/calendar mapping first.
+
 
 ## Guided builds - plain questions, safe drafts (2026-11-13, phase 1)
 
