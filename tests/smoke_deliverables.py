@@ -120,8 +120,40 @@ def test_page_paths():
     assert deliverables.page_path("") == "index.html"
     assert deliverables.page_path("home") == "index.html"
     assert deliverables.page_path("About Us") == "about-us.html"
+    assert deliverables.relative_page_path("/about") == "about.html"
+    assert deliverables.relative_page_path("about.html") == "about.html"
+    try:
+        deliverables.relative_page_path("home")
+    except deliverables.DeliverableError:
+        pass
+    else:
+        raise AssertionError("a subpage target must not silently mean the root")
     print("page paths OK")
 
+
+
+def test_saving_a_new_slug_creates_a_sibling_page():
+    org = _org("Deliverable Sibling Client")
+    site = _site("siblings", org["id"])
+    job_id = _job_in_org(org["id"])
+    home = deliverables.create_deliverable(
+        {"kind": "website", "title": "Home", "slug": "home",
+         "content": "<html>home</html>", "job_id": job_id},
+        org_id=org["id"],
+    )
+    with db.get_connection() as conn:
+        conn.execute("UPDATE jobs SET deliverable_id = ? WHERE id = ?", (home["id"], job_id))
+    reply = asyncio.run(_save_tool(job_id).run_json({
+        "kind": "website", "title": "About", "slug": "about",
+        "site_id": site["id"], "content": "<html>about</html>", "summary": "About page",
+    }, DRY))
+    assert "Saved" in reply, reply
+    rows = deliverables.list_deliverables("website", org["id"])
+    by_slug = {row["slug"]: row for row in rows}
+    assert set(by_slug) == {"home", "about"}, rows
+    assert by_slug["home"]["content"] == "<html>home</html>", by_slug["home"]
+    assert by_slug["about"]["site_id"] == site["id"], by_slug["about"]
+    print("a new page slug creates a sibling instead of overwriting home")
 
 
 def test_publish_needs_a_site():
@@ -379,6 +411,7 @@ def main():
     test_the_tool_refuses_an_unknown_kind()
     test_content_rule_travels_with_the_tool()
     test_page_paths()
+    test_saving_a_new_slug_creates_a_sibling_page()
     test_publish_needs_a_site()
     test_publish_is_a_dry_run_and_leaves_the_page_a_draft()
     test_a_live_page_cannot_be_overwritten_by_slug()

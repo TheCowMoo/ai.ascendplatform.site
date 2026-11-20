@@ -94,6 +94,18 @@ again. The last active owner and the last active client admin cannot be removed,
 disabled or demoted, so a workspace is never left with nobody able to administer it.
 Every change is visible in `user_events` for support and audit.
 
+## Publishing pages and subpages
+
+A website can be one page or a multi-page site. The website build asks how many pages
+are needed; choosing a few creates Home plus the selected About/Services/Contact/Blog
+pages, and **Publish site** writes them together under one approval.
+
+When adding a page later, create a new page with a distinct URL name (for example
+`about`) and choose **Subpage** in Publish. The target is independent of the draft slug,
+so even a draft whose slug is `home` can be published to `/about.html` without replacing
+the live front page. Use the home-page choice only when the page really is the new root;
+the server still asks for confirmation before replacing a different live page.
+
 ## Analytics sources
 
 Analytics is workspace-scoped. A client admin can connect a Google Analytics 4

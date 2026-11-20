@@ -16,7 +16,7 @@ KINDS = ("website", "blog", "form", "newsletter")
 KIND_META = {
     "website": {
         "label": "Website",
-        "blurb": "A simple one-page site with your services, contact details and optional forms.",
+        "blurb": "A site with your services, contact details and optional forms - one page or a few linked pages.",
         "title": "a simple website",
     },
     "blog": {
@@ -617,6 +617,10 @@ def seed_answers(kind, profile=None, goal=""):
             break
     low = str(goal or "").lower()
     if kind == "website":
+        if any(phrase in low for phrase in (
+                "multi-page", "multipage", "multiple pages", "several pages",
+                "few pages", "about page", "services page", "contact page", "blog page")):
+            answers["site_size"] = "multi_page"
         for needle, value in (("book", "book"), ("call", "call"), ("buy", "buy"),
                               ("shop", "buy"), ("sign up", "signup"), ("signup", "signup"),
                               ("subscribe", "signup"), ("look", "look")):

@@ -379,6 +379,30 @@ def page_path(slug):
     return cleaned + ".html"
 
 
+def relative_page_path(value):
+    """Normalise an explicit subpage target, refusing directories and root.
+
+    A publish target is a filename, not a request path: ``about``, ``/about`` and
+    ``about.html`` all mean ``about.html``. The home page remains an explicit
+    ``as_home=True`` choice so a typo cannot overwrite it.
+    """
+    raw = str(value or "").strip().replace("\\", "/").strip("/")
+    if not raw:
+        raise DeliverableError("Give the subpage a name, such as about.")
+    if "/" in raw:
+        raise DeliverableError(
+            "Use a single subpage name, such as about; nested folders are not supported.")
+    if raw.lower().endswith(".html"):
+        raw = raw[:-5]
+    cleaned = slugify(raw)
+    if not cleaned:
+        raise DeliverableError("Use letters or numbers for the subpage name.")
+    if cleaned in ("home", "index"):
+        raise DeliverableError(
+            "Use the home-page option to publish at the site root, not a subpage path.")
+    return cleaned + ".html"
+
+
 def _resolve_site(item, site_id):
     """The site to publish to, or DeliverableError explaining what to do about it."""
     import sites as sites_service
@@ -429,13 +453,13 @@ def _slug_conflict(item, site, relative=None):
 
 
 def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
-                        replace=False, preapproved=False):
+                        replace=False, preapproved=False, relative=None):
     """Write a ``website`` deliverable to a site's docroot and mark it published.
 
     ``as_home`` publishes the page as the site's front page (``index.html``) and records
-    that choice in the draft's slug. Without it the slug decides the path, so a page
-    named "Cow Barn Tour - Home" used to publish to ``/cow-barn-tour-home.html`` and
-    leave the root on the starter page.
+    that choice in the draft's slug. Without it, an explicit ``relative`` target wins;
+    otherwise the slug decides the path. This lets a draft whose slug is ``home`` be
+    published to ``about.html`` without touching the live front page.
 
     ``replace`` is the user's confirmation for writing over a non-empty, non-starter
     target. The console asks before setting it; the voice/Manager tool is expected to
@@ -458,7 +482,14 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
     if not (item.get("content") or "").strip():
         raise DeliverableError("This page has no content to publish yet.")
 
-    relative = "index.html" if as_home else page_path(item.get("slug"))
+    explicit_relative = None
+    if as_home:
+        relative = "index.html"
+    elif relative not in (None, ""):
+        relative = relative_page_path(relative)
+        explicit_relative = relative
+    else:
+        relative = page_path(item.get("slug"))
     site = _resolve_site(item, site_id)
     conflict = _slug_conflict(item, site, relative=relative)
     if conflict:
@@ -532,6 +563,10 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
     if as_home:
         # Make the choice stick: a later publish of this draft is still the home page.
         update_data["slug"] = "index"
+    elif explicit_relative:
+        # The explicit target is the page's address now. Without this, a home-slug
+        # draft published once to /about.html would snap back to / on the next publish.
+        update_data["slug"] = explicit_relative[:-5]
     updated = update_deliverable(item["id"], update_data)
     if relative == "index.html":
         # Mirror what write_site_content does, so the site row and the page agree.

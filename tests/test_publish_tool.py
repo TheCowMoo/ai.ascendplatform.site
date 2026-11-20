@@ -122,6 +122,17 @@ def test_the_tool_publishes_and_signs_the_approval():
     check("and nothing left pending", actions.list_approvals(status="pending"), [])
 
 
+def test_the_tool_can_target_a_subpage_explicitly():
+    target = make_site("tool-subpage.test")
+    item = make_page("Landing", slug="home")
+    job = make_job(deliverable_id=item["id"])
+    with live_actions():
+        message = publish_with_tool(job, site_id=target["id"], path="about")
+    path = os.path.join(DOCROOT, "tool-subpage.test", "public_html", "about.html")
+    check("the tool writes the named subpage", os.path.exists(path), True)
+    check("and reports its URL", "https://tool-subpage.test/about.html" in message, True)
+
+
 def test_the_voice_can_publish_after_confirming():
     client = appmod.app.test_client()
     client.post("/api/auth/login", json={"email": "admin@example.com",
@@ -176,6 +187,7 @@ if __name__ == "__main__":
     try:
         test_the_tool_refuses_guesses()
         test_the_tool_publishes_and_signs_the_approval()
+        test_the_tool_can_target_a_subpage_explicitly()
         test_the_voice_can_publish_after_confirming()
         test_voice_asks_when_there_are_several_sites()
     finally:

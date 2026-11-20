@@ -882,15 +882,20 @@ route, and the Pages badge says "draft changes" while the old file is still live
 publish records that subpage, not the home page, and `versions.restore()` writes the file
 through the provisioner with an approval row instead of only updating `sites.content_html`.
 
-**Publishing names its target.** `publish_deliverable(..., as_home=False, replace=False)`:
-`as_home` writes `index.html` and records the slug as `index`; otherwise the slug decides
-`/<slug>.html`. Before writing it reads the target. A non-empty, non-starter target with
-different content needs `replace=True`; the console's Publish dialog names the URL and is
-the confirmation, while the voice/Manager tool returns "ask the user" and only proceeds
-after a yes. The starter root (`provisioner.is_starter_content`) may be replaced by the first
-home publish. A subpage publish on a starter root warns that the root is still the starter.
-The dialog defaults to Home page when the site root is the starter; the Manager and voice
-must say the exact URL, root or subpage, not just "live".
+**Publishing names its target.** `publish_deliverable(..., as_home=False, replace=False,
+relative=None)`: `as_home` writes `index.html` and records the slug as `index`; an explicit
+`relative` (`about`, `/about`, `about.html`) writes `about.html` and becomes the draft's
+slug; otherwise the slug decides `/<slug>.html`. This means a home-slug draft can grow
+into an `/about.html` subpage without touching the live root. `save_deliverable` accepts
+`slug` and `site_id`, so asking the Manager for a second page creates a sibling instead of
+overwriting the page bound to the job. Before writing, the target is read. A non-empty,
+non-starter target with different content needs `replace=True`; the console's Publish
+dialog names the URL and is the confirmation, while the voice/Manager tool returns "ask
+the user" and only proceeds after a yes. The starter root
+(`provisioner.is_starter_content`) may be replaced by the first home publish. A subpage
+publish on a starter root warns that the root is still the starter. The dialog defaults to
+Home page when the site root is the starter; the Manager and voice must say the exact URL,
+root or subpage, not just "live".
 
 `repair_deliverable.py --id N --from-live` is the one-off for a draft whose content was
 destroyed after the page was already live: dry-run by default, prints the live title/H1 and

@@ -2142,6 +2142,8 @@ def publish_deliverable(deliverable_id):
             site_id=data.get("site_id"),
             actor=session.get("email") or session.get("name") or "operator",
             as_home=bool(data.get("as_home")),
+            # A subpage target is explicit, never inferred from a title.
+            relative=data.get("path") or data.get("relative"),
             # The console's publish dialog names the target and is the confirmation.
             replace=bool(data.get("replace")),
         )
@@ -3073,7 +3075,9 @@ def voice_tool():
         try:
             result = deliverables_service.publish_deliverable(
                 item["id"], site_id=site["id"], actor=actor,
-                as_home=as_home, replace=replace)
+                as_home=as_home,
+                relative=str(args.get("path") or args.get("subpage") or "").strip(),
+                replace=replace)
         except deliverables_service.DeliverableError as exc:
             return jsonify({"error": str(exc)}), 400
         if turn:

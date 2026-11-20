@@ -94,6 +94,9 @@ def test_seed_and_summary_are_plain_language():
     check("the business name is prefilled", seeded["business_name"], "Acme Bakery")
     check("the services are prefilled", "Bread" in seeded["services"], True)
     check("the colour is prefilled", seeded["brand_color"], "#123456")
+    multi = guides.seed_answers("website", profile, "build a multipage bakery site")
+    check("a multi-page request preselects the full site", multi.get("site_size"),
+          "multi_page")
     payload = guides.payload("website", seeded, 0, "asking", build_id=7)
     check("the first step is shown", len(payload["questions"]) > 0, True)
     check("its title names the business", "Acme Bakery" in payload["title"], True)

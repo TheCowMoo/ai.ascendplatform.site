@@ -278,6 +278,11 @@ def publish_declaration():
                     "type": "BOOLEAN",
                     "description": ("True when the page should be the site's front page at "
                                     "/; false or omitted puts it at /<slug>.html.")},
+                "path": {
+                    "type": "STRING",
+                    "description": ("For a subpage, the name to publish under: 'about' or "
+                                    "'about.html' becomes /about.html. Do not use this for "
+                                    "the home page; use as_home instead.")},
                 "replace": {
                     "type": "BOOLEAN",
                     "description": ("True only after the user agrees to replace an existing "
@@ -370,7 +375,8 @@ def instruction(org_name="", page="", intro=False, role=""):
         "details. "
         "publish_page is the one action you take yourself, and only after an explicit yes: "
         "say which page and which domain will go live, and whether it is the home page at "
-        "the root or a subpage at /<slug>.html; ask shall I publish it now, and wait. If "
+        "the root or a subpage at /<slug>.html; for a subpage pass its path as path, and "
+        "for the home page pass as_home. Ask shall I publish it now, and wait. If "
         "the live page already has content, say that publishing will replace it and ask "
         "again before passing replace. Never call it in the same turn as the question, or "
         "because the user asked what "

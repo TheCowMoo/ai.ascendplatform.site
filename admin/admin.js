@@ -676,7 +676,7 @@
     // One publish call site: the existing helper sends as_home/replace exactly as the
     // publish dialog does, so the two doors cannot drift apart.
     sendPublish({ id: result.deliverable_id }, result.site_id, null, button,
-                result.kind === 'website');
+                result.kind === 'website', '');
   }
 
   function initials(name) {
@@ -4472,11 +4472,14 @@
     }).catch(function (e) { toast(e.message, false); });
   }
 
-  function sendPublish(item, siteId, onDone, button, asHome) {
+  function sendPublish(item, siteId, onDone, button, asHome, path) {
     if (button) button.disabled = true;
     api('POST', '/api/deliverables/' + item.id + '/publish', {
       site_id: siteId,
       as_home: !!asHome,
+      // The explicit subpage target is independent of the draft's slug. A home-slug
+      // draft can be published to /about.html without replacing the live front page.
+      path: asHome ? '' : (path || ''),
       // The publish dialog names the exact target and is the confirmation. The server
       // still refuses a replacement that no dialog confirmed.
       replace: true
@@ -4503,8 +4506,8 @@
         return;
       }
       var slug = (item.slug || 'page').trim();
-      var subpath = '/' + slug + '.html';
       var slugIsHome = !slug || slug === 'home' || slug === 'index';
+      var defaultPath = slugIsHome ? 'about.html' : (slug + '.html');
       var first = sites[0];
       var starter = /This site is ready/i.test(first.content_html || '');
       var defaultWhere = (slugIsHome || starter) ? 'home' : 'subpage';
@@ -4517,12 +4520,15 @@
       }
       fields.push({
         name: 'where', label: 'Where should it go?', type: 'select', value: defaultWhere,
-        options: slugIsHome
-          ? [{ label: 'Home page (/)', value: 'home' }]
-          : [{ label: 'Home page (/) - the site front page', value: 'home' },
-             { label: 'Subpage (' + subpath + ')', value: 'subpage' }],
+        options: [{ label: 'Home page (/) - the site front page', value: 'home' },
+                  { label: 'Subpage (for example /about.html)', value: 'subpage' }],
         help: 'Publishes to ' + first.domain + '. The exact URL appears in the toast. ' +
               'A live page with different content is replaced only after this confirmation.'
+      });
+      fields.push({
+        name: 'path', label: 'Subpage path', value: defaultPath,
+        help: 'Used when you choose Subpage. A home-slug draft can go to /about.html ' +
+              'without replacing the live home page. Use one name, such as about.'
       });
       // One publish, not two: this used to POST here and again inside sendPublish, which
       // wrote the page twice and asked for two approvals.
@@ -4530,8 +4536,12 @@
         var chosen = sites.filter(function (s) {
           return String(s.id) === String(data.site || first.id);
         })[0] || first;
+        if (data.where === 'subpage' && !(data.path || '').trim()) {
+          fail('Give the subpage a name, such as about.');
+          return;
+        }
         ok();
-        sendPublish(item, chosen.id, onDone, button, data.where === 'home');
+        sendPublish(item, chosen.id, onDone, button, data.where === 'home', data.path);
       }, 'Publish');
     }).catch(function (e) {
       if (button) button.disabled = false;

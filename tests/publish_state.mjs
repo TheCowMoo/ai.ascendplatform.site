@@ -17,7 +17,9 @@ assert.ok(source.includes("name: 'where'"), 'the publish dialog asks where the p
 assert.ok(source.includes("label: 'Home page (/) - the site front page'"),
   'the home-page choice is named');
 assert.ok(source.includes('Subpage ('), 'the exact subpage path is shown');
+assert.ok(source.includes("name: 'path'"), 'the subpage path can be edited');
 assert.ok(source.includes('as_home: !!asHome'), 'the console sends the chosen target');
+assert.ok(source.includes('path: asHome'), 'the console sends the explicit subpage target');
 assert.ok(source.includes('replace: true'),
   'the dialog is the confirmation for replacing a live page');
 assert.ok(source.includes('This site is ready'),

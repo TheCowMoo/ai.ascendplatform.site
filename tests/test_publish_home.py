@@ -112,6 +112,23 @@ def test_a_subpage_publish_records_that_file_not_the_home_page():
           any(row["path"] == "about.html" for row in version_rows), True)
 
 
+def test_an_explicit_subpage_target_does_not_need_a_subpage_slug():
+    """A home-slug draft can be published to /about.html without touching the root."""
+    target = make_site("explicit-subpage.test")
+    item = page("About from home draft", "<h1>About us</h1>", slug="home")
+    with live_actions():
+        result = deliverables.publish_deliverable(
+            item["id"], site_id=target["id"], actor="tester", relative="about")
+    about = os.path.join(DOCROOT, "explicit-subpage.test", "public_html", "about.html")
+    check("the explicit path writes about.html", read(about), "<h1>About us</h1>")
+    check("the root starter page is untouched",
+          "This site is ready" in sites_service.get_site(target["id"])["content_html"], True)
+    check("the URL names the subpage", result["url"],
+          "https://explicit-subpage.test/about.html")
+    check("the draft adopts the subpage slug",
+          deliverables.get_deliverable(item["id"])["slug"], "about")
+
+
 def test_a_live_page_is_replaced_only_with_a_confirmation():
     target = make_site("replace.test")
     item = page("Report", "<h1>QA report</h1>", slug="report")
@@ -162,6 +179,7 @@ if __name__ == "__main__":
     try:
         test_as_home_writes_index_and_records_the_choice()
         test_a_subpage_publish_records_that_file_not_the_home_page()
+        test_an_explicit_subpage_target_does_not_need_a_subpage_slug()
         test_a_live_page_is_replaced_only_with_a_confirmation()
         test_restore_writes_the_file_the_snapshot_came_from()
     finally:

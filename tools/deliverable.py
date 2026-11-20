@@ -25,6 +25,8 @@ DESCRIPTION = (
     "that means self-contained HTML with inline CSS (email clients strip <style> and "
     "<head>), no markdown code fences and no commentary around it. "
     "summary is one sentence describing it. "
+    "For a second website page, pass slug='about' (and site_id when known) so it is a "
+    "sibling page, not an overwrite of the page on the canvas. "
     "It is always saved as a draft - the user decides when to publish or send."
 )
 
@@ -130,8 +132,14 @@ def _draft_from_this_job(job_id, org_id, kind, title):
 
 def _build_save_deliverable(emit, job_id=None):
     async def save_deliverable(kind: str, title: str, content: str = "", summary: str = "",
-                               deliverable_id: int = 0) -> str:
-        """Save content you have written as a draft the user can open in the console."""
+                               deliverable_id: int = 0, slug: str = "",
+                               site_id: int = 0) -> str:
+        """Save content you have written as a draft the user can open in the console.
+
+        For an additional page on the same site, pass a distinct ``slug`` (for example
+        ``about``) and optionally ``site_id``. That creates a sibling page instead of
+        overwriting the page currently bound to this job.
+        """
         if not (content or "").strip():
             # A missing content argument used to surface as a pydantic validation error,
             # which tells the model nothing it can act on. Say it plainly instead.
@@ -180,6 +188,24 @@ def _build_save_deliverable(emit, job_id=None):
                  % (deliverables_service.TABS.get(requested, "Library"),
                     requested, model_kind or "unspecified"))
         kind = requested or model_kind
+        wanted_slug = ""
+        raw_slug = str(slug or "").strip().strip("/")
+        if raw_slug.lower().endswith(".html"):
+            raw_slug = raw_slug[:-5]
+        if raw_slug:
+            wanted_slug = deliverables_service.slugify(raw_slug)
+            if not wanted_slug:
+                return "Nothing was saved: the slug must contain letters or numbers."
+        page_site_id = None
+        if site_id:
+            try:
+                page_site_id = int(site_id)
+            except (TypeError, ValueError):
+                return "Nothing was saved: site_id must be a number."
+            import sites as sites_service
+            site = sites_service.get_site(page_site_id)
+            if not site or site.get("org_id") != org_id:
+                return "Nothing was saved: that site does not belong to this client."
         # The draft this run must edit: the id the model named, else the one the job was
         # bound to when it started. Studio turns bind the job, so a delegated child that
         # forgets the argument still updates the page instead of saving a sibling.
@@ -195,29 +221,44 @@ def _build_save_deliverable(emit, job_id=None):
             target = deliverables_service.get_deliverable(bound)
             if target and target.get("org_id") not in (None, org_id):
                 target = None
-        # The team often saves before the images are chosen, then again once they are.
-        # Updating this job's own draft keeps one row instead of a duplicate per pass.
-        existing = target or _draft_from_this_job(job_id, org_id, kind, title)
+        # A new slug on the bound page means "add another page", not "rename the page
+        # the user is looking at". Without this, asking for About in the same job that
+        # created Home overwrote Home and then tried to publish it as the root again.
+        if not wanted and target and wanted_slug and target.get("slug") != wanted_slug:
+            target = None
+        if target is not None or wanted:
+            # An explicitly named draft may still change its slug.
+            existing = target
+        else:
+            existing = _draft_from_this_job(job_id, org_id, kind, title)
+            if existing and wanted_slug and existing.get("slug") != wanted_slug:
+                existing = None
         try:
             if existing:
-                item = deliverables_service.update_deliverable(
-                    existing["id"],
-                    {"kind": kind, "content": content,
-                     # Recording the writer is what lets the canvas find an *edited*
-                     # draft with ?job_id=, not only a newly created one.
-                     "job_id": job_id,
-                     "summary": summary or existing.get("summary") or ""},
-                )
+                changed = {
+                    "kind": kind, "content": content,
+                    # Recording the writer is what lets the canvas find an *edited*
+                    # draft with ?job_id=, not only a newly created one.
+                    "job_id": job_id,
+                    "summary": summary or existing.get("summary") or "",
+                }
+                if wanted_slug:
+                    changed["slug"] = wanted_slug
+                if page_site_id:
+                    changed["site_id"] = page_site_id
+                item = deliverables_service.update_deliverable(existing["id"], changed)
                 verb = "Updated"
             else:
                 item = deliverables_service.create_deliverable(
                     {
                         "kind": kind,
                         "title": title,
+                        "slug": wanted_slug,
                         "content": content,
                         "summary": summary,
                         "status": "draft",
                         "job_id": job_id,
+                        "site_id": page_site_id,
                     },
                     org_id=org_id,
                     created_by=requester,

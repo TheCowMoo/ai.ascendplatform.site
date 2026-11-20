@@ -143,17 +143,19 @@ def _build_list_sites(emit, job_id=None):
 def _build_publish_page(emit, job_id=None):
     async def publish_page(deliverable_id: int = 0, title: str = "",
                            site_id: int = 0, as_home: bool = False,
-                           replace: bool = False) -> str:
+                           path: str = "", replace: bool = False) -> str:
         """Publish a website page to this client's site and return its URL.
 
         The page is the one this run is bound to, an explicit id, or the newest website
         draft (optionally matched by ``title``). With one site it publishes there; with
         several it asks which domain rather than guessing.
 
-        ``as_home=True`` puts the page at the site root (``index.html``); otherwise it
-        lands at ``/<slug>.html``. If the target already has content, the first call
-        returns a request to confirm with the user; call again with ``replace=True``
-        only after they say yes. Always report the exact URL to the user.
+        ``as_home=True`` puts the page at the site root (``index.html``). Otherwise
+        ``path`` chooses the subpage (``about``, ``/about`` or ``about.html``); without
+        a path the draft slug decides. A home-slug draft can therefore be published to
+        a subpage without replacing the live front page. If the target already has
+        content, the first call returns a request to confirm with the user; call again
+        with ``replace=True`` only after they say yes. Always report the exact URL.
         """
         job = (jobs.get_job(job_id) if job_id else None) or {}
         if job.get("read_only"):
@@ -217,7 +219,7 @@ def _build_publish_page(emit, job_id=None):
         try:
             result = deliverables_service.publish_deliverable(
                 item["id"], site_id=site["id"], actor=actor,
-                as_home=bool(as_home), replace=bool(replace))
+                as_home=bool(as_home), relative=path, replace=bool(replace))
         except deliverables_service.DeliverableError as exc:
             return "Not published: %s" % exc
         if result.get("dry_run"):
