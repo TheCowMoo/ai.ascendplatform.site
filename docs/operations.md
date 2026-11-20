@@ -69,9 +69,11 @@ pause a client:
 3. The client's login is refused until status is set back to `active`; public chatbots,
    Meta replies and hosted forms also stop. Published websites remain live until removed.
 
-The platform owner is never blocked, so support can still inspect the account. If a
-client loses their password, an operator resets it from the client's Team page; there is
-no public forgot-password flow yet. Keep that support path in the onboarding email.
+The platform owner is never blocked, so support can still inspect the account. A client
+can use **Forgot password?** on the sign-in page. The link is single-use, expires in 60
+minutes and is sent through the platform's GoHighLevel sender. If platform email is not
+configured, the request still receives the generic success message and support can reset
+the password from the client's Team page. Keep that support path in the onboarding email.
 
 ## People and Team
 

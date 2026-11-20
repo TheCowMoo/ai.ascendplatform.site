@@ -47,6 +47,7 @@ import rates as rates_service
 import usage as usage_service
 import analytics as analytics_service
 import invites as invites_service
+import password_resets
 import user_service
 import tools as tool_registry
 import actions
@@ -657,11 +658,68 @@ def change_password():
         if not row or not check_password_hash(row["password_hash"], current):
             return jsonify({"error": "That is not your current password"}), 403
         conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (generate_password_hash(new), session["user_id"]),
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (generate_password_hash(new), now_str(), session["user_id"]),
         )
+    password_resets.revoke_all(session["user_id"])
     app.logger.info("Password changed by %s", session.get("email"))
     return jsonify({"ok": True})
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def forgot_password():
+    """Start a reset without revealing whether the email belongs to an account."""
+    import platform_mail
+
+    data = request.get_json(silent=True) or {}
+    result = password_resets.request((data.get("email") or "").strip())
+    if result:
+        token, user = result
+        subject, html = password_resets.render(user, token, base_url=request.url_root)
+        try:
+            platform_mail.send(
+                user["email"], subject, html,
+                custom_fields={"name": user.get("name") or ""},
+            )
+        except platform_mail.MailError as exc:
+            # The link exists and works; only delivery failed. Never put the token in
+            # the response - that would let an anonymous caller reset any account.
+            app.logger.warning("Password reset email was not sent: %s", exc)
+    return jsonify({
+        "ok": True,
+        "message": "If that email is registered, a reset link is on its way.",
+    })
+
+
+@app.route("/api/auth/reset/<token>", methods=["GET"])
+def preview_password_reset(token):
+    reset = password_resets.get(token)
+    if not reset:
+        return jsonify({"error": "That reset link is not valid."}), 404
+    return jsonify({"reset": {
+        "name": reset.get("name") or "",
+        "email": reset.get("email") or "",
+        "expires_at": reset.get("expires_at"),
+        "status": reset["status"],
+    }})
+
+
+@app.route("/api/auth/reset", methods=["POST"])
+def reset_password():
+    data = request.get_json(silent=True) or {}
+    password = data.get("password") or ""
+    confirm = data.get("confirm_password")
+    if confirm is not None and confirm != password:
+        return jsonify({"error": "The two passwords do not match"}), 400
+    problem = _check_new_password(password)
+    if problem:
+        return jsonify({"error": problem}), 400
+    try:
+        user = password_resets.consume(data.get("token"), password)
+    except password_resets.ResetError as exc:
+        return jsonify({"error": str(exc)}), 400
+    app.logger.info("Password reset completed by %s", user["email"])
+    return jsonify({"ok": True, "message": "Your password has been updated. You can sign in now."})
 
 
 @app.route("/api/users/<int:user_id>/password", methods=["POST"])
@@ -2306,6 +2364,9 @@ def accept_invite():
     """Set the password and start the session - the whole point of the link."""
     data = request.get_json(silent=True) or {}
     password = data.get("password") or ""
+    confirm = data.get("confirm_password")
+    if confirm is not None and confirm != password:
+        return jsonify({"error": "The two passwords do not match"}), 400
     problem = _check_new_password(password)
     if problem:
         return jsonify({"error": problem}), 400
@@ -2316,6 +2377,7 @@ def accept_invite():
 
     if not account_is_active(user["role"], user["org_id"]):
         return _inactive_account()
+    password_resets.revoke_all(user["id"])
     with get_connection() as conn:
         conn.execute(
             "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",

@@ -80,8 +80,9 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `platform_mail.py` | The operator's own mail through GHL (contact upsert → conversation message) |
 | `notifications.py` | Best-effort lead and automation notices to a client's admins; client GHL scope, platform fallback |
 | `invites.py` | Single-use hashed invite tokens, accept → set password |
+| `password_resets.py` | Forgot-password tokens: hashed, 60-minute expiry, single-use, request throttle, reset email and audit |
 | `scheduler.py` | Daily source sync, weekly `site_review` queueing, quip-free guards. The hourly DNS sweep (`SITE_VERIFY_MINUTES`, default 60) also re-checks sites with `org_id NULL` — skipping them kept a correctly-pointed domain "pending dns" forever. |
-| `admin/admin.js` | Single-page console: `#/platform/*`, `#/app/*`, `#/accept/<token>` |
+| `admin/admin.js` | Single-page console: `#/platform/*`, `#/app/*`, `#/accept/<token>`, `#/forgot-password`, `#/reset/<token>` |
 
 
 
@@ -91,6 +92,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 |---|---|
 | `users` | `role` ∈ owner / client_admin / member, `org_id`, `status` ∈ active / suspended, `last_login_at` |
 | `user_events` | append-only people audit: actor, target, client scope, action, JSON detail |
+| `password_resets` | hashed reset tokens, requester account, expiry and spent/withdrawn timestamp |
 | `orgs` | the clients; `slug` unique |
 | `business_profiles` | one per org |
 | `bots`, `messages`, `channels`, `meta_events` | chat widget |
@@ -147,6 +149,25 @@ boundary:
   last active client admin of a workspace cannot be stranded; the acting user cannot
   delete their own login. Every successful change writes `user_events` (actor, target,
   org, action, detail), including password resets and status changes.
+
+## Sign-in and password reset
+
+The public auth pages are login (`#/` while signed out), forgot password
+(`#/forgot-password`), reset (`#/reset/<token>`) and invitation acceptance
+(`#/accept/<token>`). They share the auth card, labeled fields and password visibility
+controls in `admin.js`.
+
+A forgot-password request always answers the same generic message. `password_resets.py`
+stores only a SHA-256 token hash, revokes the user's previous link, throttles rapid
+requests, and expires the link after 60 minutes. A successful reset spends every
+outstanding reset for that user, writes a `password_reset` event to `user_events`, and
+returns the person to sign-in rather than auto-logging them in. The email uses the
+platform GoHighLevel sender; when it is unconfigured the operator reset path in
+People/Team remains the fallback.
+
+Invitation acceptance is the only public account-creation form: it shows the invited
+name/email, requires password + confirm password, and validates the two match before it
+can create the session. There is deliberately no open self-service registration.
 
 ## The three core flows
 

@@ -119,6 +119,21 @@ a:hover { color: var(--accent-700); }
 .auth-card .sub { color: var(--ink-500); font-size: var(--fs-sm); margin-bottom: 26px; }
 .auth-card .field { margin-bottom: 16px; }
 .auth-card .error { color: var(--danger-700); font-size: var(--fs-sm); margin-bottom: 12px; min-height: 18px; }
+.auth-form .btn-primary { width: 100%; }
+.auth-help { display: block; color: var(--ink-400); font-size: var(--fs-micro); line-height: 1.5; margin-top: 6px; }
+.auth-links { display: flex; justify-content: center; margin-top: 14px; }
+.auth-link { display: block; color: var(--accent-600); font-size: var(--fs-sm); font-weight: 600; text-align: center; margin-top: 12px; }
+.auth-link:hover { text-decoration: underline; }
+.auth-card > .auth-link:last-child { margin-bottom: 2px; }
+.password-wrap { position: relative; }
+.password-wrap input { padding-right: 58px; }
+.pw-toggle {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--accent-600);
+  font-size: var(--fs-micro); font-weight: 650; padding: 7px 8px; border-radius: 5px;
+}
+.pw-toggle:hover { background: var(--accent-50); }
+.pw-toggle:focus-visible { outline: 2px solid var(--accent-600); outline-offset: 1px; }
 
 /* ---------- Topbar ---------- */
 .topbar { background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }

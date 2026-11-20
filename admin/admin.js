@@ -923,37 +923,227 @@
     document.body.appendChild(veil);
   }
 
-  // ---------- Login ----------
+  // ---------- Auth pages ----------
+  // Login, forgot password, reset and invitation acceptance share one card and the
+  // same password controls. Keeping the markup here means the label, visibility toggle
+  // and error behaviour cannot drift between the four doors into the product.
+  var authSeq = 0;
+  function authField(labelText, input, help) {
+    var field = el('div', 'field');
+    var label = el('label', null, labelText);
+    if (!input.id) input.id = 'auth-field-' + (++authSeq);
+    label.htmlFor = input.id;
+    field.appendChild(label);
+    field.appendChild(input);
+    if (help) field.appendChild(el('small', 'auth-help', help));
+    return field;
+  }
+
+  function authPassword(labelText, placeholder) {
+    var wrap = el('div', 'password-wrap');
+    var input = el('input');
+    input.type = 'password';
+    input.placeholder = placeholder || '';
+    input.setAttribute('autocomplete', 'new-password');
+    var toggle = el('button', 'pw-toggle', 'Show');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-label', 'Show password');
+    toggle.onclick = function () {
+      var shown = input.type === 'text';
+      input.type = shown ? 'password' : 'text';
+      toggle.textContent = shown ? 'Show' : 'Hide';
+      toggle.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    };
+    wrap.appendChild(input);
+    wrap.appendChild(toggle);
+    return { field: authField(labelText, wrap), input: input };
+  }
+
+  function authError() {
+    var error = el('div', 'error');
+    error.setAttribute('role', 'alert');
+    error.setAttribute('aria-live', 'polite');
+    return error;
+  }
+
+  function authBack(link, text) {
+    var anchor = el('a', 'auth-link', text);
+    anchor.href = link;
+    return anchor;
+  }
+
   function viewLogin() {
     var wrap = el('div', 'auth-wrap');
     var card = el('div', 'auth-card');
     card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
       esc(BRAND) + '" /><h1>' + esc(BRAND) +
       '</h1><p class="sub">Sign in to your growth platform</p>';
-    var err = el('div', 'error');
-    var emailField = el('div', 'field');
-    emailField.innerHTML = '<label>Email</label>';
-    var email = el('input'); email.type = 'email'; email.placeholder = 'you@example.com';
-    emailField.appendChild(email);
-    var pwField = el('div', 'field');
-    pwField.innerHTML = '<label>Password</label>';
-    var pw = el('input'); pw.type = 'password';
-    pwField.appendChild(pw);
+    var form = el('form', 'auth-form');
+    var err = authError();
+    var email = el('input');
+    email.type = 'email';
+    email.placeholder = 'you@example.com';
+    email.setAttribute('autocomplete', 'email');
+    var emailField = authField('Email', email);
+    var password = el('input');
+    password.type = 'password';
+    password.setAttribute('autocomplete', 'current-password');
+    var passwordField = authField('Password', password);
     var btn = el('button', 'btn btn-primary', 'Sign in');
-    btn.style.width = '100%';
-    btn.onclick = submit;
-    function submit() {
+    btn.type = 'submit';
+    form.appendChild(err);
+    form.appendChild(emailField);
+    form.appendChild(passwordField);
+    form.appendChild(btn);
+    var forgot = authBack('#/forgot-password', 'Forgot password?');
+    var links = el('div', 'auth-links');
+    links.appendChild(forgot);
+    form.appendChild(links);
+    form.onsubmit = function (ev) {
+      ev.preventDefault();
       err.textContent = '';
       btn.disabled = true;
-      api('POST', '/api/auth/login', { email: email.value, password: pw.value })
+      api('POST', '/api/auth/login', { email: email.value, password: password.value })
         .then(function (d) { state.user = d.user; render(); firstRun(); })
         .catch(function (e) { err.textContent = e.message; })
         .finally(function () { btn.disabled = false; });
+    };
+    card.appendChild(form);
+    wrap.appendChild(card);
+    return wrap;
+  }
+
+  function viewForgotPassword() {
+    var wrap = el('div', 'auth-wrap');
+    var card = el('div', 'auth-card');
+    card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
+      esc(BRAND) + '" /><h1>Reset your password</h1>' +
+      '<p class="sub">Enter your email and we will send you a reset link.</p>';
+    var form = el('form', 'auth-form');
+    var err = authError();
+    var email = el('input');
+    email.type = 'email';
+    email.placeholder = 'you@example.com';
+    email.setAttribute('autocomplete', 'email');
+    form.appendChild(err);
+    form.appendChild(authField('Email', email));
+    var btn = el('button', 'btn btn-primary', 'Send reset link');
+    btn.type = 'submit';
+    form.appendChild(btn);
+    var back = authBack('#/login', 'Back to sign in');
+    var links = el('div', 'auth-links');
+    links.appendChild(back);
+    form.appendChild(links);
+    form.onsubmit = function (ev) {
+      ev.preventDefault();
+      err.textContent = '';
+      btn.disabled = true;
+      api('POST', '/api/auth/forgot-password', { email: email.value })
+        .then(function (d) {
+          card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
+            esc(BRAND) + '" /><h1>Check your inbox</h1>' +
+            '<p class="sub">' + esc(d.message ||
+              'If that email is registered, a reset link is on its way.') +
+            '</p><p class="auth-help">The link expires in 60 minutes. If it does not ' +
+            'arrive, check your spam folder or ask your administrator.</p>';
+          card.appendChild(authBack('#/login', 'Back to sign in'));
+        })
+        .catch(function (e) { err.textContent = e.message; })
+        .finally(function () { btn.disabled = false; });
+    };
+    card.appendChild(form);
+    wrap.appendChild(card);
+    return wrap;
+  }
+
+  function viewResetPassword(token) {
+    var wrap = el('div', 'auth-wrap');
+    var card = el('div', 'auth-card');
+    var header = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
+      esc(BRAND) + '" /><h1>Choose a new password</h1>' +
+      '<p class="sub">Set a password for your account.</p>';
+    card.innerHTML = header;
+    var loading = el('p', 'muted', 'Checking your reset link…');
+    card.appendChild(loading);
+
+    function invalid(message) {
+      card.innerHTML = header;
+      card.appendChild(el('div', 'error', message));
+      card.appendChild(authBack('#/forgot-password', 'Request a new link'));
+      card.appendChild(authBack('#/login', 'Back to sign in'));
     }
-    card.appendChild(err);
-    card.appendChild(emailField);
-    card.appendChild(pwField);
-    card.appendChild(btn);
+
+    api('GET', '/api/auth/reset/' + encodeURIComponent(token)).then(function (d) {
+      var reset = d.reset || {};
+      if (reset.status !== 'pending') {
+        var message = reset.status === 'used'
+          ? 'This reset link has already been used.'
+          : reset.status === 'expired'
+            ? 'This reset link has expired.'
+            : 'This account is not available for a password reset.';
+        invalid(message);
+        return;
+      }
+      card.innerHTML = header;
+      var who = el('p', 'muted', (reset.name ? reset.name + ' · ' : '') + reset.email);
+      card.appendChild(who);
+      var form = el('form', 'auth-form');
+      var err = authError();
+      var password = authPassword('New password', 'At least 8 characters');
+      password.input.autocomplete = 'new-password';
+      var confirm = authPassword('Confirm password', 'Repeat your new password');
+      var btn = el('button', 'btn btn-primary', 'Update password');
+      btn.type = 'submit';
+      btn.disabled = true;
+      function update() {
+        var ready = password.input.value.length >= 8 &&
+          password.input.value === confirm.input.value;
+        btn.disabled = !ready;
+        if (password.input.value && password.input.value.length < 8) {
+          err.textContent = 'Use at least 8 characters';
+        } else if (confirm.input.value && password.input.value !== confirm.input.value) {
+          err.textContent = 'The two passwords do not match';
+        } else if (err.textContent === 'The two passwords do not match' ||
+                   err.textContent === 'Use at least 8 characters') {
+          err.textContent = '';
+        }
+      }
+      password.input.oninput = update;
+      confirm.input.oninput = update;
+      form.appendChild(err);
+      form.appendChild(password.field);
+      form.appendChild(confirm.field);
+      form.appendChild(btn);
+      form.appendChild(authBack('#/forgot-password', 'Request a new link'));
+      form.onsubmit = function (ev) {
+        ev.preventDefault();
+        if (!password.input.value || password.input.value !== confirm.input.value) {
+          err.textContent = 'The two passwords do not match';
+          return;
+        }
+        btn.disabled = true;
+        api('POST', '/api/auth/reset', {
+          token: token,
+          password: password.input.value,
+          confirm_password: confirm.input.value
+        }).then(function (d) {
+          card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
+            esc(BRAND) + '" /><h1>Password updated</h1>' +
+            '<p class="sub">' + esc(d.message ||
+              'Your password has been updated. You can sign in now.') + '</p>';
+          card.appendChild(authBack('#/login', 'Sign in'));
+        }).catch(function (e) {
+          btn.disabled = false;
+          err.textContent = e.message;
+        });
+      };
+      card.appendChild(form);
+    }).catch(function (e) {
+      card.innerHTML = header;
+      card.appendChild(el('div', 'error', e.message));
+      card.appendChild(authBack('#/forgot-password', 'Request a new link'));
+      card.appendChild(authBack('#/login', 'Back to sign in'));
+    });
     wrap.appendChild(card);
     return wrap;
   }
@@ -5187,23 +5377,46 @@
   // Rendered before the auth gate: the visitor has no session yet, and the whole point
   // of the link is to create one.
   function viewAccept(token) {
-    var wrap = el('div', 'container');
-    var card = el('div', 'form-card');
-    card.appendChild(el('h2', null, 'Set your password'));
+    var wrap = el('div', 'auth-wrap');
+    var card = el('div', 'auth-card');
+    card.innerHTML = '<img class="auth-logo" src="/admin/logo-trim.png" alt="' +
+      esc(BRAND) + '" /><h1>Create your account</h1>' +
+      '<p class="sub">Choose a password to finish joining your workspace.</p>';
     var who = el('p', 'muted', 'Checking your invitation…');
     card.appendChild(who);
 
-    var password = el('input');
-    password.type = 'password';
-    password.placeholder = 'At least 8 characters';
-    var confirm = el('input');
-    confirm.type = 'password';
-    confirm.placeholder = 'Repeat it';
-    var error = el('div', 'form-error', '');
+    var form = el('form', 'auth-form');
+    var error = authError();
+    var password = authPassword('Password', 'At least 8 characters');
+    password.input.autocomplete = 'new-password';
+    var confirm = authPassword('Confirm password', 'Repeat your password');
     var submit = el('button', 'btn btn-primary', 'Create password and sign in');
-    [password, confirm, submit, error].forEach(function (node) { card.appendChild(node); });
+    submit.type = 'submit';
+    submit.disabled = true;
+    form.appendChild(error);
+    form.appendChild(password.field);
+    form.appendChild(confirm.field);
+    form.appendChild(submit);
+    form.appendChild(authBack('#/login', 'Already have an account? Sign in'));
+    card.appendChild(form);
 
     var usable = false;
+    function update() {
+      var ready = usable && password.input.value.length >= 8 &&
+        password.input.value === confirm.input.value;
+      submit.disabled = !ready;
+      if (password.input.value && password.input.value.length < 8) {
+        error.textContent = 'Use at least 8 characters';
+      } else if (confirm.input.value && password.input.value !== confirm.input.value) {
+        error.textContent = 'The two passwords do not match';
+      } else if (error.textContent === 'The two passwords do not match' ||
+                 error.textContent === 'Use at least 8 characters') {
+        error.textContent = '';
+      }
+    }
+    password.input.oninput = update;
+    confirm.input.oninput = update;
+
     api('GET', '/api/invites/' + encodeURIComponent(token)).then(function (d) {
       var inv = d.invite;
       who.textContent = (inv.name ? inv.name + ' · ' : '') + inv.email +
@@ -5215,31 +5428,34 @@
         return;
       }
       usable = true;
+      update();
     }).catch(function (e) {
       who.textContent = '';
       error.textContent = e.message;
     });
 
-    submit.onclick = function () {
+    form.onsubmit = function (ev) {
+      ev.preventDefault();
       if (!usable) return;
-      if ((password.value || '').length < 8) {
+      if (password.input.value.length < 8) {
         error.textContent = 'Use at least 8 characters';
         return;
       }
-      if (password.value !== confirm.value) {
+      if (password.input.value !== confirm.input.value) {
         error.textContent = 'The two passwords do not match';
         return;
       }
       submit.disabled = true;
-      api('POST', '/api/invites/accept', { token: token, password: password.value })
-        .then(function () {
-          location.replace('#/');
-          location.reload();
-        })
-        .catch(function (e) {
-          submit.disabled = false;
-          error.textContent = e.message;
-        });
+      api('POST', '/api/invites/accept', {
+        token: token, password: password.input.value,
+        confirm_password: confirm.input.value
+      }).then(function () {
+        location.replace('#/');
+        location.reload();
+      }).catch(function (e) {
+        submit.disabled = false;
+        error.textContent = e.message;
+      });
     };
 
     wrap.appendChild(card);
@@ -10009,10 +10225,18 @@
       app.innerHTML = '';
     }
 
-    // An invitation link has to work before anyone is signed in, so this is handled
-    // ahead of the auth gate and rendered without the app shell.
+    // These links have to work before anyone is signed in, so they are handled ahead
+    // of the auth gate and rendered without the app shell.
     if (parts[0] === 'accept' && parts[1]) {
       app.appendChild(viewAccept(decodeURIComponent(parts[1])));
+      return;
+    }
+    if (parts[0] === 'forgot-password') {
+      app.appendChild(viewForgotPassword());
+      return;
+    }
+    if (parts[0] === 'reset' && parts[1]) {
+      app.appendChild(viewResetPassword(decodeURIComponent(parts[1])));
       return;
     }
 

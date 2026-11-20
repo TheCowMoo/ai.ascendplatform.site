@@ -199,6 +199,11 @@ def _audit(actor_id, target_id, org_id, action, detail=None):
         pass
 
 
+def record_event(actor_id, target_id, org_id, action, detail=None):
+    """Public audit hook for flows that live outside this module (password reset)."""
+    _audit(actor_id, target_id, org_id, action, detail)
+
+
 def events(org_id=None, target_id=None, limit=100):
     query = (
         "SELECT e.*, a.name AS actor_name, a.email AS actor_email, "
@@ -425,6 +430,9 @@ def reset_password(user_id, password, actor_id, actor_owner, actor_org):
             "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
             (generate_password_hash(password), now_str(), user_id),
         )
+    # An admin reset invalidates any reset link the user may still have in their inbox.
+    from password_resets import revoke_all
+    revoke_all(user_id)
     _audit(actor_id, user_id, target["org_id"], "password", {})
     return target
 

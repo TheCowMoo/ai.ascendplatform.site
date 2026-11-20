@@ -147,6 +147,22 @@ user_events = Table(
 Index("idx_user_events_target", user_events.c.target_id)
 Index("idx_user_events_org", user_events.c.org_id)
 
+# A password reset is a short-lived bearer token, exactly like an invitation. Only the
+# hash is stored; the plaintext exists once, in the email that carries it.
+password_resets = Table(
+    "password_resets",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=False),
+    Column("email", Text, nullable=False),
+    Column("token_hash", Text, nullable=False, unique=True),
+    Column("requested_at", Text, nullable=False),
+    Column("expires_at", Text, nullable=False),
+    Column("used_at", Text),
+)
+
+Index("idx_password_resets_user", password_resets.c.user_id)
+
 bots = Table(
     "bots", metadata,
     Column("id", Text, primary_key=True),
@@ -1393,6 +1409,11 @@ def _ensure_columns():
         if "user_events" not in tables:
             try:
                 metadata.tables["user_events"].create(bind=engine)
+            except Exception:
+                pass
+        if "password_resets" not in tables:
+            try:
+                metadata.tables["password_resets"].create(bind=engine)
             except Exception:
                 pass
         # The old invitation spelling. A dev database does not run migration 0032,

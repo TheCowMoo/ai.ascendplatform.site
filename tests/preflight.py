@@ -59,6 +59,7 @@ FAST_SUITES = (
     "test_build_tool",
     "test_client_ghl",
     "test_user_management",
+    "test_password_reset",
     "test_contact_sync",
     "test_workspace_sync",
     "test_opportunity_sync",

@@ -563,8 +563,9 @@ healthcheck should use its process/queue status, not port 8000.
 - Suspension is enforced on login and on authenticated requests; the public chatbot and
   hosted-form endpoints also refuse a paused client. Published websites remain available
   until you explicitly disconnect or remove them for abuse/termination.
-- Session cookies are HttpOnly/SameSite and Secure in the Compose stack. There is no
-  public forgot-password flow yet; an operator resets a client's password from Team.
+- Session cookies are HttpOnly/SameSite and Secure in the Compose stack. Forgot-password
+  links use a hashed, single-use token and are emailed through the platform's
+  GoHighLevel sender; an operator can still reset a client's password from Team.
 
 ## License
 
