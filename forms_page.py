@@ -48,7 +48,17 @@ def payload_for(form, answers=None):
     """
     answers = answers or {}
     shown = forms_engine.visible_questions(form, answers)
-    pending = [q for q in shown if not _filled(answers.get(q["id"]))]
+
+    def resolved(question):
+        # A blank optional field is a real answer once the visitor has submitted its
+        # page: the browser sends the key with an empty value. A blank *required* field
+        # is still blocking. Treating every unfilled optional field as pending made the
+        # last page repeat forever - the button looked dead even though it had posted.
+        if question["id"] not in answers:
+            return False
+        return not question.get("required") or _filled(answers.get(question["id"]))
+
+    pending = [q for q in shown if not resolved(q)]
     settings = form.get("settings") or {}
     if not pending:
         return {
@@ -140,7 +150,9 @@ button.ghost{background:#fff;border:1px solid #d1d5db;border-radius:10px;padding
 </form></div></main>
 <script>
 var STATE = __STATE__;
-var answers = {}, history = [], current = null;
+// Never name this `history`: window.history is a browser property, so `var history`
+// does not become an array and history.push() throws before fetch() is reached.
+var answers = {}, backStack = [], current = null;
 var qs = document.getElementById('qs'), err = document.getElementById('err');
 var bar = document.getElementById('bar'), nextBtn = document.getElementById('next');
 var backBtn = document.getElementById('back');
@@ -214,7 +226,7 @@ function render(payload) {
   var total = Math.max(1, STATE.progress.total || 1);
   var done = Math.min(total, STATE.progress.step || 0);
   bar.style.width = Math.round(100 * done / total) + '%';
-  backBtn.style.visibility = history.length ? 'visible' : 'hidden';
+  backBtn.style.visibility = backStack.length ? 'visible' : 'hidden';
   nextBtn.textContent = STATE.submit_label || 'Next';
   err.textContent = '';
 }
@@ -246,12 +258,17 @@ function collect() {
   return true;
 }
 
-function post(url, done) {
+function post(url, done, button) {
   // The honeypot is the input itself (<input class="hp">), not a wrapper around
   // one. The old selector returned null and threw before fetch(), which made every
   // Next/Submit click do nothing.
   var honeypot = document.querySelector('input.hp');
   var body = { answers: answers, company: honeypot ? honeypot.value : '' };
+  var label = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Sending…';
+  }
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify(body) })
     .then(function (response) {
@@ -261,15 +278,21 @@ function post(url, done) {
       });
     })
     .then(done)
-    .catch(function (error) { err.textContent = error.message; });
+    .catch(function (error) {
+      err.textContent = error.message;
+      if (button) {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    });
 }
 
 function send() {
-  history.push(JSON.parse(JSON.stringify(answers)));
+  backStack.push(JSON.parse(JSON.stringify(answers)));
   post(STATE.step, function (data) {
     if (data.done) { finish(); return; }
     render(data);
-  });
+  }, nextBtn);
 }
 
 function finish() {
@@ -281,7 +304,7 @@ function finish() {
     if (data.score) {
       app.appendChild(el('p', 'lede', data.score.score + ' / ' + data.score.max_score));
     }
-  });
+  }, nextBtn);
 }
 
 document.getElementById('form').addEventListener('submit', function (event) {
@@ -289,8 +312,8 @@ document.getElementById('form').addEventListener('submit', function (event) {
   if (collect()) send();
 });
 backBtn.onclick = function () {
-  if (!history.length) return;
-  answers = history.pop();
+  if (!backStack.length) return;
+  answers = backStack.pop();
   render({ questions: STATE.questions, progress: STATE.progress });
   post(STATE.step, function (data) { if (data.questions) render(data); });
 };

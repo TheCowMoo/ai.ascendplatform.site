@@ -227,6 +227,37 @@ def test_contact_capture():
     check("it is marked as coming from a form", row["source"], "form")
 
 
+def test_explicit_contact_mapping():
+    """The console's Name/Email/Phone mapping is what makes a non-obvious form a lead."""
+    import db
+    import forms
+    from db import get_connection
+
+    db.init_db()
+    org = 990019
+    with get_connection() as conn:
+        for table in ("form_responses", "forms", "contacts"):
+            conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
+
+    form = forms.create_form({
+        "name": "Mapped contact", "kind": "form",
+        "questions": [
+            q("who", "Who are you?", "text", required=True),
+            q("mail", "Where can we reach you?", "email", required=True),
+        ],
+        "settings": {"contact": {"name": "who", "email": "mail"}},
+    }, org)
+    result = forms.submit(form, {"who": "Grace Hopper", "mail": "grace@example.test"})
+    check("an explicit CRM mapping creates a contact", bool(result["contact_id"]), True)
+    with get_connection() as conn:
+        row = conn.execute("SELECT name, email FROM contacts WHERE id = ?",
+                           (result["contact_id"],)).fetchone()
+        for table in ("form_responses", "forms", "contacts"):
+            conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
+    check("the mapped name and email are stored",
+          (row["name"], row["email"]), ("Grace Hopper", "grace@example.test"))
+
+
 def test_the_agent_can_build_a_form():
     """The loop the whole feature exists for: a sentence in, a live quiz out."""
     import asyncio
@@ -343,6 +374,7 @@ if __name__ == "__main__":
     test_answer_types()
     test_definition_is_validated()
     test_contact_capture()
+    test_explicit_contact_mapping()
     test_the_agent_can_build_a_form()
     test_service_round_trip()
     if FAILED:

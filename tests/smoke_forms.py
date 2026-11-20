@@ -91,6 +91,12 @@ def main():
           "document.querySelector('input.hp')" in body, True)
     check("the broken descendant selector is gone",
           "document.querySelector('.hp input')" in body, False)
+    # window.history is not an array; a global `var history` makes history.push throw
+    # before fetch, which is indistinguishable from a dead button.
+    check("the page does not shadow the browser history object",
+          "var answers = {}, history" in body, False)
+    check("the page uses a separate back stack",
+          "var answers = {}, backStack = []" in body, True)
 
     # The page's JavaScript is 6KB of untested code unless something parses it. Node is not
     # guaranteed on a server, so this check skips rather than failing when it is missing.
@@ -112,7 +118,7 @@ def main():
         # Run the real post() function with a fake honeypot. `.hp input` used to
         # dereference null here, before fetch() could send the step or submission.
         source = script.group(1)
-        post_body = source.split("function post(url, done) {", 1)[1].split(
+        post_body = source.split("function post(url, done, button) {", 1)[1].split(
             "function send() {", 1)[0]
         harness = chr(10).join([
             "var answers = { email: 'a@b.test' };",
@@ -128,9 +134,9 @@ def main():
             "    return Promise.resolve({ ok: true });",
             "  } });",
             "};",
-            "function post(url, done) {",
+            "function post(url, done, button) {",
             post_body,
-            "post('/api/public/forms/test/step', function () { console.log('DONE'); });",
+            "post('/api/public/forms/test/step', function () { console.log('DONE'); }, null);",
         ])
         harness_path = os.path.join(tempfile.gettempdir(), "form_page_post_%s.js" % TOKEN)
         with open(harness_path, "w", encoding="utf-8") as handle:
@@ -328,6 +334,28 @@ def main():
         conn.execute("DELETE FROM automation_runs WHERE automation_id = ?", (auto_id,))
         conn.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
     check("a submission starts the automation that listens for it", len(runs) >= 1, True)
+
+    # --- the browser-facing script ------------------------------------------------
+    # `var history = []` is not an array in a browser: history is window.history, so
+    # history.push throws before fetch. This pins the renamed back stack and the
+    # optional-question completion rule that used to make Send look dead.
+    optional = forms.create_form({
+        "name": "Optional form %s" % TOKEN, "kind": "form",
+        "questions": [{"id": "note", "type": "text", "label": "Anything else?",
+                       "page": 0, "required": False}],
+    }, org)
+    optional = forms.update_form(optional["id"], org, {"status": "published"})
+    optional_page = client.get("/f/%s" % optional["slug"]).get_data(as_text=True)
+    check("the page uses a browser-safe back stack",
+          "var answers = {}, backStack = [], current = null;" in optional_page, True)
+    check("the page never asks history.push", "history.push(JSON" in optional_page, False)
+    optional_step = client.post("/api/public/forms/%s/step" % optional["slug"],
+                                json={"answers": {"note": ""}})
+    check("a blank optional answer finishes the form",
+          (optional_step.get_json() or {}).get("done"), True)
+    optional_submit = client.post("/api/public/forms/%s" % optional["slug"],
+                                  json={"answers": {"note": ""}})
+    check("the optional form can be submitted", optional_submit.status_code, 201)
 
     cleanup(console_org)
     cleanup(other_org)

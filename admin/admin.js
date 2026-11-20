@@ -9869,8 +9869,36 @@
         draft.settings.create_contact = contactCheck.checked;
       };
       contact.appendChild(contactCheck);
-      contact.appendChild(el('span', null, 'create a contact from each answer'));
+      contact.appendChild(el('span', null, 'Link submissions to CRM'));
       meta.appendChild(contact);
+      meta.appendChild(el('p', 'fine-print', 'A contact is created from the name and ' +
+        'email answers. Map the fields below when your questions use different names.'));
+
+      // The API has always accepted settings.contact as {role: question id}; this is
+      // the missing console control. Without it, a form with questions like "Who are
+      // you?" could collect a lead but never create a CRM contact.
+      var crmMap = el('div', 'chip-input');
+      draft.settings.contact = draft.settings.contact || {};
+      [['name', 'Name'], ['email', 'Email'], ['phone', 'Phone']].forEach(function (pair) {
+        var role = pair[0];
+        var select = el('select');
+        var auto = el('option', null, 'Automatic ' + pair[1].toLowerCase());
+        auto.value = '';
+        select.appendChild(auto);
+        draft.questions.forEach(function (question) {
+          var option = el('option', null, (question.label || question.id).slice(0, 50));
+          option.value = question.id;
+          select.appendChild(option);
+        });
+        select.value = draft.settings.contact[role] || '';
+        select.onchange = function () {
+          if (select.value) draft.settings.contact[role] = select.value;
+          else delete draft.settings.contact[role];
+        };
+        select.setAttribute('aria-label', 'CRM ' + pair[1] + ' field');
+        crmMap.appendChild(select);
+      });
+      meta.appendChild(crmMap);
       body.appendChild(meta);
 
       if (!draft.questions.length) {

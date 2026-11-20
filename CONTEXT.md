@@ -433,6 +433,13 @@ template. GET /api/templates/<id>/preview renders subject and body through
 templates_service.render - the same function a send uses - with a sample contact, and
 returns sandboxed HTML for an iframe. Nothing is sent.
 
+HOSTED FORM SEND (fixed 2026): the visitor page used `var history = []` for its Back
+stack. In a browser `history` is `window.history`, so `history.push` threw before
+fetch and a filled form never posted; the stack is now `backStack`. Separately,
+`forms_page.payload_for` treated every blank optional answer as pending, so the last
+page repeated forever after Send. A submitted key now resolves an optional question;
+only a blank required question blocks. `tests/smoke_forms.py` pins both.
+
 TRIGGER, VERIFIED (2026-10-29): form.submitted does start an automation run end to
 end - POST /api/public/forms/<slug> on a published form creates a row in
 automation_runs for an enabled automation whose trigger event matches. It briefly
