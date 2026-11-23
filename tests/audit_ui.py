@@ -148,6 +148,7 @@ def checks(org, bot, site, job_id, drafts, auto):
         ("Platform     ", "/api/orgs", ["orgs"], "deny"),
         ("Platform     ", "/api/orgs/%d" % org["id"], [], "deny"),
         ("Platform     ", "/api/platform/domains", ["domains", "counts"], "deny"),
+        ("Platform     ", "/api/platform/bugs", ["bugs", "counts"], "deny"),
         ("Platform     ", "/api/platform/email", [], "deny"),
         ("Platform     ", "/api/ssh-hosts", [], "deny"),
         ("Platform     ", "/api/agents", ["agents"], "deny"),

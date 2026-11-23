@@ -71,6 +71,7 @@
       nav: [
         { id: 'clients', label: 'Clients', icon: 'store', hash: '#/platform/clients' },
         { id: 'people', label: 'People', icon: 'user', hash: '#/platform/people' },
+        { id: 'bugs', label: 'Bug tracker', icon: 'alert', hash: '#/platform/bugs' },
         { id: 'domains', label: 'Domains', icon: 'globe', hash: '#/platform/domains' },
         { id: 'usage', label: 'Usage', icon: 'credits', hash: '#/platform/usage' },
         { id: 'email', label: 'Email & invites', icon: 'mail', hash: '#/platform/email' },
@@ -5658,6 +5659,312 @@
     return container;
   }
 
+  // ---------- Platform: internal agency bug tracker ----------
+  function bugStatusBadge(status) {
+    var cls = status === 'resolved' || status === 'closed' ? 'badge-done'
+      : (status === 'in_progress' ? 'badge-running' : 'badge-warn');
+    var labels = { open: 'Open', in_progress: 'In progress', resolved: 'Resolved',
+                   closed: 'Closed' };
+    return '<span class="badge ' + cls + '">' + esc(labels[status] || status) + '</span>';
+  }
+
+  function bugPriorityBadge(priority) {
+    var cls = priority === 'urgent' ? 'badge-danger'
+      : (priority === 'high' ? 'badge-warn'
+        : (priority === 'normal' ? 'badge-admin' : 'badge-member'));
+    return '<span class="badge ' + cls + '">' +
+      esc(String(priority || '').replace(/^[a-z]/, function (c) { return c.toUpperCase(); })) +
+      '</span>';
+  }
+
+  function bugEventText(event) {
+    var detail = event.detail || {};
+    if (event.action === 'commented') return detail.comment || 'Comment';
+    if (event.action === 'created') return 'Reported this bug';
+    if (event.action === 'status') {
+      return 'Status: ' + String(detail.from || '') + ' → ' + String(detail.to || '');
+    }
+    if (event.action === 'priority') {
+      return 'Priority: ' + String(detail.from || '') + ' → ' + String(detail.to || '');
+    }
+    if (event.action === 'assigned') {
+      return detail.to ? 'Assigned to #' + detail.to : 'Unassigned';
+    }
+    var fields = [];
+    if (detail.title) fields.push('title');
+    if (detail.description) fields.push('description');
+    if (detail.page) fields.push('page');
+    if (detail.field) fields.push(String(detail.field).replace(/_/g, ' '));
+    return fields.length ? 'Updated ' + fields.join(', ') : 'Updated';
+  }
+
+  function viewBugTracker() {
+    var container = el('div', 'container');
+    var head = el('div', 'page-head');
+    head.innerHTML = '<div><h2>Bug tracker</h2><p class="muted">Internal issues for the ' +
+      'agency. Optional client context never makes a bug visible to that client.</p></div>';
+    var actions = el('div', 'page-actions');
+    var add = el('button', 'btn btn-primary', '+ Report bug');
+    var refresh = el('button', 'btn btn-ghost', 'Refresh');
+    actions.appendChild(add);
+    actions.appendChild(refresh);
+    head.appendChild(actions);
+    container.appendChild(head);
+
+    var orgs = [];
+    var assignees = [];
+    var counts = {};
+    var bugs = [];
+    var summary = el('div', 'bug-summary');
+    var bar = el('div', 'chip-input');
+    var search = el('input');
+    search.type = 'search';
+    search.placeholder = 'Search bugs';
+    search.className = 'search-input';
+    var status = el('select');
+    status.innerHTML = '<option value="">All statuses</option>' +
+      '<option value="open">Open</option><option value="in_progress">In progress</option>' +
+      '<option value="resolved">Resolved</option><option value="closed">Closed</option>';
+    var priority = el('select');
+    priority.innerHTML = '<option value="">All priorities</option>' +
+      '<option value="urgent">Urgent</option><option value="high">High</option>' +
+      '<option value="normal">Normal</option><option value="low">Low</option>';
+    var assignee = el('select');
+    var client = el('select');
+    bar.appendChild(search); bar.appendChild(status); bar.appendChild(priority);
+    bar.appendChild(assignee); bar.appendChild(client);
+    container.appendChild(summary);
+    container.appendChild(bar);
+    var body = el('div', 'mt');
+    container.appendChild(body);
+
+    function drawPeopleFilters() {
+      var selectedAssignee = assignee.value;
+      var selectedClient = client.value;
+      assignee.innerHTML = '<option value="">All assignees</option>' +
+        '<option value="unassigned">Unassigned</option>' +
+        assignees.map(function (person) {
+          return '<option value="' + esc(String(person.id)) + '">' +
+            esc(person.name || person.email) + '</option>';
+        }).join('');
+      client.innerHTML = '<option value="">All clients</option>' +
+        orgs.map(function (org) {
+          return '<option value="' + esc(String(org.id)) + '">' + esc(org.name) + '</option>';
+        }).join('');
+      assignee.value = selectedAssignee;
+      client.value = selectedClient;
+    }
+
+    function drawSummary() {
+      summary.innerHTML = '';
+      [['Open', 'open'], ['In progress', 'in_progress'], ['Resolved', 'resolved'],
+       ['Total', 'all']].forEach(function (pair) {
+        var chip = el('div', 'bug-count');
+        chip.innerHTML = '<strong>' + esc(String(counts[pair[1]] || 0)) + '</strong>' +
+          '<span>' + pair[0] + '</span>';
+        summary.appendChild(chip);
+      });
+    }
+
+    function draw() {
+      body.innerHTML = '';
+      if (!bugs.length) {
+        body.innerHTML = '<div class="panel-card empty-state"><div class="big">' +
+          icon('alert') + '</div><strong>No bugs match this view.</strong>' +
+          '<p>Report the first issue, or clear a filter.</p></div>';
+        return;
+      }
+      var table = el('table', 'table bug-table');
+      table.innerHTML = '<thead><tr><th>Bug</th><th>Priority</th><th>Status</th>' +
+        '<th>Client</th><th>Assignee</th><th>Updated</th></tr></thead>';
+      var tbody = el('tbody');
+      bugs.forEach(function (bug) {
+        var tr = el('tr');
+        tr.className = 'bug-row';
+        tr.title = 'Open bug #' + bug.id;
+        tr.innerHTML = '<td><strong>#' + esc(String(bug.id)) + ' ' + esc(bug.title) +
+          '</strong><div class="muted">' + esc(bug.reporter_name || 'Agency') +
+          (bug.page ? ' · ' + esc(bug.page) : '') + '</div></td>' +
+          '<td>' + bugPriorityBadge(bug.priority) + '</td>' +
+          '<td>' + bugStatusBadge(bug.status) + '</td>' +
+          '<td class="muted">' + esc(bug.org_name || '—') + '</td>' +
+          '<td class="muted">' + esc(bug.assignee_name || 'Unassigned') + '</td>' +
+          '<td class="muted">' + esc(shortTime(bug.updated_at)) + '</td>';
+        tr.onclick = function () { showBug(bug.id); };
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      body.appendChild(table);
+    }
+
+    function load() {
+      var query = [];
+      if (search.value.trim()) query.push('q=' + encodeURIComponent(search.value.trim()));
+      if (status.value) query.push('status=' + encodeURIComponent(status.value));
+      if (priority.value) query.push('priority=' + encodeURIComponent(priority.value));
+      if (assignee.value) query.push('assignee=' + encodeURIComponent(assignee.value));
+      if (client.value) query.push('org_id=' + encodeURIComponent(client.value));
+      api('GET', '/api/platform/bugs' + (query.length ? '?' + query.join('&') : ''))
+        .then(function (d) {
+          bugs = d.bugs || [];
+          counts = d.counts || {};
+          assignees = d.assignees || [];
+          drawPeopleFilters();
+          drawSummary();
+          draw();
+        }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function showBug(bugId) {
+      api('GET', '/api/platform/bugs/' + bugId).then(function (d) {
+        paintBug(d.bug, d.events || []);
+      }).catch(function (e) { toast(e.message, false); });
+    }
+
+    function paintBug(bug, events) {
+      var backdrop = el('div', 'modal-backdrop');
+      var modal = el('div', 'modal modal-wide bug-modal');
+      modal.appendChild(el('h3', null, bug ? 'Bug #' + bug.id : 'Report a bug'));
+      var form = el('form', 'form bug-form');
+      var error = el('div', 'form-error');
+      var title = el('input');
+      title.value = bug ? bug.title : '';
+      title.placeholder = 'A short summary, e.g. Publish button does nothing';
+      var description = el('textarea');
+      description.value = bug ? bug.description : '';
+      description.placeholder = 'What happened, what you expected, and anything you tried';
+      function field(labelText, input, help) {
+        var wrap = el('label', 'field');
+        wrap.appendChild(el('span', null, labelText));
+        wrap.appendChild(input);
+        if (help) wrap.appendChild(el('small', 'muted', help));
+        return wrap;
+      }
+      function select(options, current) {
+        var node = el('select');
+        options.forEach(function (pair) {
+          var option = el('option', null, pair[1]);
+          option.value = pair[0];
+          node.appendChild(option);
+        });
+        node.value = current || '';
+        return node;
+      }
+      var statusSelect = select([
+        ['open', 'Open'], ['in_progress', 'In progress'],
+        ['resolved', 'Resolved'], ['closed', 'Closed']], bug ? bug.status : 'open');
+      var prioritySelect = select([
+        ['urgent', 'Urgent'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']],
+        bug ? bug.priority : 'normal');
+      var clientSelect = select([['', 'No client']].concat(orgs.map(function (org) {
+        return [String(org.id), org.name];
+      })), bug && bug.org_id ? String(bug.org_id) : '');
+      var assigneeSelect = select([['', 'Unassigned']].concat(assignees.map(function (person) {
+        return [String(person.id), person.name || person.email];
+      })), bug && bug.assignee_id ? String(bug.assignee_id) : '');
+      var page = el('input');
+      page.value = bug ? (bug.page || '') : (location.hash || '');
+      page.placeholder = '#/platform/clients or a screen name';
+      form.appendChild(field('Title', title));
+      form.appendChild(field('Description', description));
+      var row = el('div', 'form-row');
+      row.appendChild(field('Status', statusSelect));
+      row.appendChild(field('Priority', prioritySelect));
+      form.appendChild(row);
+      row = el('div', 'form-row');
+      row.appendChild(field('Client', clientSelect));
+      row.appendChild(field('Assignee', assigneeSelect));
+      form.appendChild(row);
+      form.appendChild(field('Page or screen', page, 'Optional context for whoever fixes it.'));
+      form.appendChild(error);
+      var buttons = el('div', 'modal-actions');
+      var cancel = el('button', 'btn btn-ghost', 'Close');
+      cancel.type = 'button';
+      cancel.onclick = function () { backdrop.remove(); };
+      var save = el('button', 'btn btn-primary', bug ? 'Save changes' : 'Report bug');
+      save.type = 'submit';
+      buttons.appendChild(cancel); buttons.appendChild(save);
+      form.appendChild(buttons);
+      form.onsubmit = function (event) {
+        event.preventDefault();
+        var payload = {
+          title: title.value, description: description.value,
+          status: statusSelect.value, priority: prioritySelect.value,
+          org_id: clientSelect.value || null, assignee_id: assigneeSelect.value || null,
+          page: page.value
+        };
+        save.disabled = true;
+        api(bug ? 'PUT' : 'POST', '/api/platform/bugs' + (bug ? '/' + bug.id : ''), payload)
+          .then(function (d) {
+            backdrop.remove();
+            toast(bug ? 'Bug updated' : 'Bug reported', true);
+            load();
+            if (!bug && d.bug) showBug(d.bug.id);
+          }).catch(function (e) {
+            save.disabled = false;
+            error.textContent = e.message;
+          });
+      };
+      modal.appendChild(form);
+
+      if (bug) {
+        var timeline = el('div', 'bug-timeline');
+        timeline.appendChild(el('h4', null, 'Activity'));
+        if (!events.length) timeline.appendChild(el('p', 'muted', 'No activity yet.'));
+        events.forEach(function (ev) {
+          var line = el('div', 'bug-event ' + (ev.action === 'commented' ? 'is-comment' : ''));
+          line.innerHTML = '<div class="bug-event-head"><strong>' +
+            esc(ev.actor_name || ev.actor_email || 'Agency') + '</strong>' +
+            '<span class="muted">' + esc(shortTime(ev.created_at)) + '</span></div>' +
+            '<div>' + esc(bugEventText(ev)) + '</div>';
+          timeline.appendChild(line);
+        });
+        var comment = el('textarea');
+        comment.placeholder = 'Add a comment for the agency';
+        var addComment = el('button', 'btn btn-ghost', 'Add comment');
+        addComment.type = 'button';
+        addComment.onclick = function () {
+          if (!comment.value.trim()) return;
+          addComment.disabled = true;
+          api('POST', '/api/platform/bugs/' + bug.id + '/comments',
+              { comment: comment.value }).then(function () {
+            backdrop.remove();
+            showBug(bug.id);
+            load();
+          }).catch(function (e) {
+            addComment.disabled = false;
+            error.textContent = e.message;
+          });
+        };
+        timeline.appendChild(comment);
+        timeline.appendChild(addComment);
+        modal.appendChild(timeline);
+      }
+
+      backdrop.appendChild(modal);
+      backdrop.onclick = function (e) { if (e.target === backdrop) backdrop.remove(); };
+      document.body.appendChild(backdrop);
+      title.focus();
+    }
+
+    function newBug() {
+      paintBug(null, []);
+    }
+
+    add.onclick = newBug;
+    refresh.onclick = load;
+    search.oninput = load;
+    [status, priority, assignee, client].forEach(function (node) {
+      node.onchange = load;
+    });
+    api('GET', '/api/orgs').then(function (d) {
+      orgs = d.orgs || [];
+      drawPeopleFilters();
+      load();
+    }).catch(function (e) { toast(e.message, false); });
+    return container;
+  }
+
   // ---------- Platform: email and invitations ----------
   function viewPlatformEmail() {
     var container = el('div', 'container');
@@ -10335,6 +10642,7 @@
     if (area === 'platform') {
       if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
       else if (tab === 'people') view = viewPlatformPeople();
+      else if (tab === 'bugs') view = viewBugTracker();
       else if (tab === 'domains') view = viewPlatformDomains();
       else if (tab === 'usage') view = viewPlatformUsage();
       else if (tab === 'servers') view = viewServers();

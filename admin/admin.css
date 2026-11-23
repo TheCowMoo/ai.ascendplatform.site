@@ -324,6 +324,27 @@ input[type=color] {
 .page-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .chip-input { flex-wrap: wrap; }
 .chip-input select { min-width: 150px; }
+.bug-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.bug-count { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.bug-count strong { display: block; font-size: 22px; line-height: 1.1; color: var(--ink-900); }
+.bug-count span { display: block; margin-top: 3px; font-size: var(--fs-micro); color: var(--ink-400); text-transform: uppercase; letter-spacing: .05em; }
+.bug-table { min-width: 760px; }
+.bug-row { cursor: pointer; }
+.bug-row:hover td { background: var(--accent-50); }
+.bug-modal { max-width: 720px; max-height: calc(100vh - 40px); overflow-y: auto; }
+.bug-form .form-row { display: flex; gap: 12px; }
+.bug-form .form-row .field { flex: 1; min-width: 0; }
+.bug-timeline { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 16px; }
+.bug-timeline h4 { margin-bottom: 12px; }
+.bug-event { border-left: 2px solid var(--line); padding: 0 0 12px 12px; margin-left: 4px; }
+.bug-event.is-comment { border-left-color: var(--accent-600); }
+.bug-event-head { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); margin-bottom: 3px; }
+.bug-timeline textarea { min-height: 78px; margin-top: 10px; }
+.bug-timeline .btn { margin-top: 8px; }
+@media (max-width: 620px) {
+  .bug-form .form-row { flex-direction: column; gap: 0; }
+  .bug-table { min-width: 620px; }
+}
 
 /* ---------- Badges ---------- */
 .badge {

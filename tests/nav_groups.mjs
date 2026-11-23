@@ -70,10 +70,12 @@ assert.deepEqual(account.children.map((child) => child.id), ['profile', 'team', 
 assert.equal(account.children.filter((child) => child.adminOnly).length, 2,
              'Team and Settings stay admin-only');
 
-assert.equal(AREAS.platform.nav.length, 9, 'the console stays flat');
-assert.equal(flattenNav(AREAS.platform.nav).length, 9);
+assert.equal(AREAS.platform.nav.length, 10, 'the console stays flat');
+assert.equal(flattenNav(AREAS.platform.nav).length, 10);
 assert.equal(AREAS.platform.nav.filter((item) => item.id === 'people').length, 1,
              'the agency-wide People directory is one click away');
+assert.equal(AREAS.platform.nav.filter((item) => item.id === 'bugs').length, 1,
+             'the agency bug tracker is one click away');
 assert.equal(AREAS.platform.nav.filter((item) => item.id === 'domains').length, 1,
              'the owner-wide Domains page is one click away');
 

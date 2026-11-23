@@ -63,6 +63,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `settings.py` | SPEC of every setting, panel→env→default resolution, `all_for_ui(org_id)` (client sees only `scope=client`), write guard, audit history, per-group live tests |
 | `orgs.py` | Tenants (clients) and their first admin; `client_admin` / `member` / `owner` |
 | `user_service.py` | User administration for both planes: scoped listing, create/update/status/password/delete, last-owner and last-client-admin guards, `user_events` audit. The role aliases `admin` and `client_member` are normalised here. |
+| `bugs.py` | Internal agency bug tracker: owner-only CRUD, optional client context, assignees, status/priority workflow and the shared `bug_events` timeline. |
 | `profile.py` | Business Profile per org — the brand facts the agents write from |
 | `llm.py` | `PROVIDERS` (the single source of truth for capabilities), `get_model_client()`, `_clean_messages()` + `without_empty_blocks()` payload repair for Anthropic. Also wraps the SDK response to capture the raw usage AutoGen folds away, and returns metered client subclasses. |
 | `rates.py` | The price list in dollars per 1M tokens / minute / image; `price_model`, `price_unit`, `missing_rates`, `python -m rates import <file>`. |
@@ -93,6 +94,8 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `users` | `role` ∈ owner / client_admin / member, `org_id`, `status` ∈ active / suspended, `last_login_at` |
 | `user_events` | append-only people audit: actor, target, client scope, action, JSON detail |
 | `password_resets` | hashed reset tokens, requester account, expiry and spent/withdrawn timestamp |
+| `bugs` | agency-only issue tracker; optional client, reporter, assignee, priority/status and resolution time |
+| `bug_events` | bug timeline: creation, field changes, assignment and comments |
 | `orgs` | the clients; `slug` unique |
 | `business_profiles` | one per org |
 | `bots`, `messages`, `channels`, `meta_events` | chat widget |
@@ -149,6 +152,20 @@ boundary:
   last active client admin of a workspace cannot be stranded; the acting user cannot
   delete their own login. Every successful change writes `user_events` (actor, target,
   org, action, detail), including password resets and status changes.
+
+## Internal bug tracker
+
+Platform -> **Bug tracker** is owner-only and agency-facing. A bug has a title,
+description, status (`open`, `in_progress`, `resolved`, `closed`), priority (`low` through
+`urgent`), an optional affected client, an optional agency assignee and the page where it
+was seen. The reporter is the signed-in owner.
+
+`bugs.py` validates active agency users as assignees and real clients as context. A
+bug's optional client is metadata, never an access boundary: client admins and members
+receive `403` on every `/api/platform/bugs` route. Comments and field changes share the
+`bug_events` timeline; closing a bug keeps the record and history rather than deleting it.
+The console list supports search and status/priority/assignee/client filters, with a
+detail modal for status, priority, assignment, comments and the full timeline.
 
 ## Sign-in and password reset
 

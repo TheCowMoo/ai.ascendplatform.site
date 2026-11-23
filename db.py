@@ -163,6 +163,43 @@ password_resets = Table(
 
 Index("idx_password_resets_user", password_resets.c.user_id)
 
+# Internal agency bug tracking. This is deliberately not tenant data: client admins
+# never see it. The affected client is optional context, not an access boundary.
+bugs = Table(
+    "bugs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("title", Text, nullable=False),
+    Column("description", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("open")),
+    Column("priority", Text, nullable=False, server_default=_literal("normal")),
+    Column("org_id", Integer),
+    Column("reporter_id", Integer),
+    Column("assignee_id", Integer),
+    Column("page", Text, nullable=False, server_default=_literal("")),
+    Column("resolved_at", Text),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+Index("idx_bugs_status", bugs.c.status)
+Index("idx_bugs_assignee", bugs.c.assignee_id)
+Index("idx_bugs_org", bugs.c.org_id)
+
+# One timeline row for creation, edits, status/priority/assignment and comments.
+bug_events = Table(
+    "bug_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("bug_id", Integer, nullable=False),
+    Column("actor_id", Integer),
+    Column("action", Text, nullable=False),
+    Column("detail", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+)
+
+Index("idx_bug_events_bug", bug_events.c.bug_id)
+
 bots = Table(
     "bots", metadata,
     Column("id", Text, primary_key=True),
@@ -1414,6 +1451,16 @@ def _ensure_columns():
         if "password_resets" not in tables:
             try:
                 metadata.tables["password_resets"].create(bind=engine)
+            except Exception:
+                pass
+        if "bugs" not in tables:
+            try:
+                metadata.tables["bugs"].create(bind=engine)
+            except Exception:
+                pass
+        if "bug_events" not in tables:
+            try:
+                metadata.tables["bug_events"].create(bind=engine)
             except Exception:
                 pass
         # The old invitation spelling. A dev database does not run migration 0032,

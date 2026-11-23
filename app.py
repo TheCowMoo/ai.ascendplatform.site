@@ -48,6 +48,7 @@ import usage as usage_service
 import analytics as analytics_service
 import invites as invites_service
 import password_resets
+import bugs as bugs_service
 import user_service
 import tools as tool_registry
 import actions
@@ -932,6 +933,78 @@ def platform_delete_user(user_id):
     except user_service.UserError as exc:
         return _user_error(exc)
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Internal agency bug tracker. Owner-only; client admins and members never see it.
+# ---------------------------------------------------------------------------
+def _bug_error(exc):
+    return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/platform/bugs", methods=["GET"])
+@owner_required
+def platform_bugs():
+    try:
+        rows = bugs_service.list_bugs(
+            status=request.args.get("status") or "",
+            priority=request.args.get("priority") or "",
+            assignee_id=request.args.get("assignee_id") or request.args.get("assignee") or "",
+            org_id=request.args.get("org_id") or "",
+            q=request.args.get("q") or "",
+        )
+    except bugs_service.BugError as exc:
+        return _bug_error(exc)
+    return jsonify({
+        "bugs": rows,
+        "counts": bugs_service.counts(),
+        "assignees": bugs_service.assignees(),
+        "statuses": list(bugs_service.STATUSES),
+        "priorities": list(bugs_service.PRIORITIES),
+    })
+
+
+@app.route("/api/platform/bugs", methods=["POST"])
+@owner_required
+def platform_create_bug():
+    try:
+        bug = bugs_service.create_bug(
+            request.get_json(silent=True) or {}, session.get("user_id"))
+    except bugs_service.BugError as exc:
+        return _bug_error(exc)
+    return jsonify({"bug": bug}), 201
+
+
+@app.route("/api/platform/bugs/<int:bug_id>", methods=["GET"])
+@owner_required
+def platform_get_bug(bug_id):
+    bug = bugs_service.get_bug(bug_id)
+    if not bug:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"bug": bug, "events": bugs_service.events(bug_id)})
+
+
+@app.route("/api/platform/bugs/<int:bug_id>", methods=["PUT"])
+@owner_required
+def platform_update_bug(bug_id):
+    try:
+        bug = bugs_service.update_bug(
+            bug_id, request.get_json(silent=True) or {}, session.get("user_id"))
+    except bugs_service.BugError as exc:
+        return _bug_error(exc)
+    return jsonify({"bug": bug, "events": bugs_service.events(bug_id)})
+
+
+@app.route("/api/platform/bugs/<int:bug_id>/comments", methods=["POST"])
+@owner_required
+def platform_add_bug_comment(bug_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        bugs_service.add_comment(
+            bug_id, data.get("comment") or data.get("text"), session.get("user_id"))
+    except bugs_service.BugError as exc:
+        return _bug_error(exc)
+    return jsonify({"events": bugs_service.events(bug_id)})
 
 
 # ---------------------------------------------------------------------------

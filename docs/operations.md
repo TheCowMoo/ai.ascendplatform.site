@@ -94,6 +94,15 @@ again. The last active owner and the last active client admin cannot be removed,
 disabled or demoted, so a workspace is never left with nobody able to administer it.
 Every change is visible in `user_events` for support and audit.
 
+## Internal bug tracker
+
+Platform -> **Bug tracker** is the agency's private issue list; client admins and members
+cannot see it. Report a bug with a title, description, priority, optional affected client,
+optional agency assignee and the page or screen where it happened. Open a row to change
+its status/priority/assignee or add a comment. Every change and comment is kept in the
+activity timeline; use **Closed** instead of deleting a bug so its history survives.
+Bugs never create a client-facing notification.
+
 ## Publishing pages and subpages
 
 A website can be one page or a multi-page site. The website build asks how many pages
