@@ -14,6 +14,8 @@ died with "relation agents already exists" while the app container crash-looped.
 """
 
 import os
+import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,25 @@ def _alembic(*args):
 def _tables():
     engine = sa.create_engine(os.environ["DATABASE_URL"])
     return set(sa.inspect(engine).get_table_names()) - {"alembic_version"}
+
+
+def test_revision_ids_fit_the_version_column():
+    """Every revision id must fit Alembic's ``alembic_version.version_num``.
+
+    Alembic creates that column as ``VARCHAR(32)``. SQLite ignores the length, so a
+    33-character revision passed every local suite - then PostgreSQL rejected the
+    version update, rolled the whole upgrade back and the app container exited with
+    a 502 behind Caddy. This catches the next one before it reaches a deploy.
+    """
+    versions = pathlib.Path(REPO_ROOT) / "alembic" / "versions"
+    too_long = []
+    for path in sorted(versions.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        match = re.search(r'^revision\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match and len(match.group(1)) > 32:
+            too_long.append("%s (%d characters)" % (match.group(1), len(match.group(1))))
+    assert not too_long, "Alembic revision ids must fit VARCHAR(32): %s" % too_long
+    print("all revision ids fit alembic_version VARCHAR(32)")
 
 
 def test_upgrade_head_on_an_empty_database():
@@ -163,6 +184,7 @@ def test_an_upgrade_survives_tables_that_already_exist():
 
 
 if __name__ == "__main__":
+    test_revision_ids_fit_the_version_column()
     test_upgrade_head_on_an_empty_database()
     test_schema_matches_metadata()
     test_upgrade_dedupes_a_raced_roster()

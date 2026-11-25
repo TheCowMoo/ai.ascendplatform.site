@@ -11,7 +11,7 @@ Both additions are conditional: a fresh database builds ``automation_proposals``
 from alembic import op
 from sqlalchemy import Column, Text, inspect
 
-revision = "0036_automation_proposal_triggers"
+revision = "0036_proposal_triggers"
 down_revision = "0035_analytics_oauth"
 branch_labels = None
 depends_on = None
