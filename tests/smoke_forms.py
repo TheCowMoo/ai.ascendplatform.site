@@ -317,12 +317,25 @@ def main():
     # the empty result a bug. The forwarded IP keeps the public rate limit out of the way.
     import automations as automations_service
 
+    # Two forms, two listeners. Only the one that names *this* form may start.
+    other_form = forms.create_form({
+        "name": "Another form %s" % TOKEN, "kind": "form",
+        "questions": [{"id": "q1", "label": "Email", "type": "email", "page": 0}],
+    }, org)
+    steps = [{"id": "note", "type": "notify", "title": "Log it", "next": []}]
     auto_id = automations_service.create(
-        org, "React to a quiz answer",
-        [{"id": "note", "type": "notify", "title": "Log it", "next": []}],
-        trigger_type="event", trigger_config={"event": "form.submitted"}, enabled=True)
+        org, "React to a quiz answer", steps,
+        trigger_type="event",
+        trigger_config={"event": "form.submitted", "form_id": published["id"]},
+        enabled=True)
+    other_auto = automations_service.create(
+        org, "React to a different form", steps,
+        trigger_type="event",
+        trigger_config={"event": "form.submitted", "form_id": other_form["id"]},
+        enabled=True)
     with db.get_connection() as conn:
-        conn.execute("DELETE FROM automation_runs WHERE automation_id = ?", (auto_id,))
+        conn.execute("DELETE FROM automation_runs WHERE automation_id IN (?, ?)",
+                     (auto_id, other_auto))
     fired = api.post("/api/public/forms/%s" % slug,
                      json={"answers": {"start": "Sea", "sea": "Lisbon", "always": "hi"}},
                      headers={"X-Forwarded-For": "203.0.113.9"})
@@ -331,9 +344,14 @@ def main():
     with db.get_connection() as conn:
         runs = conn.execute("SELECT * FROM automation_runs WHERE automation_id = ?",
                             (auto_id,)).fetchall()
-        conn.execute("DELETE FROM automation_runs WHERE automation_id = ?", (auto_id,))
-        conn.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
+        other_runs = conn.execute("SELECT * FROM automation_runs WHERE automation_id = ?",
+                                  (other_auto,)).fetchall()
+        conn.execute("DELETE FROM automation_runs WHERE automation_id IN (?, ?)",
+                     (auto_id, other_auto))
+        conn.execute("DELETE FROM automations WHERE id IN (?, ?)", (auto_id, other_auto))
+        conn.execute("DELETE FROM forms WHERE id = ?", (other_form["id"],))
     check("a submission starts the automation that listens for it", len(runs) >= 1, True)
+    check("a trigger scoped to another form stays quiet", len(other_runs), 0)
 
     # --- the browser-facing script ------------------------------------------------
     # `var history = []` is not an array in a browser: history is window.history, so

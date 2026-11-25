@@ -61,7 +61,8 @@ def cleanup():
         for table in ("automations", "automation_runs", "deliverables",
                       "deliverable_versions", "site_versions",
                       "sites", "users", "client_settings", "business_profiles",
-                      "data_sources", "invites", "site_snapshots", "forms", "form_responses"):
+                      "data_sources", "oauth_connections", "invites", "site_snapshots",
+                      "forms", "form_responses"):
             try:
                 conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org_id,))
             except Exception:

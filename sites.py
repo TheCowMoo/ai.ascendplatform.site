@@ -224,13 +224,18 @@ def _first_failure(result):
     return ""
 
 
-def platform_domains(limit=None):
-    """Every connected domain with its client, including orphaned rows."""
+def platform_domains(limit=None, org_id=None):
+    """Connected domains with their client, including orphaned rows.
+
+    ``org_id`` narrows the list to one client for the Platform client page. The
+    operator-wide page omits it and still gets every domain. Counts are scoped to
+    the same rows, so a filtered tab never shows another client's totals.
+    """
     import orgs as orgs_service
 
     orgs = {org["id"]: org for org in orgs_service.list_orgs(limit=None)}
     rows = []
-    for site in list_sites(limit=limit):
+    for site in list_sites(org_id=org_id, limit=limit):
         org = orgs.get(site.get("org_id"))
         item = dict(site)
         # The console shows the badge, but the API is also used by support scripts:

@@ -1,0 +1,210 @@
+﻿"""Generate and check the AI reference index.
+
+Usage:
+    python tools/ai_reference.py
+    python tools/ai_reference.py --check
+"""
+
+import argparse
+import ast
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+TARGET = ROOT / "docs" / "ai" / "INDEX.md"
+
+AUTH = {
+    "login_required": "login",
+    "client_admin_required": "client_admin",
+    "owner_required": "owner",
+}
+METHODS = {"get", "post", "put", "delete", "patch"}
+
+
+def read(path):
+    return Path(path).read_text(encoding="utf-8")
+
+
+def cell(value):
+    return str(value or "").replace("|", "\\|").replace("\n", " ")
+
+
+def name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def flask_routes():
+    rows = []
+    tree = ast.parse(read(ROOT / "app.py"))
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        path = None
+        methods = {"GET"}
+        auth = []
+        for dec in node.decorator_list:
+            if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) \
+                    and dec.func.attr == "route":
+                if dec.args and isinstance(dec.args[0], ast.Constant):
+                    path = dec.args[0].value
+                for kw in dec.keywords:
+                    if kw.arg == "methods" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                        methods = {el.value.upper() for el in kw.value.elts
+                                   if isinstance(el, ast.Constant)}
+            elif isinstance(dec, ast.Name) and dec.id in AUTH:
+                auth.append(AUTH[dec.id])
+        if path:
+            auth_text = ", ".join(sorted(auth)) or "public"
+            if node.name == "google_analytics_oauth_callback":
+                auth_text = "login (manual session check)"
+            rows.append((path, "/".join(sorted(methods)),
+                         auth_text, node.name, "app.py"))
+    return rows
+
+
+def _depends_name(node):
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call) and name(inner.func) == "Depends" \
+                and inner.args and isinstance(inner.args[0], ast.Name):
+            return inner.args[0].id
+    return ""
+
+
+def asgi_routes():
+    rows = []
+    tree = ast.parse(read(ROOT / "asgi.py"))
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        paths = []
+        for dec in node.decorator_list:
+            if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) \
+                    and dec.func.attr in METHODS and dec.args \
+                    and isinstance(dec.args[0], ast.Constant):
+                paths.append((dec.args[0].value, dec.func.attr.upper()))
+        if not paths:
+            continue
+        auth = []
+        for default in node.args.defaults:
+            dep = _depends_name(default)
+            if dep == "require_owner":
+                auth.append("owner")
+            elif dep == "require_session":
+                auth.append("login")
+        for path, method in paths:
+            rows.append((path, method, ", ".join(sorted(set(auth))) or "public",
+                         node.name, "asgi.py"))
+    return rows
+
+
+def settings_rows():
+    import settings
+
+    rows = []
+    for group in settings.SPEC:
+        for field in group["fields"]:
+            rows.append((field["key"], field["label"], field.get("scope", ""),
+                         "yes" if field.get("secret") else "no", group["label"]))
+    return rows
+
+
+def table_rows():
+    import db
+
+    return [table.name for table in db.metadata.sorted_tables]
+
+
+def preflight_suites():
+    tree = ast.parse(read(ROOT / "tests" / "preflight.py"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "FAST_SUITES" for t in node.targets):
+            return [el.value for el in node.value.elts if isinstance(el, ast.Constant)]
+    return []
+
+
+def ui_inventory():
+    script = read(ROOT / "admin" / "admin.js")
+    start = script.index("var AREAS = {")
+    end = script.index("// Flattened leaves", start)
+    block = script[start:end]
+    nav = re.findall(r"\{ id: '([^']+)', label: '([^']+)'", block)
+    views = sorted(set(re.findall(r"function view([A-Z][A-Za-z0-9_]*)\(", script)))
+    return nav, views
+
+
+def render():
+    routes = sorted(flask_routes() + asgi_routes(), key=lambda row: (row[0], row[1]))
+    settings = settings_rows()
+    tables = table_rows()
+    suites = preflight_suites()
+    js_harnesses = sorted(p.name for p in (ROOT / "tests").glob("*.mjs"))
+    test_files = sorted(p.stem for p in (ROOT / "tests").glob("test_*.py"))
+    nav, views = ui_inventory()
+    lines = [
+        "# AI Reference Index",
+        "",
+        "<!-- Generated by tools/ai_reference.py; do not edit by hand. -->",
+        "",
+        "This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPES.md`.",
+        "",
+        "## Routes",
+        "",
+        "| Method | Path | Auth | Handler | Source |",
+        "|---|---|---|---|---|",
+    ]
+    for path, method, auth, handler, source in routes:
+        lines.append("| %s | `%s` | %s | `%s` | `%s` |" % (
+            method, cell(path), cell(auth), cell(handler), source))
+    lines += ["", "## Settings", "", "| Key | Label | Scope | Secret | Group |",
+              "|---|---|---|---|---|"]
+    for key, label, scope, secret, group in settings:
+        lines.append("| `%s` | %s | %s | %s | %s |" % (
+            cell(key), cell(label), cell(scope), secret, cell(group)))
+    lines += ["", "## Database tables", ""]
+    for table in tables:
+        lines.append("- `%s`" % table)
+    lines += ["", "## Preflight suites", ""]
+    for suite in suites:
+        lines.append("- `%s`" % suite)
+    lines += ["", "## JS harnesses", ""]
+    for harness in js_harnesses:
+        lines.append("- `%s`" % harness)
+    lines += ["", "## Python test files", ""]
+    for test in test_files:
+        lines.append("- `%s`" % test)
+    lines += ["", "## UI navigation entries", "", "| Id | Label |", "|---|---|"]
+    for item_id, label in nav:
+        lines.append("| `%s` | %s |" % (cell(item_id), cell(label)))
+    lines += ["", "## UI view functions", ""]
+    for view in views:
+        lines.append("- `view%s`" % view)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    expected = render()
+    if args.check:
+        actual = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
+        if actual != expected:
+            print("AI INDEX IS STALE: run python tools/ai_reference.py")
+            return 1
+        print("AI INDEX OK")
+        return 0
+    TARGET.parent.mkdir(parents=True, exist_ok=True)
+    TARGET.write_text(expected, encoding="utf-8")
+    print("Wrote %s" % TARGET.relative_to(ROOT))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

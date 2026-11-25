@@ -8,6 +8,9 @@ agent jobs with live transcripts and approvals.
 > The production topology is Docker Compose: Caddy + ASGI app + PostgreSQL + Redis.
 > For launch operations, backups, restore drills and suspension, read
 > [`docs/operations.md`](docs/operations.md).
+>
+> **New AI agent?** Read [`AGENTS.md`](AGENTS.md) first, then the guides in
+> [`docs/ai/`](docs/ai/).
 
 Each chatbot has its own:
 - **Name, assistant name, brand color, logo** — fully rebrandable widget
@@ -162,8 +165,10 @@ is why `tests/test_migrations.py` runs the whole chain against an empty database
 | `SSH_TIMEOUT` / `SSH_CMD_TIMEOUT` / `SSH_MAX_OUTPUT` | SSH connect timeout, command timeout, output cap |
 | `SMTP_*` | Outbound email for the `send_email` tool |
 | `NOTIFICATIONS_ENABLED` | Email client admins about new leads and automation notices (`1` by default) |
-| `GA4_SERVICE_ACCOUNT_KEY_PATH` | Mounted Google Analytics service-account JSON used by GA4 source sync |
-| `GA4_SERVICE_ACCOUNT_EMAIL` | Service-account email shown to clients so they can grant GA4 property access |
+| `GA4_OAUTH_CLIENT_ID` / `GA4_OAUTH_CLIENT_SECRET` | Google OAuth web client for client-owned GA4 connections |
+| `GA4_OAUTH_REDIRECT_URI` | Exact Google callback URI; defaults to `PLATFORM_URL` + `/api/analytics/oauth/google/callback` |
+| `GA4_SERVICE_ACCOUNT_KEY_PATH` | Fallback Google Analytics service-account JSON for non-OAuth sources |
+| `GA4_SERVICE_ACCOUNT_EMAIL` | Service-account email shown as the agency-managed fallback |
 | `ARTIFACTS_DIR` | Where generated images/files are written |
 | `PEXELS_API_KEY` | Pexels stock photography for `search_photos`, `fetch_photo` and `import_photo_to_media` (free key at pexels.com/api) |
 | `PEXELS_PER_PAGE` / `PEXELS_TIMEOUT` / `PEXELS_MAX_BYTES` | Search page size, request timeout, download size cap |

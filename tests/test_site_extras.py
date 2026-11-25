@@ -4,6 +4,7 @@ Run: .\\venv\\Scripts\\python.exe tests\\test_site_extras.py
 """
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -114,15 +115,81 @@ def test_an_automation_is_applied_after_the_yes():
     check("the proposal is valid", problems, [])
     reply = run(manager_tools._build_apply_automation, proposal_id=0)
     check("it is applied", "Applied" in reply, True)
-    names = [row["name"] for row in automations.list_for_org(ORG)]
+    rows = automations.list_for_org(ORG)
+    names = [row["name"] for row in rows]
     check("and it exists", "Welcome sequence" in names, True)
+    saved = next(row for row in rows if row["name"] == "Welcome sequence")
+    check("applying switches it on", saved["enabled"], 1)
     again = run(manager_tools._build_apply_automation, proposal_id=0)
     check("a second apply has nothing waiting", "no automation proposal" in again, True)
 
 
+def test_the_model_can_carry_a_form_trigger_into_a_draft():
+    form = forms_service.list_forms(ORG)[0]
+    steps = [{"id": "tag", "type": "tool", "title": "Add the tour enquiry tags",
+              "config": {"tool": "tag_contact",
+                         "args": {"contact_id": "{{contact.id}}",
+                                  "tags": "tour-enquiry, website"}},
+              "next": []}]
+    reply = run(manager_tools._build_propose_automation,
+                name="Save tour enquiries", steps=json.dumps(steps),
+                when="form.submitted", form_id=form["id"])
+    check("the assistant can draft it", "Drafted" in reply, True)
+    pending = automations.list_proposals(ORG)
+    check("the draft remembers the form",
+          pending[0]["trigger_config"].get("form_id"), form["id"])
+    check("and names the form in plain words",
+          form["name"] in pending[0]["trigger_label"], True)
+
+    applied = run(manager_tools._build_apply_automation, proposal_id=0)
+    check("one yes applies it", "Applied" in applied, True)
+    saved = next(row for row in automations.list_for_org(ORG)
+                 if row["name"] == "Save tour enquiries")
+    check("it is switched on", saved["enabled"], 1)
+    check("its trigger is saved", saved["trigger_type"], "event")
+    check("pointing at that form", saved["trigger_config"].get("form_id"), form["id"])
+
+    # The trigger must listen to that form only. A different form id in the event context
+    # is not this automation's cue.
+    started = []
+    original = automations.start
+    automations.start = lambda automation_id, *a, **k: started.append(automation_id) or {
+        "run_id": 1, "job_id": 2}
+    try:
+        automations.start_for_event(ORG, "form.submitted",
+                                    context={"form.id": form["id"] + 9000})
+        check("another form does not fire it", started, [])
+        automations.start_for_event(ORG, "form.submitted",
+                                    context={"form.id": form["id"]})
+        check("its own form fires it", saved["id"] in started, True)
+    finally:
+        automations.start = original
+
+
+def test_the_assistant_can_find_the_automation_it_must_fix():
+    listing = json.loads(run(manager_tools._build_list_automations))
+    saved = next(row for row in listing if row["name"] == "Save tour enquiries")
+    check("the listing says when it runs", "When someone sends" in saved["when"], True)
+    check("and carries the complete saved steps",
+          saved["steps"][0]["config"].get("tool"), "tag_contact")
+    check("so a revision can start from the real graph",
+          saved["steps"][0]["config"].get("args", {}).get("tags"),
+          "tour-enquiry, website")
+
+
+def test_an_unknown_form_is_refused_while_the_model_can_still_fix_it():
+    reply = run(manager_tools._build_propose_automation,
+                name="Wrong form", steps=json.dumps(
+                    [{"id": "n", "type": "notify", "title": "Log it", "next": []}]),
+                when="form.submitted", form_id=987654)
+    check("a form that is not this client's is refused", "no form" in reply, True)
+    check("and nothing was drafted", automations.list_proposals(ORG), [])
+
+
 def test_the_model_is_told_what_exists():
     caps = run(manager_tools._build_describe_capabilities)
-    for needle in ("form.submitted", "publish_page", "add_form_link", "apply_automation"):
+    for needle in ("form.submitted", "publish_page", "add_form_link", "apply_automation",
+                   "list_automations"):
         check("capabilities name %s" % needle, needle in caps, True)
 
 
@@ -132,6 +199,9 @@ if __name__ == "__main__":
     test_a_form_is_published_and_gets_a_button()
     test_another_clients_form_is_refused()
     test_an_automation_is_applied_after_the_yes()
+    test_the_model_can_carry_a_form_trigger_into_a_draft()
+    test_the_assistant_can_find_the_automation_it_must_fix()
+    test_an_unknown_form_is_refused_while_the_model_can_still_fix_it()
     test_the_model_is_told_what_exists()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))

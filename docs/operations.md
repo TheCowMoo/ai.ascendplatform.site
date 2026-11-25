@@ -75,6 +75,32 @@ minutes and is sent through the platform's GoHighLevel sender. If platform email
 configured, the request still receives the generic success message and support can reset
 the password from the client's Team page. Keep that support path in the onboarding email.
 
+## Working on one client
+
+Open **Platform -> Clients** and choose a client. The page keeps the client in context
+and is split into six tabs:
+
+- **Overview** shows plan, status, the primary admin, notes, and the important counts:
+  logins, websites, open support issues and available credits. The quick actions add a
+  login, report an internal issue or add credits.
+- **Team** lists the client's logins with role, status and last sign-in. Add a login or
+  send an invitation; reset a password, enable/disable or remove a person. A person
+  edited here cannot be moved to another client or made an agency owner.
+- **Websites** shows that client's domains, DNS address, SSL state and live link.
+  Destructive domain removal stays in **Platform -> Domains**.
+- **Usage** shows the client's balance, allowance, month-to-date spend and recent
+  activity. **Add credits** is the same operation as Platform -> Usage.
+- **Support** is the internal bug list filtered to this client. Reporting here keeps the
+  issue attached to the client; the client never sees it.
+- **Settings** edits the client profile, manages the client's own email-sending details
+  (SMTP), tests the connection and exposes the permanent-delete action. GoHighLevel
+  remains a backend-only integration.
+
+**Open workspace** switches the operator's acting client and opens that client's
+dashboard. Use the workspace switcher under the logo to return to the all-client view.
+The owner-only domain API accepts `?org_id=N`; leaving it off returns every client's
+domains.
+
 ## People and Team
 
 **Platform -> People** is the agency-wide directory. Add an agency owner (no client),
@@ -122,10 +148,18 @@ property from Workspace → Analytics → Traffic sources; a member sees the num
 source labels read-only. The operator can do the same for any client from Platform →
 Data sources, or while acting as that client.
 
-Before clients connect GA4, set `GA4_SERVICE_ACCOUNT_KEY_PATH` and
-`GA4_SERVICE_ACCOUNT_EMAIL` under Platform → Analytics. The client shares their GA4
-property with that service account's email (Viewer is enough) and enters only the
-numeric property ID.
+The recommended path is Google OAuth. Create a **Web application** OAuth client in
+Google Cloud, enable the Google Analytics Data API, and register this exact redirect
+URI under Platform → Analytics:
+
+```text
+https://<ADMIN_DOMAIN>/api/analytics/oauth/google/callback
+```
+
+Set `GA4_OAUTH_CLIENT_ID`, `GA4_OAUTH_CLIENT_SECRET` and, if needed,
+`GA4_OAUTH_REDIRECT_URI`. The client enters their numeric property ID and clicks
+**Connect with Google**; the callback stores the refresh token for that client only.
+Existing service-account sources remain supported through `GA4_SERVICE_ACCOUNT_KEY_PATH`.
 The daily scheduler refreshes GA4 sources; the per-source **Refresh** action is for a
 client admin or the operator. Site logs are platform infrastructure and are refreshed
 by the operator's global sync, not by a client.

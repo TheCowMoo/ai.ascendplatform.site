@@ -9,10 +9,15 @@ SYSTEM = (
     "numbers or statuses. You can list sites and drafts, read traffic, edit a draft, and "
     "start jobs for the agent team.\n"
     "You can build automations. Call describe_capabilities first to see this client's "
-    "triggers, tools, conditions and templates, then call propose_automation with a "
-    "complete JSON graph. A proposal is not live: the user previews it and presses Apply. "
-    "If the graph is refused the validator's complaints come back - fix them and call "
-    "again with the whole graph.\n"
+    "triggers, tools, conditions and templates, then call propose_automation with the "
+    "whole graph *and* its trigger: when='form.submitted' plus the form id from "
+    "list_forms, when='contact.created', when='schedule', or when='manual'. Nothing is "
+    "live until the user approves it. Explain it in one plain sentence, ask one yes/no "
+    "with ask_user, and after a yes call apply_automation yourself. The user must never "
+    "have to open Automations or configure a trigger. A form that asks for a name or "
+    "email already creates the CRM contact, so a form-triggered automation tags or "
+    "messages {{contact.id}} - it must not add an agent step that creates the contact "
+    "again. If the graph is refused, fix it and call again with the whole graph.\n"
         "Create what the work needs. If a sequence needs an email, write the template with "
     "create_template and use its id in the send step - do not tell the user to go and make "
     "one. Call list_templates first so you reuse an existing one instead of duplicating it. "
@@ -59,9 +64,15 @@ SYSTEM = (
     "it - a contact form with a link on the page, a follow-up email template, and an "
     "automation that sends it - as one short question. Build them only when the user "
     "says yes, and never add them to an existing page unless asked.\n"
-    "Before calling apply_automation, explain in plain language what triggers it and "
-    "what it does, then ask for confirmation with ask_user. Apply only after a yes; "
-    "the send inside it still needs its own approval when it runs.\n"
+    "Before calling apply_automation, explain in plain language what starts it and "
+    "what it does, then ask for confirmation with ask_user. Apply only after a yes. If it "
+    "sends email or publishes, that outward step still asks for its own approval when the "
+    "run reaches it.\n"
+    "Speak to the user in plain words. Never say graph, node, trigger type, event name, "
+    "proposal, proposal id, JSON, enabled or disabled, email_ready, tool name or form id. "
+    "Say when it happens and what it does, and name a form by its name. Do not mention "
+    "email setup unless the automation actually sends email. Never ask the user to "
+    "configure a screen: one approval is the only step they should have to take.\n"
     "Ask before you guess, but only when it matters. If the brief is vague - under about a "
     "dozen words, or missing what the thing is for - call ask_user with at most three "
     "short questions whose answers would change the output: for an email, who it goes to "
@@ -83,8 +94,9 @@ SYSTEM = (
     "through publish_page, which records the approval row. Never claim something is "
     "published or sent unless the tool returned a URL or a send result.\n"
     "Report what blocks the work. describe_capabilities tells you whether email is "
-    "configured and which templates exist; if templates is empty or email_ready is false, "
-    "say so plainly before or alongside any draft, because a send step cannot work yet. "
+    "configured and which templates exist. Mention email setup only when the user asks "
+    "for an automation that sends email and it is missing; an internal contact or tag "
+    "automation does not need email at all. "
     "Always end with a sentence: never finish a turn having only called a tool.\n"
     "Be brief: one short paragraph or a few bullets. Use the client's numbers when you "
     "have them, and say so when you do not."
@@ -94,8 +106,9 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
            "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",
-           "create_form", "list_forms", "remember_preference", "propose_business_fact",
-           "publish_page", "add_form_link", "apply_automation", "fetch_page", "start_build")
+           "create_form", "list_forms", "list_automations", "remember_preference",
+           "propose_business_fact", "publish_page", "add_form_link", "apply_automation",
+           "fetch_page", "start_build")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "

@@ -1782,9 +1782,10 @@
     document.body.appendChild(backdrop);
   }
 
-  function personModal(person, platformMode, orgs, onSaved) {
+  function personModal(person, platformMode, orgs, onSaved, fixedOrgId) {
     var isEdit = !!(person && person.id);
-    var roleOptions = platformMode
+    var fixedOrg = fixedOrgId !== undefined && fixedOrgId !== null && fixedOrgId !== '';
+    var roleOptions = platformMode && !fixedOrg
       ? [{ value: 'owner', label: 'Agency owner' },
          { value: 'client_admin', label: 'Client admin' },
          { value: 'member', label: 'Member' }]
@@ -1800,7 +1801,7 @@
     }
     fields.push({ name: 'role', label: 'Role', type: 'select', options: roleOptions,
       value: isEdit ? person.role : 'member' });
-    if (platformMode) {
+    if (platformMode && !fixedOrg) {
       fields.push({
         name: 'org_id', label: 'Client', type: 'select',
         options: [{ value: '', label: 'No client (agency)' }].concat(
@@ -1814,11 +1815,15 @@
       var payload = { name: data.name, email: data.email, role: data.role };
       if (!isEdit) payload.password = data.password;
       if (platformMode) {
-        if (data.role !== 'owner' && !data.org_id) {
-          fail('Choose a client for a client-admin or member account.');
-          return;
+        if (fixedOrg) {
+          payload.org_id = fixedOrgId;
+        } else {
+          if (data.role !== 'owner' && !data.org_id) {
+            fail('Choose a client for a client-admin or member account.');
+            return;
+          }
+          payload.org_id = data.role === 'owner' ? null : (data.org_id || null);
         }
-        payload.org_id = data.role === 'owner' ? null : (data.org_id || null);
       }
       var url = platformMode ? '/api/platform/users' : '/api/users';
       if (isEdit) url += '/' + person.id;
@@ -1865,15 +1870,17 @@
     }).catch(function (e) { toast(e.message, false); });
   }
 
-  function peopleTable(users, platformMode, orgs, onChanged) {
+  function peopleTable(users, platformMode, orgs, onChanged, fixedOrgId) {
+    var fixedOrg = fixedOrgId !== undefined && fixedOrgId !== null && fixedOrgId !== '';
+    var showClient = platformMode && !fixedOrg;
     var table = el('table', 'table people-table');
     table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Role</th>' +
-      (platformMode ? '<th>Client</th>' : '') +
+      (showClient ? '<th>Client</th>' : '') +
       '<th>Status</th><th>Last login</th><th></th></tr></thead>';
     var tbody = el('tbody');
     if (!users.length) {
       var empty = el('tr');
-      empty.innerHTML = '<td colspan="' + (platformMode ? 7 : 6) +
+      empty.innerHTML = '<td colspan="' + (showClient ? 7 : 6) +
         '" class="muted">No people match this view.</td>';
       tbody.appendChild(empty);
     }
@@ -1882,13 +1889,13 @@
       tr.innerHTML = '<td><strong>' + esc(u.name) + '</strong></td>' +
         '<td>' + esc(u.email) + '</td>' +
         '<td>' + personRoleBadge(u.role) + '</td>' +
-        (platformMode ? '<td class="muted">' + esc(u.org_name || 'Agency') + '</td>' : '') +
+        (showClient ? '<td class="muted">' + esc(u.org_name || 'Agency') + '</td>' : '') +
         '<td>' + personStatusBadge(u.status) + '</td>' +
         '<td class="muted">' + (u.last_login_at ? esc(shortTime(u.last_login_at)) : 'Never') + '</td>';
       var td = el('td', 'row-actions');
       var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
       edit.onclick = function () {
-        personModal(u, platformMode, orgs || [], onChanged);
+        personModal(u, platformMode, orgs || [], onChanged, fixedOrgId);
       };
       td.appendChild(edit);
       var pw = el('button', 'btn btn-ghost btn-sm', 'Reset password');
@@ -2260,6 +2267,72 @@
     return input;
   }
 
+  function clientSettingsCard(group, orgId, refresh) {
+    var card = el('div', 'panel-card settings-group');
+    var head = el('div', 'settings-group-head');
+    head.innerHTML = '<span class="settings-icon">' + icon(group.icon || 'mail') +
+      '</span><div><h3>' + esc(group.label) + '</h3><div class="muted">' +
+      esc(group.blurb || '') + '</div></div>';
+    card.appendChild(head);
+
+    var inputs = {};
+    (group.fields || []).forEach(function (field) {
+      var row = el('div', 'settings-row');
+      var label = el('label', 'settings-label');
+      label.setAttribute('for', 'set-' + field.key);
+      label.innerHTML = '<span class="settings-name">' + esc(field.label) + '</span>';
+      row.appendChild(label);
+
+      var right = el('div', 'settings-input');
+      var input = fieldInput(field);
+      input.id = 'set-' + field.key;
+      inputs[field.key] = input;
+      right.appendChild(input);
+      row.appendChild(right);
+      if (field.help) row.appendChild(el('div', 'hint', field.help));
+      card.appendChild(row);
+    });
+
+    var actions = el('div', 'card-actions');
+    var save = el('button', 'btn btn-primary btn-sm', 'Save');
+    save.type = 'button';
+    save.onclick = function () { saveGroup(group, inputs, refresh, orgId); };
+    actions.appendChild(save);
+    if (group.test) {
+      var test = el('button', 'btn btn-ghost btn-sm', 'Test connection');
+      test.type = 'button';
+      test.onclick = function () {
+        test.disabled = true;
+        api('POST', '/api/settings/test/' + group.id,
+            orgId ? { org_id: orgId } : undefined).then(function (r) {
+          toast(r.output, !!r.ok);
+        }).catch(function (e) { toast(e.message, false); })
+          .finally(function () { test.disabled = false; });
+      };
+      actions.appendChild(test);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function clientSettingsCards(host, orgId, refresh, emptyText) {
+    var url = '/api/settings' + (orgId ? '?org_id=' + encodeURIComponent(orgId) : '');
+    api('GET', url).then(function (d) {
+      host.innerHTML = '';
+      var groups = d.groups || [];
+      if (!groups.length) {
+        host.appendChild(el('p', 'muted',
+          emptyText || 'Email settings are managed by your agency.'));
+        return;
+      }
+      groups.forEach(function (group) {
+        host.appendChild(clientSettingsCard(group, orgId, refresh));
+      });
+    }).catch(function (e) {
+      host.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+    });
+  }
+
   function viewClientSettings() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -2278,61 +2351,8 @@
     container.appendChild(groupsWrap);
 
     function refresh() {
-      api('GET', '/api/settings').then(function (d) {
-        groupsWrap.innerHTML = '';
-        var groups = d.groups || [];
-        if (!groups.length) {
-          groupsWrap.appendChild(el('p', 'muted',
-            'Email settings are managed by your agency.'));
-          return;
-        }
-        groups.forEach(function (group) {
-          var card = el('div', 'panel-card settings-group');
-          var head = el('div', 'settings-group-head');
-          head.innerHTML = '<span class="settings-icon">' + icon(group.icon || 'mail') +
-            '</span><div><h3>' + esc(group.label) + '</h3><div class="muted">' +
-            esc(group.blurb || '') + '</div></div>';
-          card.appendChild(head);
-
-          var inputs = {};
-          (group.fields || []).forEach(function (field) {
-            var row = el('div', 'settings-row');
-            var label = el('label', 'settings-label');
-            label.setAttribute('for', 'set-' + field.key);
-            label.innerHTML = '<span class="settings-name">' + esc(field.label) + '</span>';
-            row.appendChild(label);
-
-            var right = el('div', 'settings-input');
-            var input = fieldInput(field);
-            input.id = 'set-' + field.key;
-            inputs[field.key] = input;
-            right.appendChild(input);
-            row.appendChild(right);
-            if (field.help) row.appendChild(el('div', 'hint', field.help));
-            card.appendChild(row);
-          });
-
-          var actions = el('div', 'card-actions');
-          var save = el('button', 'btn btn-primary btn-sm', 'Save');
-          save.type = 'button';
-          save.onclick = function () { saveGroup(group, inputs, refresh); };
-          actions.appendChild(save);
-          if (group.test) {
-            var test = el('button', 'btn btn-ghost btn-sm', 'Test connection');
-            test.type = 'button';
-            test.onclick = function () {
-              test.disabled = true;
-              api('POST', '/api/settings/test/' + group.id).then(function (r) {
-                toast(r.output, !!r.ok);
-              }).catch(function (e) { toast(e.message, false); })
-                .finally(function () { test.disabled = false; });
-            };
-            actions.appendChild(test);
-          }
-          card.appendChild(actions);
-          groupsWrap.appendChild(card);
-        });
-      }).catch(function (e) { toast(e.message, false); });
+      clientSettingsCards(groupsWrap, null, refresh,
+        'Email settings are managed by your agency.');
     }
 
     refresh();
@@ -2453,7 +2473,7 @@
     return card;
   }
 
-  function saveGroup(group, inputs, refresh) {
+  function saveGroup(group, inputs, refresh, orgId) {
     var values = {};
     var risky = null;
     (group.fields || []).forEach(function (field) {
@@ -2475,15 +2495,19 @@
       if (!confirm(ask)) return;
     }
 
-    api('PUT', '/api/settings', { values: values }).then(function (r) {
+    var payload = { values: values };
+    if (orgId) payload.org_id = orgId;
+    api('PUT', '/api/settings', payload).then(function (r) {
       toast('Saved ' + ((r.changed || []).length) + ' setting(s)', true);
       refresh();
     }).catch(function (e) { toast(e.message, false); });
   }
 
-  function clearOne(key, refresh) {
+  function clearOne(key, refresh, orgId) {
     if (!confirm('Clear ' + key + ' and fall back to the environment?')) return;
-    api('PUT', '/api/settings', { clear: [key] }).then(function () {
+    var payload = { clear: [key] };
+    if (orgId) payload.org_id = orgId;
+    api('PUT', '/api/settings', payload).then(function () {
       toast('Cleared ' + key, true);
       refresh();
     }).catch(function (e) { toast(e.message, false); });
@@ -4008,6 +4032,15 @@
   var PLANS = ['trial', 'standard', 'pro', 'enterprise'];
   var ORG_STATUSES = ['active', 'suspended', 'cancelled'];
 
+  function deleteClient(org, done) {
+    if (!confirm('Delete "' + org.name + '"? Their logins must be removed first. ' +
+                 'Connected domains must be disconnected in Platform → Domains ' +
+                 'before the client can be deleted.')) return;
+    api('DELETE', '/api/orgs/' + org.id)
+      .then(function () { toast('Deleted', true); if (done) done(); })
+      .catch(function (e) { toast(e.message, false); });
+  }
+
   function viewClients() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -4047,14 +4080,7 @@
           edit.onclick = function () { showClientForm(org, refresh); };
           td.appendChild(edit);
           var del = el('button', 'btn btn-danger btn-sm', 'Delete');
-          del.onclick = function () {
-            if (!confirm('Delete "' + org.name + '"? Their logins must be removed first. ' +
-                         'Connected domains must be disconnected in Platform → Domains ' +
-                         'before the client can be deleted.')) return;
-            api('DELETE', '/api/orgs/' + org.id)
-              .then(function () { toast('Deleted', true); refresh(); })
-              .catch(function (e) { toast(e.message, false); });
-          };
+          del.onclick = function () { deleteClient(org, refresh); };
           td.appendChild(del);
           tr.appendChild(td);
           tbody.appendChild(tr);
@@ -4070,13 +4096,17 @@
   function showClientForm(org, done) {
     var isNew = !org;
     var fields = [
-      { name: 'name', label: 'Client name', value: org ? org.name : '', placeholder: 'Acme Ltd' },
-      { name: 'slug', label: 'Slug', value: org ? org.slug : '',
-        help: 'Used in URLs and support. Generated from the name when blank.' },
+      { name: 'name', label: 'Client name', value: org ? org.name : '', placeholder: 'Acme Ltd' }
+    ];
+    if (isNew) {
+      fields.push({ name: 'slug', label: 'Workspace ID', value: '',
+        help: 'A short identifier used by support. Generated from the name when blank.' });
+    }
+    fields.push(
       { name: 'plan', label: 'Plan', type: 'select', options: PLANS, value: org ? org.plan : 'standard' },
       { name: 'status', label: 'Status', type: 'select', options: ORG_STATUSES, value: org ? org.status : 'active' },
       { name: 'notes', label: 'Notes', type: 'textarea', value: org ? org.notes : '' }
-    ];
+    );
     if (isNew) {
       fields.push({ name: 'email', label: 'First admin email', type: 'email', placeholder: 'owner@acme.com' });
       fields.push({ name: 'password', label: 'First admin password', type: 'password',
@@ -4095,67 +4125,513 @@
     });
   }
 
-  function viewClient(orgId) {
+  var CLIENT_TABS = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'team', label: 'Team' },
+    { id: 'websites', label: 'Websites' },
+    { id: 'usage', label: 'Usage' },
+    { id: 'support', label: 'Support' },
+    { id: 'settings', label: 'Settings' }
+  ];
+
+  function clientStatusBadge(status) {
+    var cls = status === 'active' ? 'badge-success'
+      : (status === 'suspended' ? 'badge-warn' : 'badge-cancelled');
+    var label = String(status || 'unknown').replace(/^[a-z]/, function (c) {
+      return c.toUpperCase();
+    });
+    return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
+  }
+
+  function clientEmptyState(iconName, title, text) {
+    var box = el('div', 'panel-card empty-state');
+    box.innerHTML = '<div class="big">' + icon(iconName || 'alert') + '</div>' +
+      '<strong>' + esc(title) + '</strong><p>' + esc(text) + '</p>';
+    return box;
+  }
+
+  function clientStat(value, label) {
+    var card = el('div', 'client-stat');
+    card.innerHTML = '<strong>' + esc(value) + '</strong><span>' + esc(label) + '</span>';
+    return card;
+  }
+
+  function openClientWorkspace(org) {
+    api('POST', '/api/session/org', { org_id: Number(org.id) }).then(function () {
+      if (state.user) state.user.acting_org = Number(org.id);
+      creditCache.at = 0;
+      discardStudio();
+      toast('Now working in ' + org.name + "'s workspace", true);
+      location.hash = '#/app/dashboard';
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+
+  function viewClient(orgId, tab) {
     var container = el('div', 'container');
-    var head = el('div', 'page-head');
-    head.appendChild(el('h1', null, 'Client'));
-    var back = el('a', 'btn btn-ghost', '← All clients');
-    back.href = '#/platform/clients';
-    head.appendChild(back);
+    var head = el('div', 'page-head client-page-head');
+    var tabs = el('nav', 'client-tabs');
+    tabs.setAttribute('aria-label', 'Client sections');
+    var body = el('div', 'client-tab-body');
+    var active = (CLIENT_TABS.filter(function (item) {
+      return item.id === tab;
+    })[0] || CLIENT_TABS[0]).id;
     container.appendChild(head);
-    var body = el('div');
+    container.appendChild(tabs);
     container.appendChild(body);
 
-    function refresh() {
+    function paintHead(org) {
+      head.innerHTML = '<div>' +
+        '<div class="client-back"><a href="#/platform/clients">← All clients</a></div>' +
+        '<div class="client-title-row"><h1>' + esc(org.name) + '</h1>' +
+        clientStatusBadge(org.status) +
+        '<span class="badge">' + esc(org.plan) + '</span></div>' +
+        '<p>Workspace ID <code>' + esc(org.slug) + '</code>' +
+        (org.created_at ? ' · added ' + esc(String(org.created_at).slice(0, 10)) : '') +
+        '</p></div>';
+      var actions = el('div', 'page-actions');
+      var open = el('button', 'btn btn-primary', 'Open workspace');
+      open.onclick = function () { openClientWorkspace(org); };
+      var edit = el('button', 'btn btn-ghost', 'Edit client');
+      edit.onclick = function () { showClientForm(org, load); };
+      actions.appendChild(open);
+      actions.appendChild(edit);
+      head.appendChild(actions);
+    }
+
+    function paintTabs() {
+      tabs.innerHTML = CLIENT_TABS.map(function (item) {
+        var current = item.id === active;
+        return '<a class="client-tab' + (current ? ' active' : '') + '" href="' +
+          '#/platform/clients/' + encodeURIComponent(orgId) + '/' + item.id + '"' +
+          (current ? ' aria-current="page"' : '') + '>' + esc(item.label) + '</a>';
+      }).join('');
+    }
+
+    function paintActive(org, users) {
+      body.innerHTML = '';
+      var painters = {
+        overview: paintClientOverview,
+        team: paintClientTeam,
+        websites: paintClientWebsites,
+        usage: paintClientUsage,
+        support: paintClientSupport,
+        settings: paintClientSettings
+      };
+      painters[active](body, org, users, load);
+    }
+
+    function load() {
       api('GET', '/api/orgs/' + orgId).then(function (d) {
         var org = d.org;
-        var users = d.users || [];
+        paintHead(org);
+        paintTabs();
+        paintActive(org, d.users || []);
+      }).catch(function (e) {
+        head.innerHTML = '<div><div class="client-back">' +
+          '<a href="#/platform/clients">← All clients</a></div>' +
+          '<h1>Client not found</h1><p>' + esc(e.message) + '</p></div>';
+        tabs.innerHTML = '';
         body.innerHTML = '';
-
-        var card = el('div', 'panel');
-        card.appendChild(el('h3', null, org.name));
-        card.appendChild(el('p', 'muted', org.slug + ' · plan ' + org.plan + ' · ' + org.status));
-        if (org.notes) card.appendChild(el('p', null, org.notes));
-        var edit = el('button', 'btn btn-ghost btn-sm', 'Edit client');
-        edit.onclick = function () { showClientForm(org, refresh); };
-        card.appendChild(edit);
-        body.appendChild(card);
-
-        var panel = el('div', 'panel');
-        var bar = el('div', 'panel-head');
-        bar.appendChild(el('h3', null, 'Team (' + users.length + ')'));
-        var add = el('button', 'btn btn-primary btn-sm', '+ Add login');
-        add.onclick = function () { showOrgUserForm(org, refresh); };
-        bar.appendChild(add);
-        panel.appendChild(bar);
-
-        if (!users.length) {
-          panel.appendChild(el('p', 'muted', 'No logins yet - this client cannot sign in.'));
-        } else {
-          var table = el('table', 'table');
-          table.innerHTML = '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>';
-          var tbody = el('tbody');
-          users.forEach(function (user) {
-            var tr = el('tr');
-            tr.innerHTML = '<td>' + esc(user.name) + '</td>' +
-              '<td>' + esc(user.email) + '</td>' +
-              '<td>' + personRoleBadge(user.role) + '</td>';
-            var td = el('td', 'row-actions');
-            var reset = el('button', 'btn btn-ghost btn-sm', 'Set password');
-            reset.onclick = function () { showPasswordForm(user); };
-            td.appendChild(reset);
-            tr.appendChild(td);
-            tbody.appendChild(tr);
-          });
-          table.appendChild(tbody);
-          panel.appendChild(table);
-        }
-        body.appendChild(panel);
-      }).catch(function (e) { toast(e.message, false); });
+        body.appendChild(clientEmptyState('store', 'That client could not be opened.',
+          'Return to the client list and try again.'));
+      });
     }
-    refresh();
+
+    head.innerHTML = '<div><div class="client-back">' +
+      '<a href="#/platform/clients">← All clients</a></div>' +
+      '<h1>Client</h1><p>Loading client details…</p></div>';
+    paintTabs();
+    body.appendChild(el('p', 'muted', 'Loading client details…'));
+    load();
     return container;
   }
+
+  function paintClientOverview(host, org, users, reload) {
+    host.appendChild(el('p', 'muted', 'Loading overview…'));
+    function quiet(promise) {
+      return promise.catch(function () { return null; });
+    }
+    Promise.all([
+      quiet(api('GET', '/api/orgs/' + org.id + '/usage')),
+      quiet(api('GET', '/api/platform/domains?org_id=' + encodeURIComponent(org.id))),
+      quiet(api('GET', '/api/platform/bugs?org_id=' + encodeURIComponent(org.id)))
+    ]).then(function (rows) {
+      var usage = rows[0] || {};
+      var domainData = rows[1] || {};
+      var bugData = rows[2] || {};
+      var bugs = bugData.bugs || [];
+      var assignees = bugData.assignees || [];
+      var domains = domainData.domains || [];
+      var openIssues = bugs.filter(function (bug) {
+        return bug.status === 'open' || bug.status === 'in_progress';
+      }).length;
+      var admin = users.filter(function (user) {
+        return user.role === 'client_admin';
+      })[0];
+
+      host.innerHTML = '';
+      var stats = el('div', 'client-stats');
+      stats.appendChild(clientStat(users.length, 'Team logins'));
+      stats.appendChild(clientStat(rows[1] ? domains.length : '—', 'Websites'));
+      stats.appendChild(clientStat(rows[2] ? openIssues : '—', 'Open support issues'));
+      stats.appendChild(clientStat(
+        usage.balance === null || usage.balance === undefined
+          ? '—' : fmtCredits(usage.balance) + ' credits', 'Credits available'));
+      host.appendChild(stats);
+
+      var grid = el('div', 'client-overview-grid');
+      var details = el('div', 'panel-card');
+      details.innerHTML = '<h3>Client details</h3>' +
+        '<div class="client-facts">' +
+        '<div><span>Plan</span><strong>' + esc(org.plan) + '</strong></div>' +
+        '<div><span>Status</span><strong>' + esc(org.status) + '</strong></div>' +
+        '<div><span>Primary admin</span><strong>' +
+        (admin ? esc(admin.name) + '<small>' + esc(admin.email) + '</small>'
+          : 'No login yet') + '</strong></div>' +
+        '<div><span>Notes</span><strong>' + esc(org.notes || 'No notes yet.') +
+        '</strong></div></div>';
+      var edit = el('button', 'btn btn-ghost btn-sm', 'Edit client details');
+      edit.onclick = function () { showClientForm(org, reload); };
+      details.appendChild(edit);
+      grid.appendChild(details);
+
+      var support = el('div', 'panel-card');
+      var supportHead = el('div', 'panel-head');
+      supportHead.appendChild(el('h3', null, 'Recent support'));
+      var supportLink = el('a', 'btn btn-ghost btn-sm', 'Open Support');
+      supportLink.href = '#/platform/clients/' + org.id + '/support';
+      supportHead.appendChild(supportLink);
+      support.appendChild(supportHead);
+      if (!bugs.length) {
+        support.appendChild(el('p', 'muted', 'No support issues for this client yet.'));
+      } else {
+        var mini = el('div', 'client-mini-list');
+        bugs.slice(0, 4).forEach(function (bug) {
+          var row = el('button', 'client-mini-row');
+          row.type = 'button';
+          row.innerHTML = '<span><strong>#' + esc(String(bug.id)) + ' ' +
+            esc(bug.title) + '</strong><small>' + esc(shortTime(bug.updated_at)) +
+            '</small></span>' + bugStatusBadge(bug.status);
+          row.onclick = function () {
+            openBugDetail(bug.id, {
+              orgs: [org], assignees: assignees, defaultOrgId: org.id,
+              lockClient: true, onSaved: reload
+            });
+          };
+          mini.appendChild(row);
+        });
+        support.appendChild(mini);
+      }
+      grid.appendChild(support);
+      host.appendChild(grid);
+
+      var quick = el('div', 'panel-card client-quick-actions');
+      quick.appendChild(el('h3', null, 'Quick actions'));
+      var actions = el('div', 'card-actions');
+      var addLogin = el('button', 'btn btn-ghost btn-sm', 'Add a login');
+      addLogin.onclick = function () { showOrgUserForm(org, reload); };
+      var report = el('button', 'btn btn-ghost btn-sm', 'Report a support issue');
+      report.onclick = function () {
+        openBugModal(null, [], {
+          orgs: [org], assignees: assignees, defaultOrgId: org.id,
+          lockClient: true, onSaved: reload, openAfterSave: true
+        });
+      };
+      var credits = el('button', 'btn btn-ghost btn-sm', 'Add credits');
+      credits.onclick = function () { grantCreditsModal(org, reload); };
+      actions.appendChild(addLogin);
+      actions.appendChild(report);
+      actions.appendChild(credits);
+      quick.appendChild(actions);
+      host.appendChild(quick);
+    });
+  }
+
+
+  function paintClientTeam(host, org, users, reload) {
+    var card = el('div', 'panel-card');
+    var head = el('div', 'panel-head');
+    head.appendChild(el('h3', null, 'Team'));
+    var actions = el('div', 'page-actions');
+    var add = el('button', 'btn btn-primary btn-sm', '+ Add login');
+    add.onclick = function () { showOrgUserForm(org, reload); };
+    var invite = el('button', 'btn btn-ghost btn-sm', 'Send invitation');
+    invite.onclick = function () { invitePersonModal(true, [org], org.id, reload); };
+    actions.appendChild(add);
+    actions.appendChild(invite);
+    head.appendChild(actions);
+    card.appendChild(head);
+    var body = el('div');
+    card.appendChild(body);
+    host.appendChild(card);
+    body.appendChild(el('p', 'muted', 'Loading team…'));
+
+    api('GET', '/api/platform/users?org_id=' + encodeURIComponent(org.id)).then(function (d) {
+      body.innerHTML = '';
+      var people = d.users || [];
+      if (!people.length) {
+        body.appendChild(clientEmptyState('user', 'No one can sign in yet.',
+          'Add the first login so this client can use their workspace.'));
+        return;
+      }
+      body.appendChild(peopleTable(people, true, [org], reload, org.id));
+    }).catch(function (e) {
+      body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+    });
+  }
+
+
+  function paintClientWebsites(host, org, users, reload) {
+    var card = el('div', 'panel-card');
+    var head = el('div', 'panel-head');
+    head.appendChild(el('h3', null, 'Websites'));
+    var manage = el('a', 'btn btn-ghost btn-sm', 'Manage all domains');
+    manage.href = '#/platform/domains';
+    head.appendChild(manage);
+    card.appendChild(head);
+    card.appendChild(el('p', 'muted',
+      'Connected websites and their DNS status. Domain removal stays in Platform → Domains.'));
+    var body = el('div');
+    card.appendChild(body);
+    host.appendChild(card);
+    body.appendChild(el('p', 'muted', 'Loading websites…'));
+
+    api('GET', '/api/platform/domains?org_id=' + encodeURIComponent(org.id))
+      .then(function (d) {
+        body.innerHTML = '';
+        var rows = d.domains || [];
+        if (!rows.length) {
+          body.appendChild(clientEmptyState('globe', 'No website is connected yet.',
+            'The client can connect one from their Website tab.'));
+          return;
+        }
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>Website</th><th>Status</th><th>SSL</th>' +
+          '<th>Points at</th><th>Target</th><th></th></tr></thead>';
+        var tbody = el('tbody');
+        rows.forEach(function (site) {
+          var tr = el('tr');
+          tr.innerHTML = '<td><strong>' + esc(site.domain || '(missing)') +
+            '</strong><div class="muted">' + esc(site.org_name || org.name) + '</div></td>' +
+            '<td>' + siteStatusBadge(site.status) + '</td>' +
+            '<td class="fine-print">' + esc(site.ssl_status || 'not issued') + '</td>' +
+            '<td><code>' + esc(site.dns_last_ip || 'not checked') + '</code></td>' +
+            '<td><code>' + esc(site.target || 'local') + '</code></td>';
+          var td = el('td', 'row-actions');
+          if (site.url) {
+            var open = el('a', 'btn btn-ghost btn-sm', 'Open');
+            open.href = site.url;
+            open.target = '_blank';
+            open.rel = 'noopener';
+            td.appendChild(open);
+          }
+          var records = el('a', 'btn btn-ghost btn-sm', 'Records');
+          records.href = '#/app/domains/' + site.id;
+          td.appendChild(records);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+  }
+
+
+  function paintClientUsage(host, org, users, reload) {
+    var card = el('div', 'panel-card');
+    var head = el('div', 'panel-head');
+    head.appendChild(el('h3', null, 'Credits and usage'));
+    var actions = el('div', 'page-actions');
+    var add = el('button', 'btn btn-primary btn-sm', 'Add credits');
+    add.onclick = function () { grantCreditsModal(org, reload); };
+    var all = el('a', 'btn btn-ghost btn-sm', 'All client usage');
+    all.href = '#/platform/usage';
+    actions.appendChild(add);
+    actions.appendChild(all);
+    head.appendChild(actions);
+    card.appendChild(head);
+    var body = el('div');
+    card.appendChild(body);
+    host.appendChild(card);
+    body.appendChild(el('p', 'muted', 'Loading usage…'));
+
+    api('GET', '/api/orgs/' + org.id + '/usage').then(function (d) {
+      body.innerHTML = '';
+      var stats = el('div', 'client-stats');
+      stats.appendChild(clientStat(
+        d.balance === null || d.balance === undefined ? '—' : fmtCredits(d.balance),
+        'Credits available'));
+      stats.appendChild(clientStat(
+        d.allowance ? fmtCredits(d.allowance) : '—', 'Monthly allowance'));
+      stats.appendChild(clientStat(fmtCredits(d.spent || 0), 'Used this month'));
+      stats.appendChild(clientStat(fmtCredits(d.added || 0), 'Added this month'));
+      body.appendChild(stats);
+      if (d.low) {
+        body.appendChild(el('p', 'form-error',
+          'This client is below the low-balance threshold.'));
+      }
+
+      var recent = el('div', 'panel-card');
+      recent.appendChild(el('h3', null, 'Recent activity'));
+      var items = d.recent || [];
+      if (!items.length) {
+        recent.appendChild(el('p', 'muted', 'No usage recorded for this client yet.'));
+      } else {
+        var table = el('table', 'table');
+        table.innerHTML = '<thead><tr><th>When</th><th>Activity</th>' +
+          '<th>Team</th><th>Credits</th></tr></thead>';
+        var tbody = el('tbody');
+        items.slice(0, 12).forEach(function (item) {
+          var tr = el('tr');
+          tr.innerHTML = '<td class="muted">' + esc((item.created_at || '').slice(0, 16)) +
+            '</td><td>' + esc(usageKind(item.kind)) + '</td>' +
+            '<td>' + esc(item.label || '—') + '</td>' +
+            '<td>' + (item.credits_milli === null
+              ? '<span class="badge badge-queued">unpriced</span>'
+              : esc(fmtCredits((item.credits_milli || 0) / 1000))) + '</td>';
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        recent.appendChild(table);
+      }
+      host.appendChild(recent);
+    }).catch(function (e) {
+      body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+    });
+  }
+
+
+  function paintClientSupport(host, org, users, reload) {
+    var card = el('div', 'panel-card');
+    var head = el('div', 'panel-head');
+    head.appendChild(el('h3', null, 'Support issues'));
+    var actions = el('div', 'page-actions');
+    var report = el('button', 'btn btn-primary btn-sm', '+ Report issue');
+    report.onclick = function () {
+      openBugModal(null, [], {
+        orgs: [org], assignees: supportAssignees, defaultOrgId: org.id,
+        lockClient: true, onSaved: reload, openAfterSave: true
+      });
+    };
+    var tracker = el('a', 'btn btn-ghost btn-sm', 'Open bug tracker');
+    tracker.href = '#/platform/bugs';
+    actions.appendChild(report);
+    actions.appendChild(tracker);
+    head.appendChild(actions);
+    card.appendChild(head);
+    card.appendChild(el('p', 'muted',
+      'Internal support issues for this client. The client never sees this tab.'));
+    var summary = el('div', 'bug-summary');
+    var body = el('div');
+    card.appendChild(summary);
+    card.appendChild(body);
+    host.appendChild(card);
+    body.appendChild(el('p', 'muted', 'Loading support issues…'));
+
+    var supportAssignees = [];
+    api('GET', '/api/platform/bugs?org_id=' + encodeURIComponent(org.id))
+      .then(function (d) {
+        var bugs = d.bugs || [];
+        supportAssignees = d.assignees || [];
+        summary.innerHTML = '';
+        var counts = { open: 0, in_progress: 0, resolved: 0, all: bugs.length };
+        bugs.forEach(function (bug) {
+          if (counts[bug.status] !== undefined) counts[bug.status] += 1;
+        });
+        [['Open', 'open'], ['In progress', 'in_progress'],
+         ['Resolved', 'resolved'], ['Total', 'all']].forEach(function (pair) {
+          var chip = el('div', 'bug-count');
+          chip.innerHTML = '<strong>' + esc(String(counts[pair[1]] || 0)) + '</strong>' +
+            '<span>' + pair[0] + '</span>';
+          summary.appendChild(chip);
+        });
+        body.innerHTML = '';
+        if (!bugs.length) {
+          body.appendChild(clientEmptyState('alert', 'No support issues for this client.',
+            'Report the first issue if something needs attention.'));
+          return;
+        }
+        var table = el('table', 'table bug-table');
+        table.innerHTML = '<thead><tr><th>Issue</th><th>Priority</th><th>Status</th>' +
+          '<th>Assignee</th><th>Updated</th></tr></thead>';
+        var tbody = el('tbody');
+        bugs.forEach(function (bug) {
+          var tr = el('tr');
+          tr.className = 'bug-row';
+          tr.title = 'Open issue #' + bug.id;
+          tr.innerHTML = '<td><strong>#' + esc(String(bug.id)) + ' ' + esc(bug.title) +
+            '</strong><div class="muted">' + esc(bug.reporter_name || 'Agency') +
+            (bug.page ? ' · ' + esc(bug.page) : '') + '</div></td>' +
+            '<td>' + bugPriorityBadge(bug.priority) + '</td>' +
+            '<td>' + bugStatusBadge(bug.status) + '</td>' +
+            '<td class="muted">' + esc(bug.assignee_name || 'Unassigned') + '</td>' +
+            '<td class="muted">' + esc(shortTime(bug.updated_at)) + '</td>';
+          tr.onclick = function () {
+            openBugDetail(bug.id, {
+              orgs: [org], assignees: supportAssignees,
+              defaultOrgId: org.id, lockClient: true, onSaved: reload
+            });
+          };
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }).catch(function (e) {
+        body.innerHTML = '<p class="form-error">' + esc(e.message) + '</p>';
+      });
+  }
+
+
+  function paintClientSettings(host, org, users, reload) {
+    var profile = el('div', 'panel-card');
+    var profileHead = el('div', 'panel-head');
+    profileHead.appendChild(el('h3', null, 'Client details'));
+    var edit = el('button', 'btn btn-ghost btn-sm', 'Edit client');
+    edit.onclick = function () { showClientForm(org, reload); };
+    profileHead.appendChild(edit);
+    profile.appendChild(profileHead);
+    var facts = el('div', 'client-facts');
+    facts.innerHTML = '<div><span>Workspace ID</span><strong><code>' + esc(org.slug) +
+      '</code></strong></div>' +
+      '<div><span>Plan</span><strong>' + esc(org.plan) + '</strong></div>' +
+      '<div><span>Status</span><strong>' + esc(org.status) + '</strong></div>' +
+      '<div><span>Notes</span><strong>' + esc(org.notes || 'No notes yet.') +
+      '</strong></div>';
+    profile.appendChild(facts);
+    host.appendChild(profile);
+
+    var email = el('div', 'panel-card');
+    email.appendChild(el('h3', null, 'Email sending'));
+    email.appendChild(el('p', 'muted',
+      'Optional. Leave these blank to use the agency default. Passwords are stored ' +
+      'securely and are never shown again.'));
+    var emailBody = el('div');
+    email.appendChild(emailBody);
+    host.appendChild(email);
+    clientSettingsCards(emailBody, org.id, reload,
+      'Using the agency default. Add this client’s mailbox only if they should send ' +
+      'from their own address.');
+
+    var danger = el('div', 'panel-card client-danger');
+    danger.appendChild(el('h3', null, 'Danger zone'));
+    danger.appendChild(el('p', 'muted',
+      'Deleting a client is permanent. Their logins must be removed first, and every ' +
+      'connected domain must be disconnected in Platform → Domains.'));
+    if (users.length) {
+      danger.appendChild(el('p', 'fine-print',
+        users.length + ' login(s) still attached. Remove them in the Team tab first.'));
+    }
+    var remove = el('button', 'btn btn-danger', 'Delete client permanently');
+    remove.onclick = function () {
+      deleteClient(org, function () { location.hash = '#/platform/clients'; });
+    };
+    danger.appendChild(remove);
+    host.appendChild(danger);
+  }
+
 
   function showOrgUserForm(org, done) {
     formModal('Add a login to ' + org.name, [
@@ -5698,6 +6174,166 @@
     return fields.length ? 'Updated ' + fields.join(', ') : 'Updated';
   }
 
+  function openBugDetail(bugId, options) {
+    api('GET', '/api/platform/bugs/' + bugId).then(function (d) {
+      openBugModal(d.bug, d.events || [], options || {});
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  // One bug editor for the tracker and the client Support tab. `options` carries
+  // the shared org/assignee lists, and `lockClient` keeps an issue reported from a
+  // client page attached to that client instead of offering every tenant.
+  function openBugModal(bug, events, options) {
+    options = options || {};
+    var orgs = options.orgs || [];
+    var assignees = options.assignees || [];
+    var lockClient = !!options.lockClient;
+    var defaultOrgId = options.defaultOrgId || null;
+    var editing = !!bug;
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal modal-wide bug-modal');
+    modal.appendChild(el('h3', null, editing ? 'Bug #' + bug.id : 'Report a bug'));
+    var form = el('form', 'form bug-form');
+    var error = el('div', 'form-error');
+    var title = el('input');
+    title.value = editing ? bug.title : '';
+    title.placeholder = 'A short summary, e.g. Publish button does nothing';
+    var description = el('textarea');
+    description.value = editing ? bug.description : '';
+    description.placeholder = 'What happened, what you expected, and anything you tried';
+    function field(labelText, input, help) {
+      var wrap = el('label', 'field');
+      wrap.appendChild(el('span', null, labelText));
+      wrap.appendChild(input);
+      if (help) wrap.appendChild(el('small', 'muted', help));
+      return wrap;
+    }
+    function select(optionsList, current) {
+      var node = el('select');
+      optionsList.forEach(function (pair) {
+        var option = el('option', null, pair[1]);
+        option.value = pair[0];
+        node.appendChild(option);
+      });
+      node.value = current || '';
+      return node;
+    }
+    var statusSelect = select([
+      ['open', 'Open'], ['in_progress', 'In progress'],
+      ['resolved', 'Resolved'], ['closed', 'Closed']], editing ? bug.status : 'open');
+    var prioritySelect = select([
+      ['urgent', 'Urgent'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']],
+      editing ? bug.priority : 'normal');
+
+    var clientOptions = [['', 'No client']].concat(orgs.map(function (org) {
+      return [String(org.id), org.name];
+    }));
+    var currentOrg = editing && bug.org_id ? String(bug.org_id)
+      : (defaultOrgId ? String(defaultOrgId) : '');
+    if (lockClient) {
+      var locked = orgs.filter(function (org) {
+        return String(org.id) === currentOrg;
+      })[0];
+      clientOptions = currentOrg
+        ? [[currentOrg, (locked && locked.name) || 'This client']]
+        : [['', 'No client']];
+    }
+    var clientSelect = select(clientOptions, currentOrg);
+    if (lockClient) clientSelect.disabled = true;
+    var assigneeSelect = select([['', 'Unassigned']].concat(assignees.map(function (person) {
+      return [String(person.id), person.name || person.email];
+    })), editing && bug.assignee_id ? String(bug.assignee_id) : '');
+    var page = el('input');
+    page.value = editing ? (bug.page || '') : (location.hash || '');
+    page.placeholder = '#/platform/clients or a screen name';
+    form.appendChild(field('Title', title));
+    form.appendChild(field('Description', description));
+    var row = el('div', 'form-row');
+    row.appendChild(field('Status', statusSelect));
+    row.appendChild(field('Priority', prioritySelect));
+    form.appendChild(row);
+    row = el('div', 'form-row');
+    row.appendChild(field('Client', clientSelect,
+      lockClient ? 'This issue stays attached to this client.' : ''));
+    row.appendChild(field('Assignee', assigneeSelect));
+    form.appendChild(row);
+    form.appendChild(field('Page or screen', page, 'Optional context for whoever fixes it.'));
+    form.appendChild(error);
+    var buttons = el('div', 'modal-actions');
+    var cancel = el('button', 'btn btn-ghost', 'Close');
+    cancel.type = 'button';
+    cancel.onclick = function () { backdrop.remove(); };
+    var save = el('button', 'btn btn-primary', editing ? 'Save changes' : 'Report bug');
+    save.type = 'submit';
+    buttons.appendChild(cancel); buttons.appendChild(save);
+    form.appendChild(buttons);
+    form.onsubmit = function (event) {
+      event.preventDefault();
+      var payload = {
+        title: title.value, description: description.value,
+        status: statusSelect.value, priority: prioritySelect.value,
+        org_id: clientSelect.value || null, assignee_id: assigneeSelect.value || null,
+        page: page.value
+      };
+      save.disabled = true;
+      api(editing ? 'PUT' : 'POST',
+          '/api/platform/bugs' + (editing ? '/' + bug.id : ''), payload)
+        .then(function (d) {
+          backdrop.remove();
+          toast(editing ? 'Bug updated' : 'Bug reported', true);
+          if (options.onSaved) options.onSaved(d.bug);
+          if (!editing && d.bug && options.openAfterSave) {
+            openBugDetail(d.bug.id, options);
+          }
+        }).catch(function (e) {
+          save.disabled = false;
+          error.textContent = e.message;
+        });
+    };
+    modal.appendChild(form);
+
+
+    if (editing) {
+      var timeline = el('div', 'bug-timeline');
+      timeline.appendChild(el('h4', null, 'Activity'));
+      if (!events.length) timeline.appendChild(el('p', 'muted', 'No activity yet.'));
+      events.forEach(function (ev) {
+        var line = el('div', 'bug-event ' + (ev.action === 'commented' ? 'is-comment' : ''));
+        line.innerHTML = '<div class="bug-event-head"><strong>' +
+          esc(ev.actor_name || ev.actor_email || 'Agency') + '</strong>' +
+          '<span class="muted">' + esc(shortTime(ev.created_at)) + '</span></div>' +
+          '<div>' + esc(bugEventText(ev)) + '</div>';
+        timeline.appendChild(line);
+      });
+      var comment = el('textarea');
+      comment.placeholder = 'Add a comment for the agency';
+      var addComment = el('button', 'btn btn-ghost', 'Add comment');
+      addComment.type = 'button';
+      addComment.onclick = function () {
+        if (!comment.value.trim()) return;
+        addComment.disabled = true;
+        api('POST', '/api/platform/bugs/' + bug.id + '/comments',
+            { comment: comment.value }).then(function () {
+          backdrop.remove();
+          if (options.onSaved) options.onSaved(bug);
+          openBugDetail(bug.id, options);
+        }).catch(function (e) {
+          addComment.disabled = false;
+          error.textContent = e.message;
+        });
+      };
+      timeline.appendChild(comment);
+      timeline.appendChild(addComment);
+      modal.appendChild(timeline);
+    }
+
+    backdrop.appendChild(modal);
+    backdrop.onclick = function (e) { if (e.target === backdrop) backdrop.remove(); };
+    document.body.appendChild(backdrop);
+    title.focus();
+  }
+
+
   function viewBugTracker() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
@@ -5790,7 +6426,9 @@
           '<td class="muted">' + esc(bug.org_name || '—') + '</td>' +
           '<td class="muted">' + esc(bug.assignee_name || 'Unassigned') + '</td>' +
           '<td class="muted">' + esc(shortTime(bug.updated_at)) + '</td>';
-        tr.onclick = function () { showBug(bug.id); };
+        tr.onclick = function () {
+          openBugDetail(bug.id, { orgs: orgs, assignees: assignees, onSaved: load });
+        };
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -5815,140 +6453,10 @@
         }).catch(function (e) { toast(e.message, false); });
     }
 
-    function showBug(bugId) {
-      api('GET', '/api/platform/bugs/' + bugId).then(function (d) {
-        paintBug(d.bug, d.events || []);
-      }).catch(function (e) { toast(e.message, false); });
-    }
-
-    function paintBug(bug, events) {
-      var backdrop = el('div', 'modal-backdrop');
-      var modal = el('div', 'modal modal-wide bug-modal');
-      modal.appendChild(el('h3', null, bug ? 'Bug #' + bug.id : 'Report a bug'));
-      var form = el('form', 'form bug-form');
-      var error = el('div', 'form-error');
-      var title = el('input');
-      title.value = bug ? bug.title : '';
-      title.placeholder = 'A short summary, e.g. Publish button does nothing';
-      var description = el('textarea');
-      description.value = bug ? bug.description : '';
-      description.placeholder = 'What happened, what you expected, and anything you tried';
-      function field(labelText, input, help) {
-        var wrap = el('label', 'field');
-        wrap.appendChild(el('span', null, labelText));
-        wrap.appendChild(input);
-        if (help) wrap.appendChild(el('small', 'muted', help));
-        return wrap;
-      }
-      function select(options, current) {
-        var node = el('select');
-        options.forEach(function (pair) {
-          var option = el('option', null, pair[1]);
-          option.value = pair[0];
-          node.appendChild(option);
-        });
-        node.value = current || '';
-        return node;
-      }
-      var statusSelect = select([
-        ['open', 'Open'], ['in_progress', 'In progress'],
-        ['resolved', 'Resolved'], ['closed', 'Closed']], bug ? bug.status : 'open');
-      var prioritySelect = select([
-        ['urgent', 'Urgent'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']],
-        bug ? bug.priority : 'normal');
-      var clientSelect = select([['', 'No client']].concat(orgs.map(function (org) {
-        return [String(org.id), org.name];
-      })), bug && bug.org_id ? String(bug.org_id) : '');
-      var assigneeSelect = select([['', 'Unassigned']].concat(assignees.map(function (person) {
-        return [String(person.id), person.name || person.email];
-      })), bug && bug.assignee_id ? String(bug.assignee_id) : '');
-      var page = el('input');
-      page.value = bug ? (bug.page || '') : (location.hash || '');
-      page.placeholder = '#/platform/clients or a screen name';
-      form.appendChild(field('Title', title));
-      form.appendChild(field('Description', description));
-      var row = el('div', 'form-row');
-      row.appendChild(field('Status', statusSelect));
-      row.appendChild(field('Priority', prioritySelect));
-      form.appendChild(row);
-      row = el('div', 'form-row');
-      row.appendChild(field('Client', clientSelect));
-      row.appendChild(field('Assignee', assigneeSelect));
-      form.appendChild(row);
-      form.appendChild(field('Page or screen', page, 'Optional context for whoever fixes it.'));
-      form.appendChild(error);
-      var buttons = el('div', 'modal-actions');
-      var cancel = el('button', 'btn btn-ghost', 'Close');
-      cancel.type = 'button';
-      cancel.onclick = function () { backdrop.remove(); };
-      var save = el('button', 'btn btn-primary', bug ? 'Save changes' : 'Report bug');
-      save.type = 'submit';
-      buttons.appendChild(cancel); buttons.appendChild(save);
-      form.appendChild(buttons);
-      form.onsubmit = function (event) {
-        event.preventDefault();
-        var payload = {
-          title: title.value, description: description.value,
-          status: statusSelect.value, priority: prioritySelect.value,
-          org_id: clientSelect.value || null, assignee_id: assigneeSelect.value || null,
-          page: page.value
-        };
-        save.disabled = true;
-        api(bug ? 'PUT' : 'POST', '/api/platform/bugs' + (bug ? '/' + bug.id : ''), payload)
-          .then(function (d) {
-            backdrop.remove();
-            toast(bug ? 'Bug updated' : 'Bug reported', true);
-            load();
-            if (!bug && d.bug) showBug(d.bug.id);
-          }).catch(function (e) {
-            save.disabled = false;
-            error.textContent = e.message;
-          });
-      };
-      modal.appendChild(form);
-
-      if (bug) {
-        var timeline = el('div', 'bug-timeline');
-        timeline.appendChild(el('h4', null, 'Activity'));
-        if (!events.length) timeline.appendChild(el('p', 'muted', 'No activity yet.'));
-        events.forEach(function (ev) {
-          var line = el('div', 'bug-event ' + (ev.action === 'commented' ? 'is-comment' : ''));
-          line.innerHTML = '<div class="bug-event-head"><strong>' +
-            esc(ev.actor_name || ev.actor_email || 'Agency') + '</strong>' +
-            '<span class="muted">' + esc(shortTime(ev.created_at)) + '</span></div>' +
-            '<div>' + esc(bugEventText(ev)) + '</div>';
-          timeline.appendChild(line);
-        });
-        var comment = el('textarea');
-        comment.placeholder = 'Add a comment for the agency';
-        var addComment = el('button', 'btn btn-ghost', 'Add comment');
-        addComment.type = 'button';
-        addComment.onclick = function () {
-          if (!comment.value.trim()) return;
-          addComment.disabled = true;
-          api('POST', '/api/platform/bugs/' + bug.id + '/comments',
-              { comment: comment.value }).then(function () {
-            backdrop.remove();
-            showBug(bug.id);
-            load();
-          }).catch(function (e) {
-            addComment.disabled = false;
-            error.textContent = e.message;
-          });
-        };
-        timeline.appendChild(comment);
-        timeline.appendChild(addComment);
-        modal.appendChild(timeline);
-      }
-
-      backdrop.appendChild(modal);
-      backdrop.onclick = function (e) { if (e.target === backdrop) backdrop.remove(); };
-      document.body.appendChild(backdrop);
-      title.focus();
-    }
-
     function newBug() {
-      paintBug(null, []);
+      openBugModal(null, [], {
+        orgs: orgs, assignees: assignees, onSaved: load, openAfterSave: true
+      });
     }
 
     add.onclick = newBug;
@@ -6219,16 +6727,37 @@
   }
 
   // Shared source editor for the operator's Platform page and the client's Analytics
-  // page. The client only supplies the GA4 property; the service-account key is a
-  // platform setting, so a non-technical client is not asked for a server file path.
-  function analyticsSourceForm(source, kinds, orgId, operator, onSaved, ga4Email) {
+  // page. A client connects with Google OAuth; the service-account path is a fallback
+  // for agency-managed sources, so nobody is asked for a server file path.
+  function analyticsSourceForm(source, kinds, orgId, operator, onSaved, ga4Email,
+                               oauthReady) {
     var isEdit = !!(source && source.id);
     var fields = [];
+    var sourceMode = source && source.auth_mode ? source.auth_mode : '';
+    var serviceAvailable = !!ga4Email;
+    var oauthAvailable = !!oauthReady || sourceMode === 'oauth';
+    var method = 'service';
+    if (!operator) {
+      if (sourceMode === 'oauth') method = 'oauth';
+      else if (sourceMode === 'service_account' && source) method = 'service';
+      else if (oauthAvailable) method = 'oauth';
+      else if (!serviceAvailable) method = 'oauth';
+    }
     if (operator) {
       fields.push({
         name: 'kind', label: 'Source', type: 'select',
         options: (kinds || []).map(function (k) { return k.kind; }),
         value: source ? source.kind : ((kinds && kinds[0]) ? kinds[0].kind : 'ga4')
+      });
+    } else if (oauthAvailable && (serviceAvailable || sourceMode === 'service_account')) {
+      fields.push({
+        name: 'auth_method', label: 'Connection method', type: 'select',
+        options: [
+          { value: 'oauth', label: 'Connect with Google (recommended)' },
+          { value: 'service', label: 'Use agency service account' }
+        ],
+        value: method,
+        help: 'Google sign-in grants read-only access to this client’s GA4 property.'
       });
     }
     fields.push({
@@ -6238,10 +6767,11 @@
       placeholder: operator ? 'Location, property or ad account ID' : 'e.g. 123456789',
       help: operator
         ? 'GHL: location id. GA4: properties/123456789. Meta: act_1234567890.'
-        : 'Find this in Google Analytics under Admin → Property settings.' +
-          (ga4Email
-            ? ' First share the property with ' + ga4Email + ' (Viewer is enough).'
-            : ' Ask your agency for the service-account email, then share the property with it.')
+        : (oauthReady
+            ? 'Find this in Google Analytics under Admin → Property settings, then connect with Google.'
+            : (ga4Email
+                ? 'OAuth is not configured. The agency can connect this property with its service account: ' + ga4Email
+                : 'Ask your agency to configure Google Analytics OAuth or a service account.'))
     });
     fields.push({
       name: 'label',
@@ -6266,12 +6796,32 @@
             external_id.indexOf('properties/') !== 0) {
           external_id = 'properties/' + external_id.replace(/^\/+/, '');
         }
+        var selectedMethod = operator ? 'service' : (data.auth_method || method);
+
+        if (!operator && kind === 'ga4' && selectedMethod === 'oauth') {
+          var start = {
+            external_id: external_id,
+            label: data.label
+          };
+          if (source && source.id) start.source_id = source.id;
+          api('POST', '/api/analytics/oauth/google/start', start).then(function (r) {
+            ok();
+            window.location.assign(r.auth_url);
+          }).catch(function (e) { fail(e.message); });
+          return;
+        }
+
         var payload = {
           kind: kind,
           external_id: external_id,
-          label: data.label,
-          credential_ref: operator ? (data.credential_ref || '') : ''
+          label: data.label
         };
+        if (operator) {
+          payload.credential_ref = data.credential_ref || '';
+        } else if (source && source.auth_mode === 'oauth') {
+          // Choosing the service-account route is an explicit switch away from OAuth.
+          payload.credential_ref = '';
+        }
         if (source && source.id) payload.id = source.id;
         if (operator && orgId) payload.org_id = Number(orgId);
         api('POST', '/api/data-sources', payload).then(function () {
@@ -6279,7 +6829,7 @@
           toast('Analytics connection saved', true);
           if (onSaved) onSaved();
         }).catch(function (e) { fail(e.message); });
-      });
+      }, operator ? 'Save' : (isEdit ? 'Reconnect' : 'Connect'));
   }
 
   // ---------- Platform: data sources ----------
@@ -6395,7 +6945,7 @@
   }
 
   // ---------- Analytics: the brief, for humans ----------
-  function viewAnalytics() {
+  function viewAnalytics(notice) {
     var container = el('div', 'container');
     var owner = isOwner(state.user);
     var canManage = owner || canAdmin(state.user);
@@ -6403,6 +6953,7 @@
     var sources = [];
     var sourceKinds = [];
     var ga4Email = '';
+    var oauthReady = false;
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Analytics</h2><p class="muted">' +
       (owner ? 'Traffic for this client, compared with the previous 7 days.'
@@ -6455,9 +7006,10 @@
     }
 
     function connectButton(label) {
-      var button = el('button', 'btn btn-primary btn-sm', label || 'Connect analytics');
+      var button = el('button', 'btn btn-primary btn-sm',
+        label || (oauthReady ? 'Connect Google Analytics' : 'Connect analytics'));
       button.onclick = function () {
-        analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email);
+        analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email, oauthReady);
       };
       return button;
     }
@@ -6485,7 +7037,7 @@
       if (canManage) {
         var add = el('button', 'btn btn-ghost btn-sm', '+ Connect source');
         add.onclick = function () {
-          analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email);
+          analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email, oauthReady);
         };
         headRow.appendChild(add);
       }
@@ -6501,13 +7053,16 @@
         var copy = el('div');
         copy.innerHTML = '<strong>' + esc(source.label || sourceLabel(source.kind)) + '</strong>' +
           '<div class="muted">' + esc(sourceLabel(source.kind)) +
+          (source.kind === 'ga4' && source.auth_mode === 'oauth' ? ' · Google sign-in' : '') +
           (source.external_id ? ' · ' + esc(source.external_id) : '') +
           (source.last_sync_at ? ' · Updated ' + esc(String(source.last_sync_at).slice(0, 16))
                                : ' · Not synced yet') + '</div>' +
           (source.last_error
             ? '<div class="form-error">' +
               esc(owner ? String(source.last_error).slice(0, 140)
-                        : 'This connection needs attention. Try Refresh or ask your admin.') +
+                        : (source.auth_mode === 'oauth'
+                            ? 'This Google connection needs attention. Click Edit to reconnect.'
+                            : 'This connection needs attention. Try Refresh or ask your admin.')) +
               '</div>'
             : '');
         row.appendChild(copy);
@@ -6522,7 +7077,7 @@
           }
           var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
           edit.onclick = function () {
-            analyticsSourceForm(source, sourceKinds, null, owner, load, ga4Email);
+            analyticsSourceForm(source, sourceKinds, null, owner, load, ga4Email, oauthReady);
           };
           actions.appendChild(edit);
           var remove = el('button', 'btn btn-danger btn-sm', 'Remove');
@@ -6621,6 +7176,7 @@
         sources = sourceData.sources || [];
         sourceKinds = sourceData.kinds || [];
         ga4Email = sourceData.ga4_email || '';
+        oauthReady = !!sourceData.oauth_ready;
         canManage = canManage || !!sourceData.can_manage;
         render(data);
       }).catch(function (e) {
@@ -6630,6 +7186,17 @@
       });
     }
 
+    if (notice === 'oauth-ok' || notice === 'oauth-error') {
+      api('GET', '/api/analytics/oauth/notice').then(function (d) {
+        var note = d.notice || {};
+        if (note.message) toast(note.message, note.kind === 'ok');
+      }).catch(function () {
+        toast(notice === 'oauth-ok' ? 'Google Analytics connected.'
+                                    : 'Google Analytics was not connected.', false);
+      });
+      // The notice is one-shot; keep the visible page URL clean.
+      try { history.replaceState(null, '', '#/app/analytics'); } catch (e) { /* older browsers */ }
+    }
     load();
     return container;
   }
@@ -7844,6 +8411,22 @@
     return container;
   }
 
+  function grantCreditsModal(org, onSaved) {
+    formModal('Add credits to ' + org.name, [
+      { name: 'credits', label: 'Credits', help: 'Negative corrects a balance.' },
+      { name: 'note', label: 'Note', placeholder: 'why' }
+    ], function (data, fail, ok) {
+      api('POST', '/api/orgs/' + org.id + '/credits', {
+        credits: data.credits, note: data.note
+      }).then(function (res) {
+        ok();
+        toast('Balance now ' + fmtCredits(res.balance) + ' credits', true);
+        if (onSaved) onSaved(res);
+      }).catch(function (e) { fail(e.message); });
+    });
+  }
+
+
   // ---------- Platform usage: every client's balance, and the price list ----------
   function viewPlatformUsage() {
     var container = el('div', 'container');
@@ -7863,21 +8446,6 @@
     container.appendChild(head);
     var body = el('div');
     container.appendChild(body);
-
-    function grantForm(org) {
-      formModal('Add credits to ' + org.name, [
-        { name: 'credits', label: 'Credits', help: 'Negative corrects a balance.' },
-        { name: 'note', label: 'Note', placeholder: 'why' }
-      ], function (data, fail, ok) {
-        api('POST', '/api/orgs/' + org.id + '/credits', {
-          credits: data.credits, note: data.note
-        }).then(function (res) {
-          ok();
-          toast('Balance now ' + fmtCredits(res.balance) + ' credits', true);
-          load();
-        }).catch(function (e) { fail(e.message); });
-      });
-    }
 
     function reconForm() {
       formModal('Reconcile a month', [
@@ -7963,7 +8531,7 @@
                 '$' + (Number(org.balance) * price).toFixed(2)) + '</td>';
             var td = el('td', 'row-actions');
             var add = el('button', 'btn btn-ghost btn-sm', 'Credits');
-            add.onclick = function () { grantForm(org); };
+            add.onclick = function () { grantCreditsModal(org, load); };
             td.appendChild(add);
             tr.appendChild(td);
             tbody.appendChild(tr);
@@ -8846,11 +9414,57 @@
     return container;
   }
 
+  // Plain words for the screen. A client should never have to read "form.submitted",
+  // "agent" or "awaiting_approval" to understand what their automation does.
+  function automationStepTitles(steps) {
+    return (steps || []).map(function (step) {
+      return step.title || step.id || '';
+    }).filter(Boolean).join(' → ');
+  }
+
+  function automationStepLabel(type) {
+    return ({
+      agent: 'AI', tool: 'Action', condition: 'Decision', gate: 'Approval',
+      notify: 'Message', stop: 'Finish', delay: 'Wait'
+    })[type] || String(type || '');
+  }
+
+  function automationRunLabel(status) {
+    return ({
+      queued: 'Starting', running: 'Running', done: 'Finished',
+      failed: 'Needs attention', awaiting_approval: 'Waiting for your approval',
+      waiting: 'Waiting', cancelled: 'Stopped'
+    })[status] || String(status || '').replace(/_/g, ' ');
+  }
+
+  function automationTriggerLabel(a) {
+    if (a && a.trigger_label) return a.trigger_label;
+    if (a && a.trigger_type === 'schedule') return 'On a schedule';
+    if (a && a.trigger_type === 'event') return 'When something happens';
+    return 'Only when you press Try it now';
+  }
+
   function viewAutomations() {
+    if (!canAdmin(state.user)) {
+      var denied = el('div', 'container');
+      var deniedCard = el('div', 'panel-card empty-state');
+      deniedCard.innerHTML = '<strong>Automations are managed by an admin.</strong>' +
+        '<p>Ask your workspace admin to make changes.</p>';
+      denied.appendChild(deniedCard);
+      return denied;
+    }
     var container = el('div', 'container');
+    // The trigger picker speaks in form names, not ids. One request per visit is enough;
+    // if it fails, the advanced field still lets an operator type an event name.
+    var formChoices = [];
+    api('GET', '/api/forms').then(function (d) {
+      formChoices = (d.forms || []).map(function (form) {
+        return { id: form.id, name: form.name || ('Form #' + form.id) };
+      });
+    }).catch(function () { /* keep the advanced fallback */ });
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Automations</h2><p class="muted">A named graph of steps ' +
-      'that runs as a job. Nothing outward-facing runs without an approval gate.</p></div>';
+    head.innerHTML = '<div><h2>Automations</h2><p class="muted">Things that happen by ' +
+      'themselves, like saving a new enquiry to your contacts. You approve each one once.</p></div>';
     var add = el('button', 'btn btn-primary', 'New automation');
     head.appendChild(add);
     container.appendChild(head);
@@ -8858,23 +9472,27 @@
     // Ask in words, on this page: the draft it produces lands in the strip below, so the
     // question and the answer share a screen instead of living in the floating widget.
     var composer = el('div', 'panel-card mt');
-    composer.innerHTML = '<h3 class="card-title">Describe an automation</h3>' +
-      '<p class="fine-print">e.g. “when a contact signs up, tag them and send the welcome ' +
-      'email, after I approve it”. The team drafts it — you preview and apply.</p>';
+    composer.innerHTML = '<h3 class="card-title">What should happen automatically?</h3>' +
+      '<p class="fine-print">For example: “When someone sends the Tour Enquiry form, ' +
+      'save them as a contact and tag them as a tour enquiry.” Tell it once — you approve ' +
+      'the result below.</p>';
     var askBox = el('textarea', 'prompt-box');
-    askBox.placeholder = 'Build me an automation that…';
+    askBox.placeholder = 'When someone sends the Tour Enquiry form, add them to my contacts…';
     composer.appendChild(askBox);
-    var askBtn = el('button', 'btn btn-primary', 'Draft it');
+    var askBtn = el('button', 'btn btn-primary', 'Create it for me');
     askBtn.onclick = function () {
       var text = (askBox.value || '').trim();
       if (!text) {
-        toast('Say what it should do first', false);
+        toast('Say what should happen first', false);
         return;
       }
       askBtn.disabled = true;
-      api('POST', '/api/manager/chat', { message: text, history: [], automation_id: 0 })
+      api('POST', '/api/manager/chat',
+          { message: text, history: [], automation_id: 0,
+            context: 'Automations screen. Draft it and stop - the approval card on this ' +
+                     'screen is the yes, so do not ask a separate question.' })
         .then(function () {
-          toast('The team is drafting — the draft will appear below', true);
+          toast('Writing it now — it will appear below for your approval', true);
           askBox.value = '';
           var tries = 0;
           var timer = setInterval(function () {
@@ -8912,9 +9530,9 @@
         var rows = d.tools || [];
         if (!rows.length) return;
         var card = el('div', 'panel-card mt');
-        card.appendChild(el('h3', 'card-title', 'Proposed tools (' + rows.length + ')'));
-        card.appendChild(el('p', 'fine-print', 'The agent asked for these. Approving records ' +
-          'them - nothing executes a tool in this build yet.'));
+        card.appendChild(el('h3', 'card-title', 'New abilities (' + rows.length + ')'));
+        card.appendChild(el('p', 'fine-print', 'The assistant asked for these. Approve one ' +
+          'only if you want it available to the team.'));
         rows.forEach(function (tool) {
           var row = el('div', 'auto-proposal');
           var label = el('div');
@@ -8927,7 +9545,7 @@
           row.appendChild(label);
           var yes = el('button', 'btn btn-primary btn-sm', 'Approve');
           yes.onclick = function () { decideTool(tool.id, 'approve'); };
-          var no = el('button', 'btn btn-ghost btn-sm', 'Reject');
+          var no = el('button', 'btn btn-ghost btn-sm', 'Not now');
           no.onclick = function () { decideTool(tool.id, 'reject'); };
           row.appendChild(yes);
           row.appendChild(no);
@@ -8948,21 +9566,23 @@
         var fresh = (d.proposals || []).filter(function (p) { return !p.automation_id; });
         if (!fresh.length) return;
         var card = el('div', 'panel-card mt');
-        card.appendChild(el('h3', 'card-title', 'Drafts from the team (' + fresh.length + ')'));
+        card.appendChild(el('h3', 'card-title', 'Ready for your approval (' + fresh.length + ')'));
         fresh.forEach(function (draft) {
           var row = el('div', 'auto-proposal');
           var label = el('div');
           label.innerHTML = '<strong>' + esc(draft.name || 'Untitled') + '</strong>' +
-            '<div class="fine-print">' + (draft.steps || []).length + ' steps · ' +
-            esc((draft.steps || []).map(function (s) { return s.title || s.id; }).join(' → ')) +
+            '<div class="fine-print">' +
+            esc(draft.note || (automationTriggerLabel(draft) +
+              ((draft.steps || []).length ? ' → ' + automationStepTitles(draft.steps) : ''))) +
             '</div>';
           row.appendChild(label);
 
-          var apply = el('button', 'btn btn-primary btn-sm', 'Apply');
+          var apply = el('button', 'btn btn-primary btn-sm', 'Approve & turn on');
           apply.onclick = function () {
             apply.disabled = true;
             api('POST', '/api/automations/proposals/' + draft.id + '/apply').then(function (res) {
-              toast('Saved as “' + ((res.automation || {}).name || draft.name) + '”', true);
+              var saved = (res.automation || {});
+              toast('It’s on. “' + (saved.name || draft.name) + '” will now run by itself', true);
               loadDrafts();
               refresh();
             }).catch(function (e) {
@@ -8973,7 +9593,7 @@
 
           // The chart, before you commit to it: the same renderer the editor uses, so a
           // draft looks exactly like the automation it will become.
-          var preview = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          var preview = el('button', 'btn btn-ghost btn-sm', 'See the steps');
           preview.onclick = function () {
             var modal = el('div', 'auto-modal');
             var panel = el('div', 'auto-panel');
@@ -8983,8 +9603,8 @@
             close.onclick = function () { modal.parentNode.removeChild(modal); };
             top.appendChild(close);
             panel.appendChild(top);
-            panel.appendChild(el('p', 'fine-print', 'A draft — nothing is saved until you ' +
-              'press Apply.'));
+            panel.appendChild(el('p', 'fine-print', 'A preview — nothing changes until you ' +
+              'approve it.'));
             var layout = {};
             (draft.steps || []).forEach(function (step, index) {
               layout[step.id] = { x: 20, y: 20 + index * 84 };
@@ -8995,9 +9615,7 @@
               return { steps: draft.steps || [], layout: layout, states: {} };
             }, {});
             panel.appendChild(shell.node);
-            panel.appendChild(el('p', 'fine-print', (draft.steps || []).map(function (step) {
-              return (step.title || step.id) + ' (' + step.type + ')';
-            }).join(' → ')));
+            panel.appendChild(el('p', 'fine-print', automationStepTitles(draft.steps)));
             modal.appendChild(panel);
             document.body.appendChild(modal);
           };
@@ -9033,24 +9651,23 @@
     function card(a) {
       var box = el('div', 'panel-card auto-card');
       var steps = (a.steps || []).length;
-      var trigger = a.trigger_type === 'schedule'
-        ? 'On a schedule'
-        : (a.trigger_type === 'event' ? 'When something happens' : 'Run by hand');
+      var trigger = automationTriggerLabel(a);
       box.innerHTML =
         '<div class="auto-head"><div><div class="auto-name">' + esc(a.name) + '</div>' +
-        '<div class="auto-meta">' + esc(trigger) + ' · ' + steps +
-        (steps === 1 ? ' step' : ' steps') + (a.last_run_at ? ' · last run ' +
-        esc(String(a.last_run_at).slice(0, 16)) : ' · never run') +
+        '<div class="auto-meta">' + esc(a.enabled ? 'On' : 'Paused') + ' · ' +
+        esc(trigger) + ' · ' + steps + (steps === 1 ? ' action' : ' actions') +
+        (a.last_run_at ? ' · last ran ' +
+        esc(String(a.last_run_at).slice(0, 16)) : ' · not run yet') +
         (a.last_run ? ' · <span class="run-status ' + esc(a.last_run.status) + '">' +
-          esc(String(a.last_run.status).replace('_', ' ')) + '</span>' : '') +
+          esc(automationRunLabel(a.last_run.status)) + '</span>' : '') +
         '</div></div></div>';
       var actions = el('div', 'auto-actions');
-      var toggle = el('button', 'btn', a.enabled ? 'Enabled' : 'Disabled');
+      var toggle = el('button', 'btn', a.enabled ? 'Pause' : 'Turn on');
       toggle.onclick = function () {
         api('PUT', '/api/automations/' + a.id, { enabled: !a.enabled })
           .then(refresh).catch(function (e) { toast(e.message, false); });
       };
-      var edit = el('button', 'btn', 'Open');
+      var edit = el('button', 'btn', 'Edit');
       edit.onclick = function () { openEditor(a); };
       var del = el('button', 'btn', 'Delete');
       del.onclick = function () {
@@ -9058,11 +9675,11 @@
         api('DELETE', '/api/automations/' + a.id).then(refresh)
           .catch(function (e) { toast(e.message, false); });
       };
-      var run = el('button', 'btn', 'Run now');
+      var run = el('button', 'btn', 'Try it now');
       run.onclick = function () {
         run.disabled = true;
         api('POST', '/api/automations/' + a.id + '/run').then(function (d) {
-          toast('Queued run #' + d.run_id);
+          toast('Starting a test run…');
           watchJob(d.job_id, run, function () { run.disabled = false; });
         }).catch(function (e) {
           run.disabled = false;
@@ -9070,11 +9687,11 @@
         });
       };
       if (a.last_run && a.last_run.status === 'awaiting_approval') {
-        var go = el('button', 'btn btn-primary', 'Approve and continue');
+        var go = el('button', 'btn btn-primary', 'Approve & continue');
         go.onclick = function () {
           go.disabled = true;
           api('POST', '/api/automations/' + a.id + '/resume').then(function (d) {
-            toast('Resumed run #' + d.run_id);
+            toast('Continuing…');
             watchJob(d.job_id, go, function () { go.disabled = false; refresh(); });
           }).catch(function (e) { go.disabled = false; toast(e.message, false); });
         };
@@ -9093,8 +9710,9 @@
         if (!rows.length) {
           var blank = el('div', 'panel-card empty-state');
           blank.innerHTML = '<div class="big">' + icon('cog') + '</div>' +
-            '<strong>No automations yet.</strong>' +
-            '<p>Start from a template: draft with the team, approve, then report.</p>';
+            '<strong>Nothing runs automatically yet.</strong>' +
+            '<p>Describe what you want above. The assistant builds it and you approve it ' +
+            'once.</p>';
           body.appendChild(blank);
           return;
         }
@@ -9118,44 +9736,122 @@
       panel.appendChild(head);
 
       var nameField = el('input');
-      nameField.placeholder = 'Name, e.g. Weekly launch email';
+      nameField.placeholder = 'Name, e.g. Save tour enquiries';
       nameField.value = a ? a.name : '';
       panel.appendChild(nameField);
 
-      // Trigger. Without this only the agent could set "when a contact is created", which
-      // made the most useful trigger in the product unreachable from the screen.
-      var trigger = el('select', 'auto-trigger');
-      trigger.setAttribute('aria-label', 'When this runs');
-      [
-        { value: 'manual', label: 'Run by hand' },
-        { value: 'schedule', label: 'On a schedule' },
-        { value: 'event', label: 'When something happens' }
-      ].forEach(function (option) {
+      // The trigger in the client's words. The form picker lists actual form names; the
+      // raw event field is under "Something else" for an operator who needs it.
+      var triggerConfig = (a && a.trigger_config) || {};
+      var currentKind = 'manual';
+      if (a && a.trigger_type === 'schedule') currentKind = 'schedule';
+      if (a && a.trigger_type === 'event') {
+        if (triggerConfig.event === 'form.submitted') currentKind = 'form';
+        else if (triggerConfig.event === 'contact.created') currentKind = 'contact';
+        else currentKind = 'other';
+      }
+      var whenLabel = el('p', 'fine-print', 'When should it run?');
+      whenLabel.style.margin = '0';
+      panel.appendChild(whenLabel);
+
+      var triggerKind = el('select', 'auto-trigger');
+      triggerKind.setAttribute('aria-label', 'When should it run');
+      var triggerOptions = [
+        { value: 'manual', label: 'Only when I press Try it now' },
+        { value: 'form', label: 'When someone sends a form' },
+        { value: 'contact', label: 'When a new contact is added' },
+        { value: 'schedule', label: 'On a schedule' }
+      ];
+      // Only a legacy draft that already has an unusual event keeps that option. A normal
+      // user never sees a technical choice.
+      if (currentKind === 'other') {
+        triggerOptions.push({ value: 'other', label: 'Something else (advanced)' });
+      }
+      triggerOptions.forEach(function (option) {
         var node = el('option', null, option.label);
         node.value = option.value;
-        trigger.appendChild(node);
+        triggerKind.appendChild(node);
       });
-      trigger.value = (a && a.trigger_type) || 'manual';
-      panel.appendChild(trigger);
+      triggerKind.value = currentKind;
+      panel.appendChild(triggerKind);
+
+      var formSelect = el('select', 'auto-event');
+      formSelect.setAttribute('aria-label', 'Which form');
+      if (!formChoices.length) {
+        var noForms = el('option', null, 'No forms yet — ask the assistant to make one');
+        noForms.value = '';
+        formSelect.appendChild(noForms);
+      }
+      formChoices.forEach(function (form) {
+        var option = el('option', null, form.name);
+        option.value = String(form.id);
+        formSelect.appendChild(option);
+      });
+      var savedForm = triggerConfig.form_id ? String(triggerConfig.form_id) : '';
+      if (savedForm && !formChoices.some(function (form) {
+        return String(form.id) === savedForm;
+      })) {
+        var keptForm = el('option', null, 'Form #' + savedForm);
+        keptForm.value = savedForm;
+        formSelect.appendChild(keptForm);
+      }
+      formSelect.value = savedForm;
+      panel.appendChild(formSelect);
+
+      var scheduleSelect = el('select', 'auto-event');
+      scheduleSelect.setAttribute('aria-label', 'How often');
+      var scheduleOptions = [
+        { value: '60', label: 'Every hour' },
+        { value: '1440', label: 'Every day' },
+        { value: '10080', label: 'Every week' }
+      ];
+      var savedEvery = String(triggerConfig.every_minutes || 1440);
+      if (!scheduleOptions.some(function (option) { return option.value === savedEvery; })) {
+        scheduleOptions.push({ value: savedEvery, label: 'Every ' + savedEvery + ' minutes' });
+      }
+      scheduleOptions.forEach(function (option) {
+        var node = el('option', null, option.label);
+        node.value = option.value;
+        scheduleSelect.appendChild(node);
+      });
+      scheduleSelect.value = savedEvery;
+      panel.appendChild(scheduleSelect);
 
       var eventField = el('input', 'auto-event');
-      eventField.placeholder = 'contact.created or form.submitted';
-      eventField.setAttribute('aria-label', 'Event name');
-      eventField.value = ((a && a.trigger_config) || {}).event || '';
-      eventField.style.display = trigger.value === 'event' ? '' : 'none';
-      trigger.onchange = function () {
-        eventField.style.display = trigger.value === 'event' ? '' : 'none';
-      };
+      eventField.placeholder = 'Event name, e.g. contact.created';
+      eventField.setAttribute('aria-label', 'Advanced event name');
+      eventField.value = triggerConfig.event || '';
       panel.appendChild(eventField);
+
+      function syncTriggerFields() {
+        formSelect.style.display = triggerKind.value === 'form' ? '' : 'none';
+        scheduleSelect.style.display = triggerKind.value === 'schedule' ? '' : 'none';
+        eventField.style.display = triggerKind.value === 'other' ? '' : 'none';
+      }
+      triggerKind.onchange = syncTriggerFields;
+      syncTriggerFields();
+
+      var stepsTitle = el('p', 'fine-print', 'What it does');
+      stepsTitle.style.margin = '0';
+      panel.appendChild(stepsTitle);
 
       var steps = a ? a.steps : STARTER;
       var list = el('div', 'auto-steps');
-      list.innerHTML = '<div class="auto-step-head">Steps</div>';
+      list.innerHTML = '<div class="auto-step-head">Actions</div>';
+      var advancedToggle = el('label', 'fine-print auto-advanced');
+      var advancedBox = el('input');
+      advancedBox.type = 'checkbox';
+      advancedBox.onchange = function () {
+        list.classList.toggle('show-advanced', advancedBox.checked);
+      };
+      advancedToggle.appendChild(advancedBox);
+      advancedToggle.appendChild(document.createTextNode(' Advanced settings'));
+      panel.appendChild(advancedToggle);
       steps.forEach(function (step, index) {
         var row = el('div', 'auto-step');
         row.innerHTML = '<span class="auto-step-num">' + (index + 1) + '</span>' +
           '<span class="auto-step-title">' + esc(step.title || step.id) + '</span>' +
-          '<span class="auto-step-type">' + esc(step.type) + '</span>';
+          '<span class="auto-step-type">' + esc(automationStepLabel(step.type)) + '</span>';
         // A condition is a count compared with a number - "fewer than 1 email". The editor
         // writes those three fields straight into step.config, which Save posts unchanged.
         if (step.type === 'condition') {
@@ -9173,9 +9869,9 @@
             return sel;
           }
           rules.appendChild(condPicker([
-            { value: 'drafts', label: 'drafts' },
+            { value: 'drafts', label: 'draft pages' },
             { value: 'sites', label: 'websites' },
-            { value: 'failed_jobs', label: 'failed jobs' }
+            { value: 'failed_jobs', label: 'failed tasks' }
           ], 'fact', 'drafts')).setAttribute('aria-label', 'Condition fact');
           rules.appendChild(condPicker([
             { value: '==', label: 'is' }, { value: '!=', label: 'is not' },
@@ -9190,7 +9886,7 @@
           num.oninput = function () { cfg.value = parseInt(num.value, 10) || 0; };
           rules.appendChild(num);
           var kindField = el('input', 'auto-cond-kind');
-          kindField.placeholder = 'kind, e.g. email';
+          kindField.placeholder = 'type, e.g. email';
           kindField.value = cfg.kind || '';
           kindField.oninput = function () { cfg.kind = kindField.value.trim(); };
           rules.appendChild(kindField);
@@ -9202,7 +9898,7 @@
           var toolCfg = step.config || (step.config = {});
           var toolRow = el('div', 'auto-cond');
           var toolName = el('input', 'auto-cond-kind');
-          toolName.placeholder = 'tool, e.g. send_email';
+          toolName.placeholder = 'action, e.g. send_email';
           toolName.setAttribute('aria-label', 'Tool name');
           toolName.value = toolCfg.tool || '';
           toolName.oninput = function () { toolCfg.tool = toolName.value.trim(); };
@@ -9268,12 +9964,13 @@
           if (!draft) return;
           var bar = el('div', 'auto-proposal');
           var label = el('div');
-          label.innerHTML = '<strong>A draft is waiting</strong>' +
-            '<div class="fine-print">' + (draft.steps || []).length + ' steps · proposed ' +
-            esc(String(draft.created_at || '').slice(11, 16)) + '</div>';
+          label.innerHTML = '<strong>A change is waiting for your approval</strong>' +
+            '<div class="fine-print">' + esc(draft.note || ((draft.steps || []).length +
+              ' actions · proposed ' + String(draft.created_at || '').slice(11, 16))) +
+            '</div>';
           bar.appendChild(label);
 
-          var view = el('button', 'btn btn-ghost btn-sm', 'Preview');
+          var view = el('button', 'btn btn-ghost btn-sm', 'See the draft');
           var savedSteps = null;
           var savedLayout = null;
           view.onclick = function () {
@@ -9284,7 +9981,7 @@
               savedSteps = null;
               savedLayout = null;
               modal.dataset.previewing = '';
-              view.textContent = 'Preview';
+              view.textContent = 'See the draft';
               draw();
               return;
             }
@@ -9295,15 +9992,15 @@
               if (!layout[step.id]) layout[step.id] = { x: 20, y: 20 + index * 84 };
             });
             modal.dataset.previewing = '1';
-            view.textContent = 'Hide preview';
+            view.textContent = 'Hide the draft';
             draw();
           };
 
-          var apply = el('button', 'btn btn-primary btn-sm', 'Apply');
+          var apply = el('button', 'btn btn-primary btn-sm', 'Approve & turn on');
           apply.onclick = function () {
             apply.disabled = true;
             api('POST', '/api/automations/proposals/' + draft.id + '/apply').then(function () {
-              toast('Applied - the automation is updated', true);
+              toast('Approved — this automation now runs by itself', true);
               modal.parentNode.removeChild(modal);
               refresh();
             }).catch(function (e) {
@@ -9352,18 +10049,37 @@
         }, 1500);
       }
 
-      var save = el('button', 'btn btn-primary', 'Save');
+      var save = el('button', 'btn btn-primary', 'Save changes');
       save.onclick = function () {
         // While previewing, the canvas shows the *draft*. Saving here would quietly write
-        // the agent's graph over the saved one and skip the whole review step.
+        // the assistant's graph over the saved one and skip the whole review step.
         if (modal.dataset.previewing) {
-          toast('You are previewing a draft - press Apply to accept it, or hide the preview ' +
-                'to save your own edits', false);
+          toast('You are looking at a draft — approve it, or hide the draft to save your ' +
+                'own edits', false);
           return;
         }
-        var payload = { name: nameField.value, steps: steps, trigger_type: trigger.value,
-                        trigger_config: trigger.value === 'event'
-                          ? { event: (eventField.value || '').trim() } : {},
+        var triggerType = 'manual';
+        var triggerConfig = {};
+        if (triggerKind.value === 'form') {
+          if (!formSelect.value) {
+            toast('Pick a form first', false);
+            return;
+          }
+          triggerType = 'event';
+          triggerConfig = { event: 'form.submitted',
+                            form_id: parseInt(formSelect.value, 10) || 0 };
+        } else if (triggerKind.value === 'contact') {
+          triggerType = 'event';
+          triggerConfig = { event: 'contact.created' };
+        } else if (triggerKind.value === 'schedule') {
+          triggerType = 'schedule';
+          triggerConfig = { every_minutes: parseInt(scheduleSelect.value, 10) || 1440 };
+        } else if (triggerKind.value === 'other') {
+          triggerType = 'event';
+          triggerConfig = { event: (eventField.value || '').trim() };
+        }
+        var payload = { name: nameField.value, steps: steps, trigger_type: triggerType,
+                        trigger_config: triggerConfig,
                         layout: layout };
         var req = a ? api('PUT', '/api/automations/' + a.id, payload)
                     : api('POST', '/api/automations', payload);
@@ -9376,7 +10092,7 @@
       panel.appendChild(save);
 
       if (a) {
-        var runBtn = el('button', 'btn', 'Run and watch');
+        var runBtn = el('button', 'btn', 'Try it and watch');
         runBtn.onclick = function () {
           panel.querySelectorAll('.auto-node.done, .auto-node.running').forEach(function () {
             this.classList.remove('done', 'running');
@@ -9385,7 +10101,7 @@
           draw();
           runBtn.disabled = true;
           api('POST', '/api/automations/' + a.id + '/run').then(function (d) {
-            toast('Queued run #' + d.run_id);
+            toast('Starting a test run…');
             followRun(d.job_id, runBtn);
           }).catch(function (e) {
             runBtn.disabled = false;
@@ -9450,7 +10166,7 @@
         esc(String(step.title || step.id).slice(0, 26)) + '</text>' +
         '<text x="' + (p.x + 12) + '" y="' + (p.y + 34) + '" font-size="10.5" ' +
         'fill="#94a3b8" letter-spacing=".06em" font-family="inherit">' +
-        esc(String(step.type || '').toUpperCase()) + '</text></g>');
+        esc(automationStepLabel(step.type)) + '</text></g>');
     });
     out.push('</svg>');
     return out.join('');
@@ -10640,7 +11356,7 @@
 
     var view;
     if (area === 'platform') {
-      if (tab === 'clients' && rest[0]) view = viewClient(rest[0]);
+      if (tab === 'clients' && rest[0]) view = viewClient(rest[0], rest[1] || 'overview');
       else if (tab === 'people') view = viewPlatformPeople();
       else if (tab === 'bugs') view = viewBugTracker();
       else if (tab === 'domains') view = viewPlatformDomains();
@@ -10666,7 +11382,7 @@
     else if (tab === 'media') view = viewMedia();
     else if (tab === 'studio') view = viewStudio(rest[0] || '', rest[1] || '');
     else if (tab === 'usage') view = viewUsage();
-    else if (tab === 'analytics') view = viewAnalytics();
+    else if (tab === 'analytics') view = viewAnalytics(rest[0] || '');
     else if (tab === 'automations') view = viewAutomations();
     else if (tab === 'sites') view = viewSites();
     else if (tab === 'jobs' && rest[0]) view = viewJob(rest[0]);
@@ -10889,8 +11605,9 @@
           text: 'Each client gets a site here. Publish a page, and the domain points at this ' +
                 'server.' },
         { hash: '#/app/automations', title: 'Automations',
-          text: 'A sequence of steps: tag, wait a day, ask for approval, send. Drafts arrive ' +
-                'from the AI and nothing goes live until you press Apply.' },
+          text: 'Tell the assistant what should happen, like “when someone sends the Tour ' +
+                'Enquiry form, tag them as a tour enquiry”. It writes it, and you approve it ' +
+                'once.' },
         { hash: '#/app/forms', title: 'Forms, surveys and quizzes',
           text: 'Build one, publish it, and it lives at its own link. Answers land in the ' +
                 'list, and a submission can start an automation.' },

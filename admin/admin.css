@@ -346,6 +346,72 @@ input[type=color] {
   .bug-table { min-width: 620px; }
 }
 
+/* ---------- Platform client detail ---------- */
+.client-back { margin-bottom: 4px; font-size: var(--fs-sm); }
+.client-back a { color: var(--ink-500); }
+.client-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.client-title-row h1 { margin: 0; }
+.client-tabs {
+  display: flex; gap: 4px; margin: -6px 0 22px; overflow-x: auto;
+  border-bottom: 1px solid var(--line); scrollbar-width: thin;
+}
+.client-tab {
+  flex: 0 0 auto; padding: 9px 14px; margin-bottom: -1px;
+  border-bottom: 2px solid transparent; color: var(--ink-500);
+  font-size: var(--fs-body); font-weight: 600; white-space: nowrap;
+}
+.client-tab:hover { color: var(--ink-900); border-bottom-color: var(--line); }
+.client-tab.active { color: var(--accent-700); border-bottom-color: var(--accent-600); }
+.client-tab-body { min-width: 0; }
+.client-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.client-stat {
+  padding: 15px 16px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); box-shadow: var(--shadow-1);
+}
+.client-stat strong {
+  display: block; font-size: 23px; line-height: 1.15; color: var(--ink-900);
+  letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.client-stat span {
+  display: block; margin-top: 4px; color: var(--ink-400);
+  font-size: var(--fs-micro); font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.client-overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.client-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.client-facts > div { padding: 10px 0; border-top: 1px solid var(--line-soft); }
+.client-facts span {
+  display: block; color: var(--ink-400); font-size: var(--fs-micro);
+  font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+}
+.client-facts strong { display: block; margin-top: 3px; color: var(--ink-700); }
+.client-facts strong small { display: block; color: var(--ink-400); font-weight: 400; }
+.client-mini-list { border-top: 1px solid var(--line-soft); }
+.client-mini-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 10px 0; border-bottom: 1px solid var(--line-soft);
+  text-align: left; color: var(--ink-700);
+}
+.client-mini-row:hover { color: var(--accent-700); }
+.client-mini-row > span { min-width: 0; }
+.client-mini-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.client-mini-row small { display: block; color: var(--ink-400); }
+.client-danger { border-color: #f2c4c4; }
+.client-danger h3 { color: var(--danger-700); }
+@media (max-width: 800px) {
+  .client-overview-grid { grid-template-columns: 1fr; gap: 0; }
+  .client-facts { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .client-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .client-title-row h1 { font-size: 20px; }
+  .client-page-head { flex-direction: column; gap: 12px; }
+  .client-page-head .page-actions { justify-content: flex-start; }
+}
+
 /* ---------- Badges ---------- */
 .badge {
   display: inline-block; padding: 3px 9px; border-radius: 999px;
@@ -834,7 +900,12 @@ input:disabled, textarea:disabled { background: #f9fafb; color: var(--ink-3); cu
   font: 600 var(--t-2)/1 inherit;
 }
 .auto-step-title { flex: 1; font: 500 var(--t-3)/1.4 inherit; color: var(--ink); }
-.auto-step-type { font: 400 var(--t-2)/1 inherit; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.auto-step-type { font: 400 var(--t-2)/1 inherit; color: var(--ink-3); letter-spacing: .05em; }
+.auto-trigger, .auto-event { width: 100%; }
+/* The technical fields are for an operator. A normal user sees the plain step list. */
+.auto-steps:not(.show-advanced) .auto-cond { display: none; }
+.auto-advanced { display: flex; align-items: center; gap: 6px; margin: 0; }
+.auto-advanced input { width: auto; }
 /* A condition's three fields sit on their own line, under the step's title. */
 .auto-step { flex-wrap: wrap; }
 .auto-cond {

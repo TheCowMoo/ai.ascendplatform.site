@@ -266,16 +266,19 @@ def _build_start_job(emit, job_id=None):
 
 
 def _build_propose_automation(emit, job_id=None):
-    async def propose_automation(name: str, steps: str, automation_id: int = 0) -> str:
-        """Draft an automation graph for the client to review, then apply.
+    async def propose_automation(name: str, steps: str, automation_id: int = 0,
+                                 when: str = "manual", form_id: int = 0,
+                                 every_minutes: int = 0) -> str:
+        """Draft a complete automation - steps *and* trigger - for the client to approve.
 
         ``steps`` is a JSON array of node objects, each with ``id``, ``type``, ``title``
         and ``next`` (plus ``config`` for an agent or condition node) - the tool schema
         needs one type per argument, so a JSON string is what the model sends.
 
-        Nothing becomes live: the draft goes into the proposals queue and a human presses
-        Apply. The validator's complaints come back verbatim - fix them and call again
-        with the whole graph, because a half-corrected graph is a different graph.
+        ``when`` is plain: "form.submitted" (or "form") with the ``form_id`` from
+        list_forms, "contact.created", "schedule" (with every_minutes), or "manual".
+        The draft is not live until the user approves it; after their yes call
+        apply_automation, which saves it with this trigger and switches it on.
         """
         import json
 
@@ -294,6 +297,40 @@ def _build_propose_automation(emit, job_id=None):
         if not isinstance(steps, list) or not steps:
             return ("Pass steps as a list of node objects: id, type, title, next, and "
                     "config for an agent or condition node.")
+
+        wanted = str(when or "manual").strip().lower()
+        trigger_type, trigger_config = "manual", {}
+        if wanted in ("form", "form.submitted", "a form", "form submitted"):
+            try:
+                chosen_form = int(form_id or 0)
+            except (TypeError, ValueError):
+                chosen_form = 0
+            if not chosen_form:
+                return ("Which form? Call list_forms and pass its id as form_id, or pass "
+                        "a form name the user chose.")
+            trigger_type = "event"
+            trigger_config = {"event": "form.submitted", "form_id": chosen_form}
+            import forms as forms_service
+
+            if not forms_service.get_form(chosen_form, org_id):
+                return ("There's no form #%d for this client. Call list_forms and use "
+                        "one of those ids." % chosen_form)
+        elif wanted in ("contact", "contact.created", "new contact", "contact created"):
+            trigger_type = "event"
+            trigger_config = {"event": "contact.created"}
+        elif wanted in ("schedule", "scheduled", "on a schedule"):
+            trigger_type = "schedule"
+            try:
+                every = int(every_minutes or 1440)
+            except (TypeError, ValueError):
+                every = 1440
+            trigger_config = {"every_minutes": every}
+        elif wanted in ("manual", "by hand", "only when i run it"):
+            trigger_type, trigger_config = "manual", {}
+        else:
+            return ("Choose when it starts: form.submitted with a form_id, "
+                    "contact.created, schedule, or manual.")
+
         # A tool name is otherwise only checked when the run reaches that step - after a
         # human approved the graph and a real contact was waiting on the email. Check it
         # while the model can still fix it.
@@ -303,33 +340,42 @@ def _build_propose_automation(emit, job_id=None):
         for step in steps:
             if not isinstance(step, dict) or step.get("type") != "tool":
                 continue
-            wanted = str(((step.get("config") or {}).get("tool") or "")).strip()
-            if wanted and not tool_registry.resolve([wanted], job_id=job_id):
-                unknown.append(wanted)
+            tool_name = str(((step.get("config") or {}).get("tool") or "")).strip()
+            if tool_name and not tool_registry.resolve([tool_name], job_id=job_id):
+                unknown.append(tool_name)
         if unknown:
             return ("Not saved: there is no tool called %s. Call describe_capabilities to "
                     "see the tools this client has." % ", ".join(sorted(set(unknown))))
+
+        label = automations.trigger_label(trigger_type, trigger_config, org_id)
+        plain_steps = " → ".join(str(step.get("title") or step.get("id") or "")
+                                 for step in steps if isinstance(step, dict))
+        note = ("%s: %s" % (label, plain_steps))[:500]
         draft, problems = automations.propose(
             org_id, name, steps, automation_id=int(automation_id) or None,
-            created_by=requester, job_id=job_id,
+            created_by=requester, job_id=job_id, note=note,
+            trigger_type=trigger_type, trigger_config=trigger_config,
         )
         if problems:
             return ("Not saved. Fix these and call again with the complete graph: "
                     + " ".join(problems))
-        return ("Drafted it as proposal #%d - %d steps. It is not live: open Automations, "
-                "preview it, and press Apply to save it."
-                % (draft["id"], len(draft["steps"])))
+        return ("Drafted “%s” (#%d). %s. It is waiting for the user's approval - explain "
+                "it in one plain sentence, ask one yes/no, and after a yes call "
+                "apply_automation to save it and switch it on."
+                % (draft["name"], draft["id"], note))
 
     return propose_automation
 
 
 register("propose_automation",
-         "Draft an automation graph for the client to preview and apply. Nothing goes live.",
+         "Draft a complete automation (steps and trigger) for the client to approve. "
+         "when='form.submitted' + form_id, 'contact.created', 'schedule', or 'manual'. "
+         "Nothing goes live until the user says yes and you call apply_automation.",
          _build_propose_automation)
 
 
 def _approved_tools(org_id):
-    """Approved agent-written tools. Empty is the normal state: none can run yet."""
+    """Approved agent-written tools. An empty list is the normal state."""
     try:
         import agent_tools
 
@@ -359,11 +405,19 @@ def _build_describe_capabilities(emit, job_id=None):
             "triggers": {
                 "manual": "run by hand",
                 "schedule": {"every_minutes": 1440, "note": "minutes between runs"},
-                "event": ["contact.created", "form.submitted"],
+                "event": {
+                    "contact.created": "pass when='contact.created'",
+                    "form.submitted": ("pass when='form.submitted' and form_id=<id "
+                                       "from list_forms>; it then listens to that form only"),
+                },
             },
             "tools": ["send_email", "tag_contact", "save_deliverable", "get_metrics",
                       "list_sites", "start_job", "publish_page"],
             "conditions": list(automations.CONDITION_FACTS),
+            "form_note": ("A form that asks for a name or email already creates the CRM "
+                          "contact before it fires form.submitted. Use {{contact.id}} in a "
+                          "tool step such as tag_contact; do not add an agent step to create "
+                          "a duplicate."),
             "delays": {"config": "days, hours or minutes", "max_days": 30,
                        "note": "a delay parks the run and wakes it; use it for drip pacing"},
             "can_create": {
@@ -374,8 +428,11 @@ def _build_describe_capabilities(emit, job_id=None):
                         "own link, and it triggers form.submitted when answered",
                 "tag": "tag_contact(contact_id, tags) inside a graph",
                 "draft": "save_deliverable(kind, title, content)",
-                "automation": "propose_automation(name, steps) - explain it, get a yes, "
-                              "then apply_automation()",
+                "automation": ("propose_automation(name, steps, when, form_id) - explain it "
+                               "in one plain sentence, ask one yes/no, then call "
+                               "apply_automation yourself; do not send the user to a screen"),
+                "existing_automations": ("list_automations() - find one by name before "
+                                         "revising it"),
                 "form_link": "add_form_link(deliverable_id, form_id) - a button on the page",
                 "guide": "start_build(kind, goal) - the plain-language website/blog/form/"
                          "newsletter interview; use it instead of asking technical questions",
@@ -385,6 +442,8 @@ def _build_describe_capabilities(emit, job_id=None):
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
+            "email_note": ("Only mention email setup if the automation actually sends email. "
+                           "An internal tag/contact automation does not need it."),
             "stock_photos": {
                 "configured": bool(settings_mod.get("PEXELS_API_KEY")),
                 "flow": "search_photos -> import_photo_to_media -> use the returned media URL/HTML",
@@ -420,8 +479,11 @@ def _build_tag_contact(emit, job_id=None):
             wanted = []
         if not wanted:
             return "No tags given, so nothing changed."
+        raw = str(contact_id or "").strip()
+        if not raw:
+            return "No contact was created for this run, so there is nothing to tag."
         try:
-            cid = int(str(contact_id).strip())
+            cid = int(raw)
         except (TypeError, ValueError):
             return "contact_id must be a number; got %r." % contact_id
         contact = contacts_service.get_contact(cid, org_id)
@@ -453,8 +515,8 @@ def _build_propose_tool(emit, job_id=None):
                                       org_id, created_by=requester, job_id=job_id)
         except agent_tools.AgentToolError as exc:
             return "Not recorded: %s" % exc
-        return ("Recorded %s as a proposed tool (#%d, %s). It cannot run yet: a human has to "
-                "approve it, and this build has no executor for either kind."
+        return ("Recorded %s as a proposed tool (#%d, %s). It cannot run until a human "
+                "approves it; once approved it can be used inside an automation."
                 % (row["name"], row["id"], row["kind"]))
 
     return propose_tool
@@ -753,6 +815,8 @@ def _build_apply_automation(emit, job_id=None):
 
         ``proposal_id=0`` means this client's newest pending proposal - the one you just
         explained - so the model does not have to fish an id out of an earlier turn.
+        Approval is the go-live decision: the trigger travels with the draft and the
+        saved automation is switched on.
         """
         import automations as automations_service
 
@@ -771,11 +835,39 @@ def _build_apply_automation(emit, job_id=None):
             return "Not applied: %s" % exc
         if problems:
             return "Not applied: %s" % " ".join(problems)
-        return ("Applied %r (#%d) with %d step(s). It is enabled; any send inside it still "
-                "needs its approval when the run reaches it."
-                % (saved.get("name"), saved.get("id"), len(saved.get("steps") or [])))
+        state = "on" if saved.get("enabled") else "saved, still paused"
+        return ("Applied “%s” (#%d) and it is %s. %s. If it sends email or publishes, that "
+                "outward step still asks for its own approval when the run reaches it."
+                % (saved.get("name"), saved.get("id"), state,
+                   saved.get("trigger_label") or "It will run when triggered"))
 
     return apply_automation
+
+
+def _build_list_automations(emit, job_id=None):
+    async def list_automations() -> str:
+        """This client's automations, in plain words. Use it to find one before revising."""
+        import json
+
+        import automations as automations_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - automations are per client."
+        rows = automations_service.list_for_org(org_id)
+        return json.dumps([{
+            "id": row["id"],
+            "name": row["name"],
+            "on": bool(row.get("enabled")),
+            "when": row.get("trigger_label") or "",
+            "what_it_does": [step.get("title") or step.get("id")
+                             for step in row.get("steps") or []],
+            # The full nodes, so a revision can start from the saved graph instead of
+            # inventing new ids and losing a tool's args.
+            "steps": row.get("steps") or [],
+        } for row in rows], indent=2)
+
+    return list_automations
 
 
 def _build_list_forms(emit, job_id=None):
@@ -821,8 +913,16 @@ register("start_build",
 
 register("apply_automation",
          "Apply a proposed automation after the user has approved it. proposal_id=0 "
-         "applies this client's newest pending proposal.",
+         "applies this client's newest pending proposal. Saves it with its trigger and "
+         "switches it on.",
          _build_apply_automation)
+
+
+register("list_automations",
+         "List this client's automations with the plain trigger and the complete saved "
+         "steps, so a revision starts from the real graph. Use it to find the one the "
+         "user means before proposing a revision.",
+         _build_list_automations)
 
 
 register("create_contact", "Add a contact to this client's CRM.",

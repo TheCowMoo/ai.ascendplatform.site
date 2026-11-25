@@ -18,6 +18,7 @@ import re
 import secrets
 import threading
 import datetime
+import time
 import urllib.request
 from functools import wraps
 
@@ -46,6 +47,7 @@ import studio as studio_service
 import rates as rates_service
 import usage as usage_service
 import analytics as analytics_service
+import analytics_oauth
 import invites as invites_service
 import password_resets
 import bugs as bugs_service
@@ -2756,11 +2758,19 @@ def list_sites():
 @app.route("/api/platform/domains", methods=["GET"])
 @owner_required
 def platform_domains():
-    """Every connected domain, with deleted-client rows called out for cleanup."""
-    rows, counts = sites_service.platform_domains()
+    """Every connected domain, or one client's domains with ``?org_id=N``."""
+    raw = request.args.get("org_id")
+    org_id = None
+    if raw not in (None, ""):
+        try:
+            org_id = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "org_id must be a number"}), 400
+    rows, counts = sites_service.platform_domains(org_id=org_id)
     return jsonify({
         "domains": rows,
         "counts": counts,
+        "org_id": org_id,
         "dry_run": actions.is_dry_run(),
         "server_ip": provisioner.SERVER_IP,
     })
@@ -3746,13 +3756,13 @@ import automations as automations_service
 
 
 @app.route("/api/automations", methods=["GET"])
-@login_required
+@client_admin_required
 def list_automations():
     return jsonify({"automations": automations_service.list_for_org(current_org())})
 
 
 @app.route("/api/automations", methods=["POST"])
-@login_required
+@client_admin_required
 def create_automation():
     """A graph is validated before it is stored, so a bad one is rejected with reasons."""
     data = request.get_json(silent=True) or {}
@@ -3774,7 +3784,7 @@ def create_automation():
 
 
 @app.route("/api/automations/<int:automation_id>", methods=["GET"])
-@login_required
+@client_admin_required
 def get_automation(automation_id):
     automation = automations_service.get(automation_id, current_org())
     if not automation:
@@ -3783,7 +3793,7 @@ def get_automation(automation_id):
 
 
 @app.route("/api/automations/<int:automation_id>", methods=["PUT"])
-@login_required
+@client_admin_required
 def update_automation(automation_id):
     data = request.get_json(silent=True) or {}
     # 404 before validation: a missing row and a bad graph are different answers, and
@@ -4578,7 +4588,7 @@ def contacts_sync():
 
 
 @app.route("/api/automations/proposals", methods=["GET"])
-@login_required
+@client_admin_required
 def list_automation_proposals():
     """Graphs the agents have drafted and are waiting for a human to apply."""
     org = current_org()
@@ -4590,7 +4600,7 @@ def list_automation_proposals():
 
 
 @app.route("/api/automations/proposals/<int:proposal_id>/apply", methods=["POST"])
-@login_required
+@client_admin_required
 def apply_automation_proposal(proposal_id):
     """The only path from a draft to a saved automation, and it re-validates first."""
     org = current_org()
@@ -4605,7 +4615,7 @@ def apply_automation_proposal(proposal_id):
 
 
 @app.route("/api/automations/proposals/<int:proposal_id>/discard", methods=["POST"])
-@login_required
+@client_admin_required
 def discard_automation_proposal(proposal_id):
     org = current_org()
     if org is None:
@@ -4616,7 +4626,7 @@ def discard_automation_proposal(proposal_id):
 
 
 @app.route("/api/automations/<int:automation_id>", methods=["DELETE"])
-@login_required
+@client_admin_required
 def delete_automation(automation_id):
     if not automations_service.delete(automation_id, current_org()):
         return jsonify({"error": "Not found"}), 404
@@ -4624,7 +4634,7 @@ def delete_automation(automation_id):
 
 
 @app.route("/api/automations/<int:automation_id>/run", methods=["POST"])
-@login_required
+@client_admin_required
 def run_automation(automation_id):
     """Queue a run. The walk happens in a job, so it is watchable like anything else."""
     try:
@@ -4636,7 +4646,7 @@ def run_automation(automation_id):
 
 
 @app.route("/api/automations/<int:automation_id>/resume", methods=["POST"])
-@login_required
+@client_admin_required
 def resume_automation(automation_id):
     """Continue the run that is parked at a gate, from the node after it."""
     try:
@@ -4943,6 +4953,9 @@ def list_data_sources():
         # A public service-account address, not a secret. The client needs it to grant
         # read access to their GA4 property before the first sync can work.
         "ga4_email": settings.get("GA4_SERVICE_ACCOUNT_EMAIL") or "",
+        "oauth_ready": analytics_oauth.configured(),
+        "oauth_connected": analytics_oauth.connected(org),
+        "oauth_redirect_uri": analytics_oauth.redirect_uri(),
     })
 
 
@@ -4967,17 +4980,163 @@ def save_data_source():
     if not is_owner() and kind not in analytics_service.CLIENT_KINDS:
         return jsonify({"error": "That analytics source is not available here."}), 400
     source_id = data.get("id") or None
+    old_connection_id = None
     if source_id:
         existing = analytics_service.get_source(source_id)
         if not existing or not can_access_org(existing.get("org_id")):
             return jsonify({"error": "Not found"}), 404
+        old_connection_id = analytics_oauth.connection_id_from_source(existing)
     try:
         source = analytics_service.save_source(
             data, source_id=source_id, org_id=org
         )
     except analytics_service.SourceError as exc:
         return jsonify({"error": str(exc)}), 400
+    if old_connection_id is not None and not analytics_oauth.is_oauth_source(source):
+        # Switching an OAuth source back to the service account should not leave a
+        # long-lived Google refresh token behind with no source using it.
+        analytics_oauth.drop_if_unused(org, old_connection_id)
     return jsonify({"source": source}), 200 if source_id else 201
+
+
+def _oauth_notice(kind, message):
+    session["ga4_oauth_notice"] = {"kind": kind, "message": str(message)[:500]}
+    return redirect("/admin/#/app/analytics/oauth-%s" % ("ok" if kind == "ok" else "error"))
+
+
+def _oauth_upsert_ga4_source(org_id, pending, marker):
+    """Create or reconnect the GA4 source that points at the OAuth connection."""
+    external_id = pending.get("external_id") or ""
+    label = (pending.get("label") or "").strip()[:200]
+    source_id = pending.get("source_id")
+    existing = None
+    if source_id:
+        existing = analytics_service.get_source(source_id)
+        if (not existing or existing.get("org_id") != org_id
+                or existing.get("kind") != "ga4"):
+            raise analytics_oauth.OAuthError(
+                "That analytics connection no longer exists. Start again from Analytics."
+            )
+    else:
+        for row in analytics_service.sources(org_id):
+            if (row.get("kind") == "ga4"
+                    and row.get("external_id") == external_id):
+                existing = row
+                break
+    data = {
+        "kind": "ga4",
+        "external_id": external_id,
+        "label": label or (existing or {}).get("label") or "Google Analytics",
+        "credential_ref": marker,
+    }
+    if existing:
+        data["enabled"] = existing.get("enabled", True)
+    return analytics_service.save_source(
+        data, source_id=existing["id"] if existing else None, org_id=org_id
+    )
+
+
+@app.route("/api/analytics/oauth/google/start", methods=["POST"])
+@client_admin_required
+def start_google_analytics_oauth():
+    """Start the Google consent redirect for one client's GA4 property."""
+    data = request.get_json(silent=True) or {}
+    org = current_org()
+    if org is None and is_owner():
+        raw = data.get("org_id")
+        if raw not in (None, ""):
+            try:
+                org = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "org_id must be a number"}), 400
+            if not orgs_service.get_org(org):
+                return jsonify({"error": "That client does not exist."}), 404
+    if org is None:
+        return jsonify({"error": "Pick a client before connecting Google Analytics."}), 400
+    try:
+        external_id = analytics_oauth.normalize_property(data.get("external_id"))
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    source_id = data.get("source_id") or None
+    if source_id:
+        try:
+            source_id = int(source_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "source_id must be a number"}), 400
+        existing = analytics_service.get_source(source_id)
+        if (not existing or existing.get("org_id") != org
+                or existing.get("kind") != "ga4"):
+            return jsonify({"error": "That analytics connection was not found."}), 404
+    if not analytics_oauth.configured():
+        return jsonify({
+            "error": "Google Analytics sign-in is not configured. Missing: %s."
+                     % ", ".join(analytics_oauth.missing_config())
+        }), 400
+    state = analytics_oauth.new_state()
+    session["ga4_oauth"] = {
+        "state": state,
+        "org_id": org,
+        "external_id": external_id,
+        "label": (data.get("label") or "").strip()[:200],
+        "source_id": source_id,
+        "created_at": time.time(),
+    }
+    try:
+        auth_url = analytics_oauth.authorization_url(state)
+    except analytics_oauth.OAuthError as exc:
+        session.pop("ga4_oauth", None)
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"auth_url": auth_url})
+
+
+@app.route("/api/analytics/oauth/google/callback", methods=["GET"])
+def google_analytics_oauth_callback():
+    """Google's browser redirect. Never returns or logs a token."""
+    _user, error = _session_account()
+    if error:
+        return redirect("/admin/#/login")
+    pending = session.pop("ga4_oauth", None)
+    if not pending:
+        return _oauth_notice("error", "No Google authorization request was found.")
+    supplied = request.args.get("state") or ""
+    expected = pending.get("state") or ""
+    if not supplied or not expected or not secrets.compare_digest(supplied, expected):
+        return _oauth_notice("error", "The Google authorization state did not match.")
+    try:
+        created = float(pending.get("created_at") or 0)
+    except (TypeError, ValueError):
+        created = 0
+    if not created or time.time() - created > analytics_oauth.STATE_TTL:
+        return _oauth_notice("error", "The Google authorization request expired. Try again.")
+    if request.args.get("error"):
+        return _oauth_notice("error", "Google Analytics access was cancelled.")
+    code = request.args.get("code") or ""
+    if not code:
+        return _oauth_notice("error", "Google did not return an authorization code.")
+    org_id = pending.get("org_id")
+    if (not can_access_org(org_id)
+            or (not is_owner() and current_org() != org_id)):
+        return _oauth_notice("error", "That client is not available in this session.")
+    try:
+        tokens = analytics_oauth.exchange_code(code)
+        connection = analytics_oauth.save_connection(org_id, tokens)
+        _oauth_upsert_ga4_source(
+            org_id, pending, analytics_oauth.source_marker(connection["id"])
+        )
+    except analytics_oauth.OAuthError as exc:
+        app.logger.warning("GA4 OAuth callback failed for org %s: %s", org_id, exc)
+        return _oauth_notice("error", str(exc))
+    except Exception:  # pragma: no cover - defensive
+        app.logger.exception("GA4 OAuth callback crashed for org %s", org_id)
+        return _oauth_notice("error", "Google Analytics could not be connected. Try again.")
+    return _oauth_notice("ok", "Google Analytics connected.")
+
+
+@app.route("/api/analytics/oauth/notice", methods=["GET"])
+@client_admin_required
+def google_analytics_oauth_notice():
+    """Pop the one-shot callback message so it is not repeated on refresh."""
+    return jsonify({"notice": session.pop("ga4_oauth_notice", None)})
 
 
 @app.route("/api/sites/<int:site_id>/versions", methods=["GET"])
@@ -5062,7 +5221,10 @@ def delete_data_source(source_id):
         return jsonify({"error": "Not found"}), 404
     if not is_owner() and existing.get("kind") not in analytics_service.CLIENT_KINDS:
         return jsonify({"error": "That source is managed by your agency."}), 403
+    connection_id = analytics_oauth.connection_id_from_source(existing)
     analytics_service.delete_source(source_id)
+    if connection_id is not None:
+        analytics_oauth.drop_if_unused(existing.get("org_id"), connection_id)
     return jsonify({"ok": True})
 
 

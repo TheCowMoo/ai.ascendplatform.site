@@ -37,6 +37,9 @@ def _out(row):
     item = {key: row[key] for key in row.keys()}
     item["enabled"] = bool(item.get("enabled"))
     item["label"] = item.get("label") or LABELS.get(item["kind"], item["kind"])
+    credential = str(item.get("credential_ref") or "")
+    if item.get("kind") == "ga4":
+        item["auth_mode"] = "oauth" if credential.startswith("oauth:") else "service_account"
     return item
 
 
@@ -70,8 +73,10 @@ def save_source(data, source_id=None, org_id=None):
     if kind in REQUIRES_EXTERNAL_ID and not external_id:
         raise SourceError("%s needs an external id (account, property or location)" % kind)
     label = (data.get("label") or "").strip()
-    credential = (data.get("credential_ref") or "").strip()
-    enabled = 1 if data.get("enabled", True) else 0
+    credential_raw = data.get("credential_ref")
+    credential = str(credential_raw or "").strip()
+    enabled_raw = data.get("enabled")
+    enabled = 1 if (enabled_raw if enabled_raw is not None else True) else 0
     if source_id is not None:
         existing = get_source(source_id)
         if not existing:
@@ -80,6 +85,13 @@ def save_source(data, source_id=None, org_id=None):
         # change another workspace's source by guessing its id.
         if org_id is not None and existing.get("org_id") != org_id:
             raise SourceError("That data source was not found for this workspace.")
+        # A client form does not send credential_ref. Omitting it must preserve the
+        # OAuth marker (or a service-account path) instead of silently disconnecting
+        # the source.
+        if credential_raw is None:
+            credential = existing.get("credential_ref") or ""
+        if enabled_raw is None:
+            enabled = 1 if existing.get("enabled") else 0
     with get_connection() as conn:
         if source_id is None:
             cur = conn.execute(

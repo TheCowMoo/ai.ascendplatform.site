@@ -79,6 +79,35 @@ def test_unknown_trigger_is_rejected():
                automations.validate_graph(_chain("agent", "stop"), trigger_type="whenever"))
 
 
+def test_a_form_trigger_is_validated_before_it_is_saved():
+    steps = _chain("notify")
+    assert any("Choose what starts it" in p for p in automations.validate_graph(
+        steps, trigger_type="event", trigger_config={}))
+    assert any("real form" in p for p in automations.validate_graph(
+        steps, trigger_type="event",
+        trigger_config={"event": "form.submitted", "form_id": "not-a-number"}))
+    assert automations.validate_graph(
+        steps, trigger_type="event",
+        trigger_config={"event": "form.submitted", "form_id": 15}) == []
+
+
+def test_a_schedule_has_bounds_and_a_plain_label():
+    steps = _chain("notify")
+    assert any("30 days" in p for p in automations.validate_graph(
+        steps, trigger_type="schedule", trigger_config={"every_minutes": 1}))
+    assert automations.validate_graph(
+        steps, trigger_type="schedule", trigger_config={"every_minutes": 1440}) == []
+    assert automations.trigger_label("schedule", {"every_minutes": 10080}) == "Every week"
+
+
+def test_triggers_are_described_in_plain_words():
+    assert automations.trigger_label(
+        "event", {"event": "form.submitted"}) == "When someone sends a form"
+    assert automations.trigger_label(
+        "event", {"event": "contact.created"}) == "When a new contact is added"
+    assert automations.trigger_label("manual", {}) == "Only when you press Try it now"
+
+
 def test_clean_graph_rejects_before_saving():
     try:
         automations._clean_graph([{"id": "a", "type": "agent", "title": "", "next": []}],

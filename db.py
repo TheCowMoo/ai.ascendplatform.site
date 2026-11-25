@@ -389,6 +389,10 @@ automation_proposals = Table(
     Column("name", Text, nullable=False, server_default=_literal("")),
     Column("steps", Text, nullable=False, server_default=_literal("[]")),
     Column("layout", Text, nullable=False, server_default=_literal("{}")),
+    # The draft carries its own trigger, so approving it can save *and switch on* a
+    # complete automation instead of leaving the client to wire it by hand.
+    Column("trigger_type", Text, nullable=False, server_default=_literal("manual")),
+    Column("trigger_config", Text, nullable=False, server_default=_literal("{}")),
     Column("status", Text, nullable=False, server_default=_literal("pending")),
     Column("created_by", Integer),
     Column("job_id", Integer),
@@ -838,6 +842,27 @@ data_sources = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
     Index("ix_data_sources_org", "org_id"),
 )
+
+# Google (and future provider) OAuth grants, one per client. The GA4 source points at
+# this row with an internal `oauth:<id>` credential reference. Tokens never reach the
+# browser or a data-source API response.
+oauth_connections = Table(
+    "oauth_connections",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("provider", Text, nullable=False, server_default=_literal("google_analytics")),
+    Column("org_id", Integer, nullable=False),
+    Column("account_email", Text, nullable=False, server_default=_literal("")),
+    Column("refresh_token", Text, nullable=False, server_default=_literal("")),
+    Column("access_token", Text, nullable=False, server_default=_literal("")),
+    Column("expires_at", Text),
+    Column("scope", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    UniqueConstraint("provider", "org_id", name="uq_oauth_provider_org"),
+)
+
+Index("idx_oauth_connections_org", oauth_connections.c.org_id)
 
 # One row per metric per day per dimension: long and narrow so every source answers the
 # same questions. Aggregates only - no user-level rows, so no PII can accumulate here.
@@ -1359,6 +1384,10 @@ _ADDITIVE_COLUMNS = (
     # existing database needs them added the same way every other column was.
     ("automation_runs", "context", "context TEXT NOT NULL DEFAULT '{}'"),
     ("automation_runs", "wake_at", "wake_at TEXT"),
+    # A proposal now carries its trigger (migration 0036), so an approved draft can be
+    # saved and switched on in one step.
+    ("automation_proposals", "trigger_type", "trigger_type TEXT NOT NULL DEFAULT 'manual'"),
+    ("automation_proposals", "trigger_config", "trigger_config TEXT NOT NULL DEFAULT '{}'"),
     ("users", "org_id", "org_id INTEGER"),
     ("users", "onboarded_at", "onboarded_at TEXT"),
     ("users", "status", "status TEXT NOT NULL DEFAULT 'active'"),

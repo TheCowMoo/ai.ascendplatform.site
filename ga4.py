@@ -1,8 +1,8 @@
 """Google Analytics 4: one property per client, read as aggregates.
 
-The client owns the property, so there is no OAuth dance: they add our service account
-to the GA4 property, and we read it with a key file mounted at a path the data source
-points to. Two calls per sync - exchange the signed JWT for an access token, then
+The client owns the property. They can authorize it with their own Google account
+(``analytics_oauth.py``), or an existing source can keep using the platform service
+account and a mounted key file. Two calls per sync - obtain an access token, then
 ``runReport`` - and the HTTP layer is replaceable so all of it is testable offline.
 """
 
@@ -108,19 +108,31 @@ def to_points(report):
 def sync(source):
     """Pull one GA4 source and store it. Returns a summary; raises on failure."""
     import analytics
+    import analytics_oauth
 
-    # A client only needs to share their GA4 property with the platform's service
-    # account; the operator configures this key once. Per-source paths remain possible
-    # for an operator whose deployment uses a different key per client.
-    key_path = (source.get("credential_ref") or "").strip()
-    if not key_path:
-        key_path = settings.get("GA4_SERVICE_ACCOUNT_KEY_PATH")
-    if not key_path:
-        raise RuntimeError(
-            "Google Analytics is not configured: add the service-account key path in "
-            "Platform settings, then try again."
-        )
-    token = access_token(key_path)
+    if analytics_oauth.is_oauth_source(source):
+        connection = analytics_oauth.get_connection(source.get("org_id"))
+        marker_id = analytics_oauth.connection_id_from_source(source)
+        if not connection or (marker_id and connection.get("id") != marker_id):
+            raise RuntimeError(
+                "Google Analytics authorization is missing. Reconnect Google Analytics."
+            )
+        try:
+            token = analytics_oauth.access_token_for_org(source["org_id"])
+        except analytics_oauth.OAuthError as exc:
+            raise RuntimeError(str(exc))
+    else:
+        # Existing service-account connections still work. A client only needs to
+        # share the property with the platform's service account.
+        key_path = (source.get("credential_ref") or "").strip()
+        if not key_path:
+            key_path = settings.get("GA4_SERVICE_ACCOUNT_KEY_PATH")
+        if not key_path:
+            raise RuntimeError(
+                "Google Analytics is not configured: add the service-account key path "
+                "in Platform settings, then try again."
+            )
+        token = access_token(key_path)
     report = run_report(source["external_id"], token)
     rows = analytics.record_metrics(source["org_id"], "ga4", to_points(report))
     return {"ok": True, "rows": rows}

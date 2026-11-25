@@ -99,7 +99,8 @@ def _welcome_assets(org_id, user_id, answers, profile, form=None, purpose="form"
         import automations
         automation_id = automations.create(
             org_id, "Welcome after %s" % (form.get("name") or purpose), steps,
-            trigger_type="event", trigger_config={"event": "form.submitted"},
+            trigger_type="event",
+            trigger_config={"event": "form.submitted", "form_id": form["id"]},
             created_by=user_id, enabled=False)
         result["automation_id"] = automation_id
         result["automation_note"] = "Saved switched off. Review it before enabling."
@@ -146,7 +147,8 @@ def _welcome_series_assets(org_id, user_id, answers, profile, form):
         import automations
         automation_id = automations.create(
             org_id, "Welcome series after %s" % (form.get("name") or "sign-up"),
-            flow, trigger_type="event", trigger_config={"event": "form.submitted"},
+            flow, trigger_type="event",
+            trigger_config={"event": "form.submitted", "form_id": form["id"]},
             created_by=user_id, enabled=False)
         result["automation_id"] = automation_id
         result["automation_note"] = "Saved switched off. Review it before enabling."

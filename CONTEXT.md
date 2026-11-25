@@ -5,6 +5,8 @@ infrastructure (provisions sites, writes files to servers, publishes pages, read
 analytics) on the operator's own model keys, with GoHighLevel as the rails for contacts
 and email. Two consoles: the operator's `#/platform/*` and the client's `#/app/*`.
 
+> **AI agents:** read `AGENTS.md` first. This file is deep context and history; use
+> `docs/ai/REFERENCE.md` and `docs/ai/INDEX.md` for the current map.
 Read `SYSTEM_PLAN.md` for the reasoning behind each fix (§25-33 are the recent ones).
 This file is the map: what exists, where it lives, and what is still open.
 
@@ -14,11 +16,11 @@ This file is the map: what exists, where it lives, and what is still open.
 
 | File | Size | Why it matters |
 |---|---|---|
-| `admin/admin.js` | ~6,200 lines / 271 KB | every console screen in one file; a whole read is ~70k tokens |
-| `app.py` | ~3,400 lines / 132 KB | all routes; ~34k tokens |
-| `SYSTEM_PLAN.md` | ~1,700 lines / 96 KB | search a section number, do not read it whole |
+| `admin/admin.js` | ~10,900 lines | every console screen in one file; search first |
+| `app.py` | ~4,700 lines | all routes; search first |
+| `SYSTEM_PLAN.md` | ~1,400 lines | search a section number, do not read it whole |
 | `admin/voice.js` | ~950 lines / 35 KB | the Live transport and the voice overlay |
-| `tests/*.py` | ~6,600 lines combined | search for the suite you need |
+| `tests/*.py` | ~83 files | search for the suite you need |
 
 - Read **ranges** (`start_line`/`end_line`); never a whole file above ~300 lines.
 - Locate with a bare pattern first; add context lines only once the line number is known.
@@ -76,7 +78,8 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `review.py` | Weekly brief (two windows), prompt, `site_review` job, digest |
 | `analytics.py` | `data_sources`, `metrics_daily`, `sync_runs`; source CRUD, idempotent metrics |
 | `site_logs.py` | Caddy access log → per-org metrics (no IPs stored) |
-| `ga4.py` | GA4 service-account adapter (key by path) |
+| `ga4.py` | GA4 adapter: OAuth connection or service-account key path |
+| `analytics_oauth.py` | Google OAuth start/callback, token refresh, `oauth_connections` storage and source markers |
 | `versions.py` | `site_versions` — snapshot on publish, one-call restore |
 | `platform_mail.py` | The operator's own mail through GHL (contact upsert → conversation message) |
 | `notifications.py` | Best-effort lead and automation notices to a client's admins; client GHL scope, platform fallback |
@@ -107,6 +110,7 @@ caddy ──▶ app (Flask + FastAPI via a2wsgi, uvicorn --workers 2)
 | `deliverables` | kind ∈ blog/funnel/email/website/proposal/asset; `content` is HTML; `job_id`, `created_by` |
 | `mail_senders`, `invites` | platform mail identity; invites hold a SHA-256 token |
 | `data_sources`, `metrics_daily`, `sync_runs` | analytics spine; metrics have a unique point key |
+| `oauth_connections` | per-client Google grant (refresh/access token); GA4 sources point at it with `oauth:<id>` |
 | `site_versions` | one row per publish, restorable |
 
 Postgres `RETURNING id` is appended only for tables that actually have an `id` column
@@ -152,6 +156,34 @@ boundary:
   last active client admin of a workspace cannot be stranded; the acting user cannot
   delete their own login. Every successful change writes `user_events` (actor, target,
   org, action, detail), including password resets and status changes.
+
+## Platform client detail
+
+`#/platform/clients/<id>` is the agency's per-client workspace, not a single summary
+card. It has six URL-addressable tabs, all owner-only:
+
+- **Overview** — plan/status, workspace ID, primary admin, notes, team/site/open-issue
+  counts, credit balance, recent support and quick actions.
+- **Team** — the client's logins with role, status and last sign-in. Add a login,
+  invite someone, reset a password, enable/disable or remove. A fixed-org mode in
+  `personModal`/`peopleTable` prevents moving a client person to another tenant or
+  granting the agency-owner role from this page.
+- **Websites** — the client's sites and domains, status, SSL and DNS address. Domain
+  removal stays in Platform -> Domains so there is one destructive path.
+- **Usage** — balance, allowance, month-to-date spend and recent activity, with the
+  same credit-granting modal as Platform -> Usage.
+- **Support** — internal `bugs` filtered to the client. Reporting from here locks the
+  bug's client; the client still never sees the tracker. The tab derives its chips
+  from the returned issue rows because `/api/platform/bugs` returns global counts.
+- **Settings** — client profile editing, the client-visible SMTP group via
+  `GET|PUT /api/settings?org_id=N`, connection testing, and the permanent-delete
+  danger zone. GoHighLevel remains a backend-only integration.
+
+The header's **Open workspace** posts to `/api/session/org`, which changes the
+operator's acting client and opens the client's dashboard. `GET
+/api/platform/domains?org_id=N` is the owner-only filter used by both Overview and
+Websites; omitting `org_id` keeps the original all-client response, and an invalid
+value answers 400. No schema change was required.
 
 ## Internal bug tracker
 
@@ -312,13 +344,14 @@ inside Analytics use `.empty-actions` so they stay centered beside each other.
 ## Analytics workspaces (2026-11-17)
 
 Analytics access is role-aware and workspace-scoped. Members may read the brief and
-source labels; client admins may add/edit/remove their own GA4 source and refresh it;
-the operator may do the same for any client and keeps the global site-log sync. GA4
-uses `GA4_SERVICE_ACCOUNT_KEY_PATH` as a platform fallback, so a client only supplies a
-property ID after sharing the property with the service account. `save_source` and the
-data-source routes verify ownership before updates; a no-workspace login gets an empty
-source list, never the unscoped catalogue. The Analytics empty state is state-aware and
-offers only actions the current role can perform.
+source labels; client admins may connect/reconnect their own GA4 property and refresh
+it; the operator may do the same for any client and keeps the global site-log sync.
+Google OAuth is the client-facing path: the callback stores a refresh token in
+`oauth_connections`, and the source carries an internal `oauth:<id>` marker. Existing
+service-account sources remain supported through `GA4_SERVICE_ACCOUNT_KEY_PATH` as a
+fallback. `save_source` and the data-source routes verify ownership before updates; a
+no-workspace login gets an empty source list, never the unscoped catalogue. The
+Analytics empty state is state-aware and offers only actions the current role can perform.
 
 ## Client notifications (2026-11-16)
 

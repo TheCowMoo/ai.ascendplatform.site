@@ -108,6 +108,8 @@ def test_a_form_builds_a_working_form_and_a_switched_off_welcome():
     check("with a form trigger", automation["trigger_type"], "event")
     check("listening for submissions",
           automation["trigger_config"].get("event"), "form.submitted")
+    check("and only that form", automation["trigger_config"].get("form_id"),
+          result["form_id"])
 
 
 def test_a_blog_post_is_a_draft_and_can_be_published_later():
@@ -180,6 +182,8 @@ def test_a_newsletter_can_be_a_three_email_series():
           len(automation["steps"]), 8)
     check("the trigger is a form submission",
           automation["trigger_config"].get("event"), "form.submitted")
+    check("and only its own form", automation["trigger_config"].get("form_id"),
+          result.get("form_id"))
 
 
 def test_a_multi_page_site_publishes_with_one_approval():

@@ -15,6 +15,9 @@ from datetime import datetime, timedelta, timezone
 
 NODE_TYPES = ("agent", "tool", "condition", "gate", "notify", "stop", "delay")
 TRIGGER_TYPES = ("manual", "schedule", "event")
+EVENT_TYPES = ("contact.created", "form.submitted")
+SCHEDULE_MIN_MINUTES = 5
+SCHEDULE_MAX_MINUTES = 43200       # 30 days
 OUTWARD_TOOLS = ("send_email", "publish_page", "publish_site", "provision_site")
 MAX_NODES = 12
 MAX_NAME = 120
@@ -24,6 +27,112 @@ MAX_NAME = 120
 # the whole language is "<count> <op> <number>".
 CONDITION_FACTS = ("drafts", "sites", "failed_jobs")
 CONDITION_OPS = ("==", "!=", ">", ">=", "<", "<=")
+
+
+def normalize_trigger(trigger_type="manual", trigger_config=None):
+    """(type, config, problems) for a trigger, in the form that gets stored.
+
+    A draft has to be able to carry its trigger, otherwise approving it leaves the
+    client with a second job: wiring the thing by hand. This is the one place that
+    decides what a trigger may say.
+    """
+    problems = []
+    kind = str(trigger_type or "manual").strip().lower()
+    config = dict(trigger_config) if isinstance(trigger_config, dict) else {}
+    if kind not in TRIGGER_TYPES:
+        return kind, {}, ["Unknown trigger '%s'." % kind]
+    clean = {}
+    if kind == "event":
+        event = str(config.get("event") or "").strip().lower()
+        if event not in EVENT_TYPES:
+            problems.append("Choose what starts it: %s." % " or ".join(EVENT_TYPES))
+        clean["event"] = event
+        raw_form = config.get("form_id")
+        if raw_form not in (None, "", 0, "0"):
+            try:
+                form_id = int(raw_form)
+            except (TypeError, ValueError):
+                form_id = 0
+            if form_id <= 0:
+                problems.append("The form to watch must be a real form.")
+            else:
+                clean["form_id"] = form_id
+    elif kind == "schedule":
+        try:
+            every = int(config.get("every_minutes") or 1440)
+        except (TypeError, ValueError):
+            every = 0
+        if every < SCHEDULE_MIN_MINUTES or every > SCHEDULE_MAX_MINUTES:
+            problems.append(
+                "A schedule must repeat between %d minutes and 30 days."
+                % SCHEDULE_MIN_MINUTES)
+        else:
+            clean["every_minutes"] = every
+    return kind, clean, problems
+
+
+def _form_trigger_problem(org_id, trigger_type, trigger_config):
+    """A form-scoped trigger must name one of this client's forms."""
+    if trigger_type != "event":
+        return None
+    if (trigger_config or {}).get("event") != "form.submitted":
+        return None
+    form_id = (trigger_config or {}).get("form_id")
+    if not form_id:
+        return None
+    try:
+        import forms
+        if forms.get_form(int(form_id), org_id):
+            return None
+    except Exception:
+        return None       # a missing forms table must not block an unrelated save
+    return "That form isn't one of this client's."
+
+
+def _form_name(org_id, form_id):
+    """The form's name, or '' when it is gone. Never raises into a list response."""
+    try:
+        from db import get_connection
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT name FROM forms WHERE id = ? AND org_id = ?",
+                (int(form_id), org_id)).fetchone()
+        return (row["name"] if row else "").strip()
+    except Exception:
+        return ""
+
+
+def trigger_label(trigger_type, trigger_config, org_id=None):
+    """One plain sentence for the screen and the manager's explanation.
+
+    The UI and the model should never have to say "form.submitted" or a form id.
+    """
+    kind = str(trigger_type or "manual").strip().lower()
+    config = trigger_config if isinstance(trigger_config, dict) else {}
+    if kind == "schedule":
+        try:
+            every = int(config.get("every_minutes") or 1440)
+        except (TypeError, ValueError):
+            every = 1440
+        if every >= 10080 and every % 10080 == 0:
+            weeks = every // 10080
+            return "Every week" if weeks == 1 else "Every %d weeks" % weeks
+        if every % 1440 == 0:
+            days = every // 1440
+            return "Every day" if days == 1 else "Every %d days" % days
+        if every % 60 == 0:
+            hours = every // 60
+            return "Every hour" if hours == 1 else "Every %d hours" % hours
+        return "Every %d minutes" % every
+    if kind == "event":
+        event = str(config.get("event") or "").strip().lower()
+        if event == "form.submitted":
+            name = _form_name(org_id, config.get("form_id")) if config.get("form_id") else ""
+            return ("When someone sends “%s”" % name) if name else "When someone sends a form"
+        if event == "contact.created":
+            return "When a new contact is added"
+        return "When something happens"
+    return "Only when you press Try it now"
 
 
 def condition_config(step):
@@ -94,11 +203,11 @@ class AutomationError(ValueError):
     pass
 
 
-def validate_graph(steps, trigger_type="manual"):
+def validate_graph(steps, trigger_type="manual", trigger_config=None):
     """Everything wrong with a graph, as readable sentences. Empty list means valid."""
     problems = []
-    if trigger_type not in TRIGGER_TYPES:
-        problems.append("Unknown trigger '%s'." % trigger_type)
+    _, _, trigger_problems = normalize_trigger(trigger_type, trigger_config)
+    problems.extend(trigger_problems)
     if not isinstance(steps, list) or not steps:
         return problems + ["An automation needs at least one step."]
     if len(steps) > MAX_NODES:
@@ -225,8 +334,8 @@ def validate_graph(steps, trigger_type="manual"):
     return problems
 
 
-def _clean_graph(steps, layout, trigger_type):
-    problems = validate_graph(steps, trigger_type)
+def _clean_graph(steps, layout, trigger_type, trigger_config=None):
+    problems = validate_graph(steps, trigger_type, trigger_config)
     if problems:
         raise AutomationError(" ".join(problems))
     clean_layout = {}
@@ -254,6 +363,8 @@ def _one(row):
             out[key] = json.loads(out.get(key) or ("[]" if key == "steps" else "{}"))
         except (TypeError, ValueError):
             out[key] = [] if key == "steps" else {}
+    out["trigger_label"] = trigger_label(
+        out.get("trigger_type"), out.get("trigger_config"), out.get("org_id"))
     return out
 
 
@@ -264,7 +375,14 @@ def create(org_id, name, steps, layout=None, trigger_type="manual",
     name = (name or "").strip()[:MAX_NAME]
     if not name:
         raise AutomationError("Give the automation a name.")
-    steps, layout = _clean_graph(steps, layout, trigger_type)
+    trigger_type, trigger_config, trigger_problems = normalize_trigger(
+        trigger_type, trigger_config)
+    if trigger_problems:
+        raise AutomationError(" ".join(trigger_problems))
+    form_problem = _form_trigger_problem(org_id, trigger_type, trigger_config)
+    if form_problem:
+        raise AutomationError(form_problem)
+    steps, layout = _clean_graph(steps, layout, trigger_type, trigger_config)
     with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO automations (org_id, name, description, enabled, trigger_type, "
@@ -315,8 +433,15 @@ def update(automation_id, org_id, **fields):
         raise AutomationError("Not found")
     steps = fields.get("steps", current["steps"])
     layout = fields.get("layout", current["layout"])
-    trigger_type = fields.get("trigger_type", current["trigger_type"])
-    steps, layout = _clean_graph(steps, layout, trigger_type)
+    trigger_type, trigger_config, trigger_problems = normalize_trigger(
+        fields.get("trigger_type", current["trigger_type"]),
+        fields.get("trigger_config", current["trigger_config"]))
+    if trigger_problems:
+        raise AutomationError(" ".join(trigger_problems))
+    form_problem = _form_trigger_problem(org_id, trigger_type, trigger_config)
+    if form_problem:
+        raise AutomationError(form_problem)
+    steps, layout = _clean_graph(steps, layout, trigger_type, trigger_config)
     name = (fields.get("name", current["name"]) or "").strip()[:MAX_NAME]
     if not name:
         raise AutomationError("Give the automation a name.")
@@ -329,7 +454,7 @@ def update(automation_id, org_id, **fields):
              fields.get("description", current["description"]) or "",
              1 if fields.get("enabled", current["enabled"]) else 0,
              trigger_type,
-             json.dumps(fields.get("trigger_config", current["trigger_config"])),
+             json.dumps(trigger_config),
              json.dumps(steps), json.dumps(layout), automation_id, org_id),
         )
     return get(automation_id, org_id)
@@ -443,7 +568,9 @@ def _fill_args(args, context):
         return args
     text = json.dumps(args)
     for key, value in (context or {}).items():
-        text = text.replace("{{%s}}" % key, str(value))
+        # A submission with no identifiable answer has contact.id None. Writing the
+        # string "None" into the args made a tag step look like it had a contact.
+        text = text.replace("{{%s}}" % key, "" if value is None else str(value))
     try:
         return json.loads(text)
     except ValueError:
@@ -677,33 +804,42 @@ def _proposal(row):
     if not row:
         return None
     out = dict(row)
-    for key in ("steps", "layout"):
+    for key in ("steps", "layout", "trigger_config"):
         try:
             out[key] = json.loads(out.get(key) or ("[]" if key == "steps" else "{}"))
         except (TypeError, ValueError):
             out[key] = [] if key == "steps" else {}
+    out["trigger_label"] = trigger_label(
+        out.get("trigger_type"), out.get("trigger_config"), out.get("org_id"))
     return out
 
 
-def propose(org_id, name, steps, automation_id=None, created_by=None, job_id=None, note=""):
-    """Store a drafted graph. Returns (proposal, problems); problems means nothing saved.
+def propose(org_id, name, steps, automation_id=None, created_by=None, job_id=None, note="",
+            trigger_type="manual", trigger_config=None):
+    """Store a drafted graph and the trigger it should run on.
 
-    Validation happens here so the *model* hears about a bad graph while it can still fix
-    it, and again in :func:`apply` so a proposal cannot slip past a later edit.
+    Returns ``(proposal, problems)``; problems means nothing saved. Validation happens
+    here so the *model* hears about a bad graph while it can still fix it, and again in
+    :func:`apply_proposal` so a proposal cannot slip past a later edit.
     """
     from db import get_connection
 
-    problems = validate_graph(steps)
+    trigger_type, trigger_config, _ = normalize_trigger(trigger_type, trigger_config)
+    problems = validate_graph(steps, trigger_type, trigger_config)
+    form_problem = _form_trigger_problem(org_id, trigger_type, trigger_config)
+    if form_problem:
+        problems.append(form_problem)
     if problems:
         return None, problems
-    clean_steps, layout = _clean_graph(steps, None, "manual")
+    clean_steps, layout = _clean_graph(steps, None, trigger_type, trigger_config)
     with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO automation_proposals (org_id, automation_id, name, steps, layout, "
-            "status, created_by, job_id, note, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+            "trigger_type, trigger_config, status, created_by, job_id, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
             (org_id, automation_id, (name or "").strip()[:MAX_NAME], json.dumps(clean_steps),
-             json.dumps(layout), created_by, job_id, (note or "")[:500], _now()),
+             json.dumps(layout), trigger_type, json.dumps(trigger_config),
+             created_by, job_id, (note or "")[:500], _now()),
         )
         row = conn.execute("SELECT * FROM automation_proposals WHERE id = ?",
                            (cur.lastrowid,)).fetchone()
@@ -734,23 +870,35 @@ def get_proposal(proposal_id, org_id):
 
 
 def apply_proposal(proposal_id, org_id, requester_id=None):
-    """Turn a pending proposal into a saved automation. (automation, problems)."""
+    """Turn a pending proposal into a saved, enabled automation.
+
+    Approval is the go-live decision: the trigger comes from the draft and the saved
+    automation is switched on. A paused automation can be paused again in one click.
+    """
     from db import get_connection
 
     draft = get_proposal(proposal_id, org_id)
     if not draft or draft["status"] != "pending":
         raise AutomationError("That proposal is not waiting to be applied.")
-    problems = validate_graph(draft["steps"])
+    trigger_type, trigger_config, _ = normalize_trigger(
+        draft.get("trigger_type"), draft.get("trigger_config"))
+    problems = validate_graph(draft["steps"], trigger_type, trigger_config)
+    form_problem = _form_trigger_problem(org_id, trigger_type, trigger_config)
+    if form_problem:
+        problems.append(form_problem)
     if problems:
         raise AutomationError(" ".join(problems))
     if draft["automation_id"]:
         saved = update(draft["automation_id"], org_id, name=draft["name"],
-                       steps=draft["steps"], layout=draft["layout"])
+                       steps=draft["steps"], layout=draft["layout"],
+                       trigger_type=trigger_type, trigger_config=trigger_config,
+                       enabled=True)
         if not saved:
             raise AutomationError("That automation no longer exists.")
     else:
         new_id = create(org_id, draft["name"], draft["steps"], draft["layout"],
-                        created_by=requester_id or draft["created_by"])
+                        trigger_type=trigger_type, trigger_config=trigger_config,
+                        created_by=requester_id or draft["created_by"], enabled=True)
         saved = get(new_id, org_id)
     with get_connection() as conn:
         conn.execute("UPDATE automation_proposals SET status = 'applied' WHERE id = ?",
@@ -776,6 +924,7 @@ def start_for_event(org_id, event, requester_id=None, context=None):
     because the cause is a real person's form submission.
     """
     started = []
+    event = str(event or "").strip().lower()
     try:
         rows = list_for_org(org_id)
     except Exception:
@@ -786,9 +935,15 @@ def start_for_event(org_id, event, requester_id=None, context=None):
         if (automation.get("trigger_type") or "manual") != "event":
             continue
         config = automation.get("trigger_config") or {}
-        wanted = (config.get("event") or "").strip()
+        wanted = str(config.get("event") or "").strip().lower()
         if wanted and wanted != event:
             continue
+        # A trigger that names a form listens to that form only. Without this, every
+        # "when a form is submitted" automation fired for every form on the account.
+        if event == "form.submitted" and config.get("form_id"):
+            submitted = str((context or {}).get("form.id") or "")
+            if submitted != str(config.get("form_id")):
+                continue
         try:
             result = start(automation["id"], org_id, requester_id, context)
             started.append({"automation": automation["id"], "run": result.get("run_id"),

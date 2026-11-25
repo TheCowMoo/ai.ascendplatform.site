@@ -28,6 +28,7 @@ READ_ONLY_TOOLS = frozenset({
     "get_metrics",
     "list_deliverables",
     "list_forms",
+    "list_automations",
     "list_media",
     "list_sites",
     "list_templates",

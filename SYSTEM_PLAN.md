@@ -6,6 +6,7 @@
 Last updated: 2026-10-30
 Status: Stage 1 delivered — rebrand, left-sidebar shell, Business Profile.
 Stack: staged migration to FastAPI + Postgres + arq/Redis + Caddy (see §15).
+AI agents: start at `AGENTS.md`; current maps live in `docs/ai/`.
 
 ---
 
@@ -1070,10 +1071,13 @@ between the two, since their own brand and sites live in the workspace.
 in a single form: name, slug, plan, status, notes, plus the first admin's email and
 password. That last part is the point — `orgs.create_org` seeds the first
 `client_admin` in the same call, because a client with no login is a client you have
-to fix by hand. The client detail page shows their team and can add logins, set
-passwords, and edit the plan/status. Deleting is refused (409) while logins exist, so
-nothing is orphaned. `plan`/`status`/`notes` are data-only today, which is exactly
-what payment wiring will move.
+to fix by hand. The client detail page is split into Overview, Team, Websites, Usage,
+Support and Settings tabs. It can add logins, reset passwords, edit plan/status, add
+credits, inspect that client's domains and support issues, manage the client-visible
+email group, and open the client's workspace. Deleting is refused (409) while logins
+exist, so nothing is orphaned. `plan`/`status`/`notes` are data-only today, which is
+exactly what payment wiring will move. The owner-only domain list accepts
+`?org_id=N`; omitting it preserves the all-client console view.
 
 **Content tabs.** Websites is the existing `sites` view. Blogs, Funnels and Emails are
 one new `deliverables` table filtered by `kind`, and **Library is the same list
