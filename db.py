@@ -886,6 +886,7 @@ analytics_properties = Table(
     Column("tag_container_id", Integer),
     Column("bigquery_project", Text, nullable=False, server_default=_literal("")),
     Column("bigquery_dataset", Text, nullable=False, server_default=_literal("")),
+    Column("bigquery_location", Text, nullable=False, server_default=_literal("")),
     Column("bigquery_link_status", Text, nullable=False, server_default=_literal("")),
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
@@ -932,6 +933,59 @@ analytics_facts = Table(
                      name="uq_analytics_fact"),
     Index("ix_analytics_facts_org_day", "org_id", "day"),
     Index("ix_analytics_facts_source", "source_id"),
+)
+
+analytics_actions = Table(
+    "analytics_actions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("action", Text, nullable=False, server_default=_literal("")),
+    Column("target", Text, nullable=False, server_default=_literal("")),
+    Column("payload", Text, nullable=False, server_default=_literal("{}")),
+    Column("status", Text, nullable=False, server_default=_literal("ok")),
+    Column("result", Text, nullable=False, server_default=_literal("")),
+    Column("actor", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Index("ix_analytics_actions_org", "org_id"),
+)
+
+analytics_alert_rules = Table(
+    "analytics_alert_rules",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("metric", Text, nullable=False, server_default=_literal("pageviews")),
+    Column("comparison", Text, nullable=False, server_default=_literal("drop")),
+    Column("threshold", Float, nullable=False, server_default=text("30")),
+    Column("window_days", Integer, nullable=False, server_default=text("7")),
+    Column("enabled", Integer, nullable=False, server_default=text("1")),
+    Column("email", Integer, nullable=False, server_default=text("0")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    Index("ix_analytics_alert_rules_org", "org_id"),
+)
+
+analytics_alerts = Table(
+    "analytics_alerts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("rule_id", Integer),
+    Column("metric", Text, nullable=False, server_default=_literal("")),
+    Column("title", Text, nullable=False, server_default=_literal("")),
+    Column("detail", Text, nullable=False, server_default=_literal("")),
+    Column("current_value", Float, nullable=False, server_default=text("0")),
+    Column("previous_value", Float, nullable=False, server_default=text("0")),
+    Column("change_pct", Float, nullable=False, server_default=text("0")),
+    Column("period_key", Text, nullable=False, server_default=_literal("")),
+    Column("status", Text, nullable=False, server_default=_literal("open")),
+    Column("notified_at", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    UniqueConstraint("org_id", "rule_id", "period_key",
+                     name="uq_analytics_alert_period"),
+    Index("ix_analytics_alerts_org_status", "org_id", "status"),
 )
 
 # One row per metric per day per dimension: long and narrow so every source answers the

@@ -36,6 +36,7 @@ SCOPE_TAGMANAGER_EDIT_VERSIONS = (
     "https://www.googleapis.com/auth/tagmanager.edit.containerversions"
 )
 SCOPE_TAGMANAGER_PUBLISH = "https://www.googleapis.com/auth/tagmanager.publish"
+SCOPE_BIGQUERY_READONLY = "https://www.googleapis.com/auth/bigquery.readonly"
 
 READ_SCOPES = (SCOPE_ANALYTICS_READONLY, SCOPE_TAGMANAGER_READONLY)
 WRITE_SCOPES = (
@@ -44,6 +45,7 @@ WRITE_SCOPES = (
     SCOPE_TAGMANAGER_EDIT_VERSIONS,
     SCOPE_TAGMANAGER_PUBLISH,
 )
+BIGQUERY_SCOPES = (SCOPE_BIGQUERY_READONLY,)
 # Kept for callers that only know the original single-scope constant.
 SCOPE = SCOPE_ANALYTICS_READONLY
 
@@ -146,8 +148,9 @@ def missing_config():
     return missing
 
 
-def scopes_for(write=False):
-    return list(READ_SCOPES + (WRITE_SCOPES if write else ()))
+def scopes_for(write=False, bigquery=False):
+    return list(READ_SCOPES + (WRITE_SCOPES if write else ())
+                + (BIGQUERY_SCOPES if bigquery else ()))
 
 
 def granted_scopes(connection):
@@ -173,7 +176,7 @@ def new_state():
     return secrets.token_urlsafe(32)
 
 
-def authorization_url(state, callback=None, write=False):
+def authorization_url(state, callback=None, write=False, bigquery=False):
     if not configured():
         raise OAuthError("Google sign-in is not configured. Missing: %s."
                          % ", ".join(missing_config()))
@@ -181,7 +184,7 @@ def authorization_url(state, callback=None, write=False):
         "client_id": (settings.get("GA4_OAUTH_CLIENT_ID") or "").strip(),
         "redirect_uri": callback or redirect_uri(),
         "response_type": "code",
-        "scope": " ".join(scopes_for(write)),
+        "scope": " ".join(scopes_for(write, bigquery=bigquery)),
         "access_type": "offline",
         "include_granted_scopes": "true",
         "prompt": "select_account consent",
@@ -412,6 +415,50 @@ def access_token_for_source(source):
     if not connection:
         raise OAuthError("Google is not connected. Reconnect the account.")
     return access_token_for_connection(connection)
+
+
+def bigquery_token_for_source(source):
+    """A token that may query BigQuery, or an actionable consent message."""
+    connection_id = connection_id_from_source(source or {})
+    connection = get_connection_by_id(connection_id) if connection_id else None
+    if connection and connection.get("connection_scope") != "agency" \
+            and connection.get("org_id") != (source or {}).get("org_id"):
+        connection = None
+    if not connection:
+        connection = get_connection((source or {}).get("org_id"), "client") \
+            or get_agency_connection()
+    if not connection:
+        raise OAuthError("Google is not connected. Reconnect the account.")
+    if not has_scope(connection, SCOPE_BIGQUERY_READONLY):
+        raise OAuthError(
+            "Enable BigQuery access for this Google connection, then try again.")
+    return access_token_for_connection(connection)
+
+
+def write_token_for_org(org_id, scope="client", need_gtm=False):
+    """A token whose grant includes the write scopes needed for setup.
+
+    Read access is not enough: creating a property or publishing a container needs the
+    edit scopes. A client admin gets a clear sentence instead of a Google 403.
+    """
+    connection = (get_agency_connection() if scope == "agency"
+                  else get_connection(org_id, "client"))
+    if not connection:
+        raise OAuthError("Connect Google first.")
+    required = [SCOPE_ANALYTICS_EDIT]
+    if need_gtm:
+        required += [
+            SCOPE_TAGMANAGER_EDIT_CONTAINERS,
+            SCOPE_TAGMANAGER_EDIT_VERSIONS,
+            SCOPE_TAGMANAGER_PUBLISH,
+        ]
+    missing = [item.rsplit("/", 1)[-1] for item in required
+               if not has_scope(connection, item)]
+    if missing:
+        raise OAuthError(
+            "Enable setup and automation first; this Google connection is missing: %s."
+            % ", ".join(missing))
+    return access_token_for_connection(connection), connection
 
 
 def disconnect(org_id, scope="client"):

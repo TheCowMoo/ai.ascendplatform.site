@@ -97,9 +97,16 @@ responsibility:
   snapshots, DNS/vhost/provisioning.
 - `site_logs.py`, `analytics.py`, `ga4.py`, `analytics_oauth.py` — traffic sources.
   `analytics_oauth.py` is the unified Google grant (client or agency, encrypted tokens);
-  `ga4_admin.py` discovers properties, `gtm_admin.py` discovers Tag Manager containers,
-  and `ga4.py` writes curated daily reports into `analytics_facts` plus the legacy
-  `metrics_daily` series.
+  `ga4_admin.py` discovers properties and creates properties/streams/key events/audiences,
+  `gtm_admin.py` discovers containers and creates/publishes GA4 tags, `analytics_setup.py`
+  orchestrates the setup, and `tag_install.py` injects the GTM snippet at publish time and
+  into already-live pages. `bigquery.py` reads the GA4 export into daily aggregate
+  `bq_events`, `bq_pages` and `bq_acquisition` facts. `analytics_alerts.py` produces
+  explainable period-over-period insights, per-client alert rules and the alert inbox; a
+  scheduled `analytics_alerts` job evaluates it; the scheduler also runs the 180-day
+  audit/alert housekeeping. The Manager's `setup_analytics` tool either drafts an approval
+  or runs the setup when the client's `ANALYTICS_AUTONOMY` setting is on. `ga4.py` writes
+  curated daily reports into `analytics_facts` plus the legacy `metrics_daily` series.
 
 ### CRM and communication
 
@@ -126,7 +133,8 @@ responsibility:
 - **CRM/forms:** `contacts`, `contact_sync_state`, `ghl_object_links`, `forms`,
   `form_responses`.
 - **Analytics:** `data_sources`, `oauth_connections`, `analytics_properties`,
-  `tag_containers`, `analytics_facts`, `metrics_daily`, `sync_runs`.
+  `tag_containers`, `analytics_facts`, `analytics_actions`, `analytics_alert_rules`,
+  `analytics_alerts`, `metrics_daily`, `sync_runs`.
 - **Billing:** `usage_events`, `credit_ledger`, `credit_balances`, `rate_card`,
   `usage_reconciliations`.
 - **Platform:** `settings`, `settings_events`, `mail_senders`, `invites`, `password_resets`,

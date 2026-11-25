@@ -18,9 +18,24 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/agents` | owner | `create_agent` | `app.py` |
 | DELETE | `/api/agents/<int:agent_id>` | owner | `delete_agent` | `app.py` |
 | PUT | `/api/agents/<int:agent_id>` | owner | `update_agent` | `app.py` |
+| GET | `/api/analytics/actions` | client_admin | `analytics_action_log` | `app.py` |
+| GET | `/api/analytics/alert-rules` | client_admin | `analytics_alert_rules_list` | `app.py` |
+| POST | `/api/analytics/alert-rules` | client_admin | `analytics_alert_rule_save` | `app.py` |
+| DELETE | `/api/analytics/alert-rules/<int:rule_id>` | client_admin | `analytics_alert_rule_delete` | `app.py` |
+| POST | `/api/analytics/alert-rules/defaults` | client_admin | `analytics_alert_defaults` | `app.py` |
+| GET | `/api/analytics/alerts` | login | `analytics_alerts_list` | `app.py` |
+| POST | `/api/analytics/alerts/<int:alert_id>/<status>` | client_admin | `analytics_alert_status` | `app.py` |
+| POST | `/api/analytics/alerts/evaluate` | client_admin | `analytics_alerts_evaluate` | `app.py` |
+| POST | `/api/analytics/bigquery/sync` | client_admin | `sync_google_bigquery` | `app.py` |
+| GET | `/api/analytics/google/accounts` | client_admin | `google_analytics_accounts` | `app.py` |
+| POST | `/api/analytics/google/bigquery-link` | client_admin | `link_google_bigquery` | `app.py` |
 | POST | `/api/analytics/google/connect` | client_admin | `connect_google_analytics_property` | `app.py` |
 | GET | `/api/analytics/google/containers` | client_admin | `google_tag_containers` | `app.py` |
+| GET | `/api/analytics/google/gtm-accounts` | client_admin | `google_tag_manager_accounts` | `app.py` |
 | GET | `/api/analytics/google/properties` | client_admin | `google_analytics_properties` | `app.py` |
+| POST | `/api/analytics/google/setup` | client_admin | `setup_google_analytics` | `app.py` |
+| POST | `/api/analytics/google/tag/install` | client_admin | `install_google_tag` | `app.py` |
+| GET | `/api/analytics/insights` | login | `analytics_insights` | `app.py` |
 | GET | `/api/analytics/oauth/google/callback` | login (manual session check) | `google_analytics_oauth_callback` | `app.py` |
 | POST | `/api/analytics/oauth/google/start` | client_admin | `start_google_analytics_oauth` | `app.py` |
 | GET | `/api/analytics/oauth/notice` | client_admin | `google_analytics_oauth_notice` | `app.py` |
@@ -264,6 +279,8 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | `GA4_OAUTH_REDIRECT_URI` | Google OAuth redirect URI | platform | no | Analytics |
 | `GA4_SERVICE_ACCOUNT_KEY_PATH` | GA4 service-account key path | platform | no | Analytics |
 | `GA4_SERVICE_ACCOUNT_EMAIL` | GA4 service-account email | platform | no | Analytics |
+| `ANALYTICS_AUTONOMY` | Let the AI change GA4 and Tag Manager | client | no | Analytics automation |
+| `ANALYTICS_ALERTS_ENABLED` | Enable analytics alerts | client | no | Analytics automation |
 | `SERVER_IP` | Public IP of this server | platform | no | Servers & hosting |
 | `SSH_TIMEOUT` | SSH connect timeout (seconds) | platform | no | Servers & hosting |
 | `SSH_CMD_TIMEOUT` | SSH command timeout (seconds) | platform | no | Servers & hosting |
@@ -293,6 +310,9 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `action_approvals`
 - `agent_tools`
 - `agents`
+- `analytics_actions`
+- `analytics_alert_rules`
+- `analytics_alerts`
 - `analytics_facts`
 - `analytics_properties`
 - `assistant_messages`
@@ -372,6 +392,9 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_launch_guards`
 - `test_analytics_sources`
 - `test_ga4_oauth`
+- `test_google_setup`
+- `test_bigquery`
+- `test_alerts`
 - `test_ai_reference`
 - `test_client_brief`
 - `test_read_only_jobs`
@@ -421,11 +444,13 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 ## Python test files
 
 - `test_ai_reference`
+- `test_alerts`
 - `test_analytics_sources`
 - `test_artifact_paths`
 - `test_auto_provision`
 - `test_automation_copy`
 - `test_automation_graph`
+- `test_bigquery`
 - `test_brand_contrast`
 - `test_bugs`
 - `test_build_api`
@@ -445,6 +470,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_form_hosting`
 - `test_form_logic`
 - `test_ga4_oauth`
+- `test_google_setup`
 - `test_graph_canvas`
 - `test_job_enqueue`
 - `test_launch_guards`

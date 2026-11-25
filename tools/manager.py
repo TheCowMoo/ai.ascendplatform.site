@@ -175,6 +175,149 @@ def _build_get_metrics(emit, job_id=None):
     return get_metrics
 
 
+def _build_list_google_accounts(emit, job_id=None):
+    async def list_google_accounts() -> str:
+        """List the Google Analytics accounts and Tag Manager accounts this client can use."""
+        import analytics_oauth
+        import ga4_admin
+        import gtm_admin
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "This chat is not attached to a client, so there is no Google grant."
+        try:
+            token = analytics_oauth.access_token_for_org(org_id)
+            connection = (analytics_oauth.get_connection(org_id, "client")
+                          or analytics_oauth.get_agency_connection())
+            write_ready = bool(connection) and all(
+                analytics_oauth.has_scope(connection, scope)
+                for scope in analytics_oauth.WRITE_SCOPES)
+            return json.dumps({
+                "write_ready": write_ready,
+                "analytics_accounts": ga4_admin.list_accounts(token),
+                "tag_manager_accounts": gtm_admin.list_accounts(token),
+            }, indent=1)
+        except Exception as exc:
+            return "Google is not ready for setup: %s" % exc
+
+    return list_google_accounts
+
+
+def _build_setup_analytics(emit, job_id=None):
+    async def setup_analytics(account: str, property_name: str, site_id: int = 0,
+                              gtm_account_id: str = "", container_name: str = "",
+                              key_events: str = "form_submit",
+                              audience_event: str = "",
+                              make_container: bool = True) -> str:
+        """Create a GA4 property and publish a GTM container for this client.
+
+        This is a live Google write. With analytics autonomy off it only drafts an
+        approval; with it on the setup runs directly. ``account`` and
+        ``gtm_account_id`` come from list_google_accounts, and ``site_id`` from
+        list_sites. Live actions must be enabled.
+        """
+        import analytics as analytics_service
+        import analytics_oauth
+        import analytics_setup
+        import settings
+
+        org_id, requester = _context(job_id)
+        if org_id is None:
+            return "This chat is not attached to a client, so there is nothing to set up."
+        if not requester:
+            return "This turn has no signed-in requester, so it cannot start a live setup."
+        with get_connection() as conn:
+            role_row = conn.execute("SELECT role FROM users WHERE id = ?",
+                                    (requester,)).fetchone()
+        if not role_row or role_row["role"] not in ("owner", "admin", "client_admin"):
+            return "Only a client admin or the platform operator can start a Google setup."
+        if not str(property_name or "").strip():
+            return "A new GA4 property needs a name."
+        if actions.is_dry_run():
+            return ("Live actions are disabled. Ask the operator to enable "
+                    "ALLOW_LIVE_ACTIONS before creating Google resources.")
+        if analytics_service.recent_action_count(
+                org_id, "ga4_create_property", minutes=60) >= 3:
+            return ("This client has already had three GA4 setup attempts in the last "
+                    "hour. Wait before trying again.")
+        site = None
+        if int(site_id or 0):
+            site = sites_service.get_site(int(site_id))
+            if not site or site.get("org_id") != org_id:
+                return "That website is not this client's."
+        if make_container and not str(gtm_account_id or "").strip():
+            return ("Choose a Tag Manager account, or pass make_container=false to create "
+                    "only the GA4 property.")
+        payload = {
+            "account": str(account or ""),
+            "property_name": str(property_name).strip(),
+            "site_id": (site or {}).get("id"),
+            "gtm_account_id": str(gtm_account_id or ""),
+            "container_name": str(container_name or ""),
+            "key_events": str(key_events or "form_submit"),
+            "audience_event": str(audience_event or ""),
+            "make_container": bool(make_container),
+        }
+        if not settings.get_bool("ANALYTICS_AUTONOMY", False, org_id=org_id):
+            for pending in actions.list_approvals("pending", org_id=org_id):
+                if pending.get("tool") != "analytics_setup":
+                    continue
+                try:
+                    if json.loads(pending.get("args_json") or "{}") == payload:
+                        return ("That exact setup is already waiting in Approvals "
+                                "(#%s). Nothing has been created." % pending["id"])
+                except (TypeError, ValueError):
+                    continue
+            approval_id = actions.request_approval(
+                "analytics_setup",
+                "Create GA4 property %s and Tag Manager setup for this client"
+                % payload["property_name"], payload, job_id)
+            return ("Drafted the Google setup as approval #%d. Nothing has been created. "
+                    "Ask the user to approve it in Approvals; approving runs the setup."
+                    % approval_id)
+        try:
+            token, connection = analytics_oauth.write_token_for_org(
+                org_id, need_gtm=bool(make_container))
+            result = analytics_setup.setup(
+                org_id, "client", token, connection,
+                requester or "assistant", payload, site)
+        except (analytics_oauth.OAuthError, analytics_setup.SetupError) as exc:
+            return "Google setup did not run: %s" % exc
+        except Exception as exc:
+            return "Google setup failed: %s" % exc
+        if result.get("errors"):
+            return ("The property was created, but: %s"
+                    % "; ".join(result["errors"]))
+        return ("Created GA4 property %s and %s."
+                % ((result.get("property") or {}).get("display_name") or payload["property_name"],
+                   ("published container %s"
+                    % ((result.get("container") or {}).get("public_id") or ""))
+                   if make_container else "no Tag Manager container"))
+
+    return setup_analytics
+
+
+def _build_get_insights(emit, job_id=None):
+    async def get_insights(days: int = 7) -> str:
+        """Explain what changed in this client's analytics and list open alerts."""
+        import analytics_alerts
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "This chat is not attached to a client, so there are no insights."
+        days = max(1, min(90, int(days or 7)))
+        data = analytics_alerts.insights(org_id, days=days)
+        return json.dumps({
+            "since": data.get("since"),
+            "days": data.get("days"),
+            "insights": data.get("insights") or [],
+            "open_alerts": analytics_alerts.list_alerts(
+                org_id, status="open", limit=10),
+        }, indent=1)
+
+    return get_insights
+
+
 def _build_start_job(emit, job_id=None):
     async def start_job(prompt: str, title: str = "", deliverable_id: int = 0,
                         edit: bool = True) -> str:
@@ -964,6 +1107,20 @@ register("list_deliverables",
 register("get_metrics",
          "This client's traffic for the last N days, compared with the window before it.",
          _build_get_metrics)
+register("get_insights",
+         "Explain what changed in this client's analytics (pageviews, sessions, errors, "
+         "top page/event) and list open alerts. No writes.",
+         _build_get_insights)
+register("list_google_accounts",
+         "List the Google Analytics and Tag Manager accounts this client can use for a "
+         "new property or container. Also says whether write scopes are granted.",
+         _build_list_google_accounts)
+register("setup_analytics",
+         "Create a GA4 property/web stream and publish a GTM container with GA4 tags for "
+         "this client, then install the snippet. This is a live Google write. With "
+         "ANALYTICS_AUTONOMY off it only drafts an approval for the user; with it on it "
+         "runs directly. Use list_google_accounts and list_sites first.",
+         _build_setup_analytics)
 register("start_job",
          "Hand work to the agent team - writing, reviewing a site, building a page. "
          "Returns the new job id. For a review, QA or audit, pass edit=False: the child "

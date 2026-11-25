@@ -126,15 +126,15 @@ def test_listing_masks_secrets(client):
     body = client.get("/api/settings").get_json()
     print("groups     ->", [(g["id"], len(g["fields"])) for g in body["groups"]])
 
-    # SMTP is the only group a client sees. The per-client GHL integration remains
-    # client-scoped for the backend but is explicitly hidden from the client UI/API.
-    client_groups = {"email", "client_email_ghl"}
+    # SMTP and the analytics autonomy toggle are the client-facing groups. The per-client
+    # GHL integration remains client-scoped for the backend but is explicitly hidden.
+    client_groups = {"email", "client_email_ghl", "analytics_automation"}
     for group in settings.SPEC:
         if group["id"] in client_groups:
             assert settings.group_scope(group) == settings.CLIENT, group["id"]
         else:
             assert settings.group_scope(group) == settings.PLATFORM, group["id"]
-    print("scopes     -> only the client's email groups are client-scoped; GHL is hidden")
+    print("scopes     -> email and analytics automation are client-scoped; GHL is hidden")
 
 
 def test_saved_key_applies_without_restart(client):
@@ -237,12 +237,15 @@ def test_test_button(client):
     print("  unknown -> ok=False (reported, not raised)")
 
 
-def test_client_panel_is_smtp_only():
-    """A client gets one advanced door: email. Model keys and GHL stay backend-only."""
+def test_client_panel_is_smtp_and_autonomy():
+    """A client gets email plus the analytics autonomy switch; keys stay backend-only."""
     groups = settings.all_for_ui(999999)
-    assert [group["id"] for group in groups] == ["email"], [g["id"] for g in groups]
+    assert [group["id"] for group in groups] == ["email", "analytics_automation"], \
+        [g["id"] for g in groups]
     keys = {field["key"] for group in groups for field in group["fields"]}
-    assert all(key.startswith("SMTP_") for key in keys), keys
+    assert "ANALYTICS_AUTONOMY" in keys, keys
+    assert all(key.startswith("SMTP_") or key in (
+        "ANALYTICS_AUTONOMY", "ANALYTICS_ALERTS_ENABLED") for key in keys), keys
     assert "GHL_CLIENT_API_TOKEN" not in keys
     group = next(g for g in settings.SPEC if g["id"] == "client_email_ghl")
     assert group.get("client_visible") is False, group
@@ -251,7 +254,7 @@ def test_client_panel_is_smtp_only():
         os.path.abspath(__file__))), "admin", "admin.js"), encoding="utf-8").read()
     assert "function viewClientSettings" in script, "the client Settings view is missing"
     assert "Email sending" in script, "the client Settings page is not white-labelled"
-    print("client     -> SMTP only; model and GHL groups are backend-only")
+    print("client     -> SMTP and analytics autonomy; model and GHL groups are backend-only")
 
 
 def test_audit_trail():
@@ -306,7 +309,7 @@ if __name__ == "__main__":
     try:
         test_requires_admin(admin)
         test_listing_masks_secrets(admin)
-        test_client_panel_is_smtp_only()
+        test_client_panel_is_smtp_and_autonomy()
         test_saved_key_applies_without_restart(admin)
         test_a_panel_key_reaches_the_agent_layer(admin)
         test_validation(admin)

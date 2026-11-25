@@ -102,7 +102,8 @@ SYSTEM = (
     "have them, and say so when you do not."
 )
 
-GRANTED = ("list_sites", "list_deliverables", "get_metrics", "start_job",
+GRANTED = ("list_sites", "list_deliverables", "get_metrics", "get_insights", "start_job",
+           "list_google_accounts", "setup_analytics",
            "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
            "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
            "create_template", "list_templates", "create_contact", "create_site",

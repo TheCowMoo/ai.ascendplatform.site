@@ -12,6 +12,7 @@ no user-level rows, so no PII can accumulate here even by accident.
 
 from db import get_connection, now_str
 
+import datetime
 import json
 
 KINDS = ("ghl", "caddy", "ga4", "meta")
@@ -142,19 +143,37 @@ def _dimension_key(dimensions):
                     for key in sorted(dimensions or {}))
 
 
-def record_facts(org_id, source_id, facts):
-    """Idempotent upsert of ``[(report, metric, dimensions, day, value), ...]``."""
+def record_facts(org_id, source_id, facts, upsert=False):
+    """Idempotent upsert of ``[(report, metric, dimensions, day, value), ...]``.
+
+    ``upsert`` is for the BigQuery export: a daily table can be revised after the first
+    read, so the newer aggregate replaces the older one instead of being ignored.
+    """
     written = 0
     with get_connection() as conn:
         for report, metric, dimensions, day, value in facts:
             dimensions = dimensions or {}
-            conn.execute(
-                "INSERT OR IGNORE INTO analytics_facts "
-                "(org_id, source_id, report, metric, dimensions, dimension_key, day, value) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (org_id, source_id, report, metric, json.dumps(dimensions, sort_keys=True),
-                 _dimension_key(dimensions), day, float(value or 0)),
-            )
+            key = _dimension_key(dimensions)
+            payload = json.dumps(dimensions, sort_keys=True)
+            if upsert:
+                conn.execute(
+                    "INSERT INTO analytics_facts "
+                    "(org_id, source_id, report, metric, dimensions, dimension_key, "
+                    "day, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(org_id, source_id, report, metric, dimension_key, day) "
+                    "DO UPDATE SET value = excluded.value, "
+                    "dimensions = excluded.dimensions",
+                    (org_id, source_id, report, metric, payload, key, day,
+                     float(value or 0)),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO analytics_facts "
+                    "(org_id, source_id, report, metric, dimensions, dimension_key, "
+                    "day, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (org_id, source_id, report, metric, payload, key, day,
+                     float(value or 0)),
+                )
             written += 1
     return written
 
@@ -220,6 +239,7 @@ def save_property(data):
         data.get("tag_container_id"),
         str(data.get("bigquery_project") or "").strip(),
         str(data.get("bigquery_dataset") or "").strip(),
+        str(data.get("bigquery_location") or "").strip(),
         str(data.get("bigquery_link_status") or "").strip(),
         now_str(),
     )
@@ -228,17 +248,27 @@ def save_property(data):
             conn.execute(
                 "UPDATE analytics_properties SET property_id = ?, display_name = ?, "
                 "account_name = ?, time_zone = ?, currency_code = ?, tag_container_id = ?, "
-                "bigquery_project = ?, bigquery_dataset = ?, bigquery_link_status = ?, "
-                "updated_at = ? WHERE id = ?",
+                "bigquery_project = ?, bigquery_dataset = ?, bigquery_location = ?, "
+                "bigquery_link_status = ?, updated_at = ? WHERE id = ?",
                 values[2:] + (existing["id"],),
             )
         else:
             conn.execute(
                 "INSERT INTO analytics_properties (org_id, source_id, property_id, "
                 "display_name, account_name, time_zone, currency_code, tag_container_id, "
-                "bigquery_project, bigquery_dataset, bigquery_link_status, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values,
+                "bigquery_project, bigquery_dataset, bigquery_location, "
+                "bigquery_link_status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values,
             )
+    return property_for_source(source_id)
+
+
+def update_bigquery_status(source_id, status):
+    """Record the latest export/sync state on the property row."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE analytics_properties SET bigquery_link_status = ?, updated_at = ? "
+            "WHERE source_id = ?", (str(status or "")[:500], now_str(), source_id))
     return property_for_source(source_id)
 
 
@@ -294,6 +324,68 @@ def save_container(data):
         row = conn.execute("SELECT * FROM tag_containers WHERE id = ?",
                            (stored_id,)).fetchone()
     return {key: row[key] for key in row.keys()} if row else None
+
+
+def record_action(org_id, action, target="", payload=None, status="ok", result="", actor=""):
+    """Record a GA4/GTM/site write. Never raises into the caller's happy path."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO analytics_actions (org_id, action, target, payload, status, "
+                "result, actor) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (org_id, str(action or "")[:80], str(target or "")[:300],
+                 json.dumps(payload or {}), str(status or "ok")[:40],
+                 str(result or "")[:1000], str(actor or "")[:120]),
+            )
+    except Exception:
+        return False
+    return True
+
+
+def actions(org_id, limit=50):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analytics_actions WHERE org_id = ? ORDER BY id DESC LIMIT ?",
+            (org_id, max(1, int(limit))),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = {key: row[key] for key in row.keys()}
+        try:
+            item["payload"] = json.loads(item.get("payload") or "{}")
+        except (TypeError, ValueError):
+            item["payload"] = {}
+        out.append(item)
+    return out
+
+
+def recent_action_count(org_id, action=None, minutes=60):
+    """How many setup writes this client has recorded in the recent window."""
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(minutes=max(1, int(minutes or 60)))
+              ).strftime("%Y-%m-%d %H:%M:%S")
+    query = "SELECT COUNT(*) FROM analytics_actions WHERE org_id = ? AND created_at >= ?"
+    params = [org_id, cutoff]
+    if action:
+        query += " AND action = ?"
+        params.append(action)
+    with get_connection() as conn:
+        return int(conn.execute(query, tuple(params)).fetchone()[0])
+
+
+def prune_actions(days=180, org_id=None):
+    """Delete old write-audit rows. Open operational history is kept for ``days``."""
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=max(1, int(days or 180)))
+              ).strftime("%Y-%m-%d %H:%M:%S")
+    query = "DELETE FROM analytics_actions WHERE created_at < ?"
+    params = [cutoff]
+    if org_id is not None:
+        query += " AND org_id = ?"
+        params.append(org_id)
+    with get_connection() as conn:
+        cur = conn.execute(query, tuple(params))
+        return cur.rowcount or 0
 
 
 def metrics(org_id, since, source=None, metric=None, limit=5000):

@@ -502,7 +502,15 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
     path = provisioner.join_path(docroot, relative)
     url = "https://%s/%s" % (site["domain"], "" if relative == "index.html" else relative)
     current = target.read_file(path)
-    content = item.get("content") or ""
+    raw_content = item.get("content") or ""
+    content = raw_content
+    try:
+        import tag_install
+
+        container = tag_install.container_for_org(item.get("org_id"))
+        content = tag_install.inject(raw_content, (container or {}).get("public_id"))
+    except Exception:
+        content = raw_content
     if (current.strip()
             and not provisioner.is_starter_content(current)
             and current.strip() != content.strip()

@@ -95,9 +95,92 @@ def _loop(hours):
             queued = queue_reviews()
             if queued:
                 print("[scheduler] queued %d weekly review(s)" % queued)
+            alert_jobs = queue_alerts()
+            if alert_jobs:
+                print("[scheduler] queued %d analytics alert run(s)" % alert_jobs)
+            housekeeping()
         except Exception as exc:  # pragma: no cover - defensive
             print("[scheduler] sync cycle crashed: %s: %s" % (type(exc).__name__, exc))
         time.sleep(hours * 3600)
+
+
+def queue_alerts(now=None):
+    """Queue at most one analytics-alert evaluation per client every 20 hours."""
+    import datetime as _dt
+
+    import analytics
+    import analytics_alerts  # noqa: F401  (registers the task)
+    import jobs
+    import orgs
+    from db import get_connection
+
+    moment = now or _dt.datetime.now(_dt.timezone.utc)
+    cutoff = (moment - _dt.timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
+    queued = 0
+    for org in orgs.list_orgs(limit=500):
+        if org.get("status") != "active":
+            continue
+        org_id = org.get("id")
+        try:
+            import settings
+            if not settings.get_bool("ANALYTICS_ALERTS_ENABLED", True, org_id=org_id):
+                continue
+            sources = analytics.sources(org_id)
+        except Exception:
+            continue
+        if not any(source.get("enabled") for source in sources):
+            continue
+        with get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM jobs WHERE task = ? AND org_id = ? AND created_at >= ?",
+                ("analytics_alerts", org_id, cutoff),
+            ).fetchone()
+        if existing:
+            continue
+        try:
+            job_id = jobs.create_job(
+                "Analytics alerts: %s" % (org.get("name") or "client"),
+                "Evaluate analytics alert rules",
+                None,
+                "selector",
+                "analytics_alerts",
+                org_id=org_id,
+            )
+            jobs.submit(job_id)
+        except Exception:
+            # One broken client must not stop the queue for everyone else.
+            continue
+        queued += 1
+    return queued
+
+
+_last_housekeeping = ""
+
+
+def housekeeping(now=None):
+    """Once a day, drop old audit/alert history. Cheap and safe to call hourly."""
+    global _last_housekeeping
+    import datetime as _dt
+
+    moment = now or _dt.datetime.now(_dt.timezone.utc)
+    stamp = moment.strftime("%Y-%m-%d")
+    if _last_housekeeping == stamp:
+        return {"skipped": True, "actions": 0, "alerts": 0}
+    _last_housekeeping = stamp
+    import analytics
+    import analytics_alerts
+
+    actions_removed = 0
+    alerts_removed = 0
+    try:
+        actions_removed = analytics.prune_actions(180)
+    except Exception:
+        pass
+    try:
+        alerts_removed = analytics_alerts.prune_alerts(180)
+    except Exception:
+        pass
+    return {"skipped": False, "actions": actions_removed, "alerts": alerts_removed}
 
 
 def queue_reviews(now=None):
@@ -233,6 +316,14 @@ def start_verifier():
 
                 automations.run_due()
                 automations.wake_due()
+            except Exception:
+                pass
+            try:
+                queue_alerts()
+            except Exception:
+                pass
+            try:
+                housekeeping()
             except Exception:
                 pass
             try:

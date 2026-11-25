@@ -131,9 +131,10 @@ def test_client_settings_use_the_same_org_scope():
     assert response.status_code == 200, response.get_data(as_text=True)
     body = response.get_json()
     assert body["scoped_to"] == STATE["alpha"]["id"], body
-    assert [group["id"] for group in body["groups"]] == ["email"], body
+    assert [group["id"] for group in body["groups"]] == ["email", "analytics_automation"], body
     keys = {field["key"] for group in body["groups"] for field in group["fields"]}
-    assert all(key.startswith("SMTP_") for key in keys), keys
+    assert all(key.startswith("SMTP_") or key in (
+        "ANALYTICS_AUTONOMY", "ANALYTICS_ALERTS_ENABLED") for key in keys), keys
 
     alpha = login(ALPHA_EMAIL, "client-detail-alpha-pass")
     response = alpha.get("/api/settings?org_id=%d" % STATE["beta"]["id"])

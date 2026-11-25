@@ -297,6 +297,11 @@ function send() {
 
 function finish() {
   post(STATE.submit, function (data) {
+    // The GTM event tag waits for this name. Push before replacing the form so the
+    // dataLayer event is part of the same submission, not a later page view.
+    window.dataLayer = window.dataLayer || [];
+    window.dataLayer.push({ event: 'form_submit', form_id: STATE.form_id,
+                            form_name: STATE.name });
     var app = document.getElementById('app');
     app.innerHTML = '';
     app.appendChild(el('h1', null, STATE.name));
@@ -323,14 +328,16 @@ render(STATE);
 """
 
 
-def page(form, payload, step_url, submit_url):
+def page(form, payload, step_url, submit_url, gtm_id=""):
     """The whole visitor page, with its first step baked in.
 
     Name and description travel as text and are applied with textContent, so a client who
-    calls a form ``<script>`` gets a title rather than an injection.
+    calls a form ``<script>`` gets a title rather than an injection. ``gtm_id`` is the
+    client's selected container; the page still works without one.
     """
     settings = form.get("settings") or {}
     state = {
+        "form_id": form.get("id"),
         "name": str(form.get("name") or "Form"),
         "description": str(settings.get("description") or ""),
         "step": step_url,
@@ -339,8 +346,13 @@ def page(form, payload, step_url, submit_url):
         "progress": payload.get("progress") or {"step": 0, "total": 0},
         "submit_label": payload.get("submit_label") or "Send",
     }
-    return (PAGE
+    body = (PAGE
             .replace("__ACCENT__", _accent(settings.get("brand")))
             .replace("__TITLE__", html.escape(state["name"]))
             .replace("__STATE__", json.dumps(state).replace("</", "<\\/")))
+    if gtm_id:
+        import tag_install
+
+        body = tag_install.inject(body, gtm_id)
+    return body
 

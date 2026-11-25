@@ -29,6 +29,7 @@ import agents  # noqa: F401  (registers agent_team, site_provision)
 import manager  # noqa: F401  (registers chat)
 import automations  # noqa: F401  (registers automation)
 import review  # noqa: F401  (registers site_review)
+import analytics_alerts  # noqa: F401  (registers analytics_alerts)
 import build_service  # noqa: F401  (registers the guided build task)
 import contact_sync  # noqa: F401  (registers the contact mirror task)
 

@@ -6833,9 +6833,10 @@
   }
 
   // Start a Google consent for a client or the agency grant. Read scopes first; the
-  // write upgrade is a separate, explicit action in a later phase.
-  function startGoogleAnalytics(scope) {
-    var payload = { connection_scope: scope, write: false };
+  // write upgrade is a separate, explicit action when the user asks for setup/automation.
+  function startGoogleAnalytics(scope, write, bigquery) {
+    var payload = { connection_scope: scope, write: !!write,
+                    bigquery: !!bigquery };
     if (scope === 'client') {
       var workspace = isOwner(state.user) ? state.user.acting_org
         : (state.user.org && state.user.org.id);
@@ -6909,6 +6910,160 @@
           if (onDone) onDone();
         }).catch(function (e) { fail(e.message); });
       }, 'Connect property');
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  // Create a GA4 property and, optionally, a GTM container with GA4 config/event tags,
+  // publish it, and install the snippet on the site's live pages. One explicit button:
+  // the person clicking it is the approval for the whole setup.
+  function createGoogleSetup(scope, onDone) {
+    Promise.all([
+      api('GET', '/api/analytics/google/accounts?connection_scope=' + scope),
+      api('GET', '/api/analytics/google/gtm-accounts?connection_scope=' + scope)
+        .catch(function () { return { accounts: [] }; }),
+      api('GET', '/api/sites').catch(function () { return { sites: [] }; })
+    ]).then(function (results) {
+      var accounts = (results[0] || {}).accounts || [];
+      var gtmAccounts = (results[1] || {}).accounts || [];
+      var sites = (results[2] || {}).sites || [];
+      if (!accounts.length) {
+        toast('No Google Analytics account is available to own a new property. ' +
+              'Create one in Google Analytics, then try again.', false);
+        return;
+      }
+      var firstSite = sites[0] || null;
+      var timezone = 'Etc/UTC';
+      try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || timezone; }
+      catch (e) { /* older browsers */ }
+      var fields = [{
+        name: 'account', label: 'Google Analytics account', type: 'select',
+        options: accounts.map(function (a) {
+          return { value: a.account, label: a.display_name || a.account_id };
+        })
+      }];
+      if (sites.length) {
+        fields.push({
+          name: 'site', label: 'Website to tag', type: 'select',
+          options: [{ value: '', label: 'No website yet' }].concat(
+            sites.map(function (s) {
+              return { value: String(s.id), label: s.domain };
+            })),
+          value: firstSite ? String(firstSite.id) : '',
+          help: 'The snippet is installed now and on every future publish.'
+        });
+      }
+      fields.push({
+        name: 'property_name', label: 'New GA4 property name',
+        value: firstSite ? firstSite.domain : ''
+      });
+      fields.push({ name: 'time_zone', label: 'Time zone', value: timezone });
+      fields.push({ name: 'currency_code', label: 'Currency code', value: 'USD' });
+      fields.push({
+        name: 'key_events', label: 'Key events', value: 'form_submit',
+        help: 'Comma separated. Each one becomes a GA4 key event and a GTM event tag; ' +
+              'the tag fires when the page pushes that event to dataLayer.'
+      });
+      fields.push({
+        name: 'audience_event', label: 'Create an audience for', value: 'form_submit',
+        help: 'Optional. Leave blank to skip the audience.'
+      });
+      if (gtmAccounts.length) {
+        fields.push({
+          name: 'make_container', label: 'Tag Manager', type: 'select',
+          options: [
+            { value: 'yes', label: 'Create and publish a new container' },
+            { value: 'no', label: 'Create the property only' }
+          ], value: 'yes'
+        });
+        fields.push({
+          name: 'gtm_account_id', label: 'Tag Manager account', type: 'select',
+          options: gtmAccounts.map(function (a) {
+            return { value: a.account_id, label: a.display_name || a.account_id };
+          })
+        });
+        fields.push({
+          name: 'container_name', label: 'Container name',
+          value: firstSite ? firstSite.domain : 'Website'
+        });
+      }
+      formModal('Set up Google Analytics', fields, function (data, fail, ok) {
+        var site = sites.filter(function (s) {
+          return String(s.id) === String(data.site);
+        })[0] || null;
+        var account = accounts.filter(function (a) {
+          return a.account === data.account;
+        })[0] || {};
+        var makeContainer = data.make_container === 'yes' && !!gtmAccounts.length;
+        var payload = {
+          connection_scope: scope,
+          site_id: site ? site.id : null,
+          account: data.account,
+          account_name: account.display_name || '',
+          property_name: data.property_name,
+          time_zone: data.time_zone,
+          currency_code: data.currency_code,
+          key_events: data.key_events,
+          audience_event: data.audience_event,
+          make_container: makeContainer,
+          gtm_account_id: makeContainer ? data.gtm_account_id : '',
+          container_name: makeContainer ? data.container_name : ''
+        };
+        api('POST', '/api/analytics/google/setup', payload).then(function (result) {
+          ok();
+          var tag = result.tag || {};
+          if (result.errors && result.errors.length) {
+            toast('Property created, but ' + result.errors[0], false);
+          } else if (tag.dry_run) {
+            toast('Property and container created. Tag installation is dry-run; ' +
+                  'enable live actions to write the pages.', false);
+          } else if (tag.updated) {
+            toast('GA4 and Tag Manager are set up; the snippet is on ' + tag.updated +
+                  ' page(s).', true);
+          } else {
+            toast('GA4 and Tag Manager are set up. The snippet will be added on the ' +
+                  'next publish.', true);
+          }
+          if (onDone) onDone();
+        }).catch(function (e) { fail(e.message); });
+      }, 'Create & publish');
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+
+  // Re-run tag installation for a client that already has a container selected.
+  function installGoogleTag(onDone) {
+    api('GET', '/api/sites').then(function (d) {
+      var sites = d.sites || [];
+      if (!sites.length) {
+        toast('Add a domain in the Website tab first - the snippet needs a site.', false);
+        return;
+      }
+      formModal('Install Tag Manager snippet', [{
+        name: 'site', label: 'Website', type: 'select',
+        options: sites.map(function (s) {
+          return { value: String(s.id), label: s.domain };
+        }),
+        help: 'Rewrites the live pages in place. Publishing later also adds the snippet.'
+      }], function (data, fail, ok) {
+        var site = sites.filter(function (s) {
+          return String(s.id) === String(data.site);
+        })[0] || sites[0];
+        api('POST', '/api/analytics/google/tag/install', { site_id: site.id })
+          .then(function (result) {
+            ok();
+            if (result.dry_run) {
+              toast('Dry-run: no pages changed. Enable live actions first.', false);
+            } else if (result.errors && result.errors.length) {
+              toast('Installed with issues: ' + result.errors[0], false);
+            } else if (result.updated) {
+              toast('Tag installed on ' + result.updated + ' page(s).', true);
+            } else {
+              toast('No published pages needed changing; the snippet will be added on ' +
+                    'the next publish.', true);
+            }
+            if (onDone) onDone();
+          }).catch(function (e) { fail(e.message); });
+      }, 'Install snippet');
     }).catch(function (e) { toast(e.message, false); });
   }
 
@@ -7049,10 +7204,18 @@
     var oauthReady = false;
     var clientOauth = false;
     var agencyOauth = false;
-    var oauthWriteReady = false;
+    var clientWriteReady = false;
+    var agencyWriteReady = false;
+    var clientBigqueryReady = false;
+    var agencyBigqueryReady = false;
+    var liveReady = true;
     var properties = [];
     var containers = [];
     var reportData = { reports: {} };
+    var actionLog = [];
+    var insightsData = { insights: [] };
+    var alerts = [];
+    var alertRules = [];
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Analytics</h2><p class="muted">' +
       (owner ? 'Traffic for this client, compared with the previous 7 days.'
@@ -7133,6 +7296,71 @@
         .finally(function () { button.disabled = false; });
     }
 
+    function linkBigQuery(source, meta, scope, onDone) {
+      if (!scope) {
+        toast('Connect Google before linking BigQuery', false);
+        return;
+      }
+      var ready = scope === 'client' ? clientBigqueryReady : agencyBigqueryReady;
+      if (!ready) {
+        if (!confirm('Google will ask for BigQuery read access and Analytics edit. ' +
+                     'Continue?')) return;
+        startGoogleAnalytics(scope, true, true);
+        return;
+      }
+      var propertyId = String(meta.property_id || '').split('/').pop();
+      formModal('Link GA4 to BigQuery', [{
+        name: 'project', label: 'Google Cloud project ID',
+        placeholder: 'my-project-123',
+        help: 'The project that will own analytics_' + propertyId + '.'
+      }, {
+        name: 'location', label: 'BigQuery dataset location', type: 'select',
+        options: ['US', 'EU', 'europe-west1', 'us-central1', 'asia-northeast1'],
+        value: 'US',
+        help: 'Must match the dataset GA4 creates; changing it later needs a new link.'
+      }, {
+        name: 'daily_export', label: 'Daily export', type: 'select',
+        options: [{ value: 'yes', label: 'Yes - daily tables' },
+                  { value: 'no', label: 'No' }], value: 'yes'
+      }, {
+        name: 'streaming_export', label: 'Streaming export', type: 'select',
+        options: [{ value: 'no', label: 'No - lower cost' },
+                  { value: 'yes', label: 'Yes - near real time' }], value: 'no',
+        help: 'Streaming BigQuery export has extra Google Cloud cost.'
+      }], function (data, fail, ok) {
+        api('POST', '/api/analytics/google/bigquery-link', {
+          connection_scope: scope,
+          source_id: source.id,
+          project: data.project,
+          location: data.location,
+          daily_export: data.daily_export === 'yes',
+          streaming_export: data.streaming_export === 'yes'
+        }).then(function (result) {
+          ok();
+          toast('BigQuery link created. GA4 may take up to 24 hours to export the first ' +
+                'daily table.', true);
+          if (onDone) onDone();
+        }).catch(function (e) { fail(e.message); });
+      }, 'Create link');
+    }
+
+    function syncBigQuery(source, button) {
+      button.disabled = true;
+      api('POST', '/api/analytics/bigquery/sync',
+          { source_id: source.id, days: days })
+        .then(function (result) {
+          if (result.errors && result.errors.length) {
+            toast('BigQuery partly refreshed: ' + result.errors[0], false);
+          } else {
+            toast(result.rows ? 'Refreshed ' + result.rows + ' BigQuery facts'
+                              : 'BigQuery refreshed', true);
+          }
+          load();
+        })
+        .catch(function (e) { toast(e.message, false); })
+        .finally(function () { button.disabled = false; });
+    }
+
     function sourceCard(hasTraffic) {
       // With no traffic and no source, the empty state already owns the primary action;
       // a second "connect" card below it would compete with it.
@@ -7164,6 +7392,11 @@
         var container = meta ? containers.filter(function (c) {
           return String(c.id) === String(meta.tag_container_id);
         })[0] : null;
+        var googleScope = clientOauth ? 'client' : (owner && agencyOauth ? 'agency' : '');
+        var bigqueryReady = googleScope === 'client'
+          ? clientBigqueryReady : agencyBigqueryReady;
+        var writeReady = googleScope === 'client'
+          ? clientWriteReady : agencyWriteReady;
         copy.innerHTML = '<strong>' + esc(source.label || sourceLabel(source.kind)) + '</strong>' +
           '<div class="muted">' + esc(sourceLabel(source.kind)) +
           (source.kind === 'ga4' && source.auth_mode === 'oauth' ? ' · Google sign-in' : '') +
@@ -7174,6 +7407,12 @@
             ? (container ? ' · GTM ' + esc(container.public_id || container.name)
                          : ' · no GTM container')
             : '') +
+          (source.kind === 'ga4' && meta && meta.bigquery_project
+            ? ' · BQ ' + esc(meta.bigquery_dataset || '') +
+              (meta.bigquery_link_status
+                ? ' · ' + esc(String(meta.bigquery_link_status).slice(0, 40))
+                : '')
+            : (source.kind === 'ga4' ? ' · no BigQuery export' : '')) +
           (source.last_sync_at ? ' · Updated ' + esc(String(source.last_sync_at).slice(0, 16))
                                : ' · Not synced yet') + '</div>' +
           (source.last_error
@@ -7199,6 +7438,38 @@
                 chooseGoogleProperty(clientOauth ? 'client' : 'agency', load);
               };
               actions.appendChild(change);
+            }
+            if (meta && googleScope) {
+              if (!bigqueryReady) {
+                var enableBq = el('button', 'btn btn-ghost btn-sm', 'Enable BigQuery');
+                enableBq.onclick = function () {
+                  if (!confirm('Google will ask for BigQuery read access and Analytics ' +
+                               'edit. Continue?')) return;
+                  startGoogleAnalytics(googleScope, true, true);
+                };
+                actions.appendChild(enableBq);
+              } else if (!meta.bigquery_project) {
+                if (writeReady) {
+                  var linkBq = el('button', 'btn btn-ghost btn-sm', 'Link BigQuery');
+                  linkBq.disabled = !liveReady;
+                  linkBq.title = liveReady ? '' : 'Live actions are off';
+                  linkBq.onclick = function () {
+                    linkBigQuery(source, meta, googleScope, load);
+                  };
+                  actions.appendChild(linkBq);
+                } else {
+                  var enableForLink = el('button', 'btn btn-ghost btn-sm',
+                    'Enable setup for BigQuery');
+                  enableForLink.onclick = function () {
+                    startGoogleAnalytics(googleScope, true, true);
+                  };
+                  actions.appendChild(enableForLink);
+                }
+              } else {
+                var syncBq = el('button', 'btn btn-ghost btn-sm', 'Sync BigQuery');
+                syncBq.onclick = function () { syncBigQuery(source, syncBq); };
+                actions.appendChild(syncBq);
+              }
             }
           }
           var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
@@ -7233,6 +7504,8 @@
         card.appendChild(status);
         return card;
       }
+      var activeScope = clientOauth ? 'client' : ((owner && agencyOauth) ? 'agency' : '');
+      var activeWrite = activeScope === 'client' ? clientWriteReady : agencyWriteReady;
       var parts = [];
       parts.push(clientOauth ? 'This client has its own Google connection.'
                              : 'This client has no Google connection of its own.');
@@ -7240,8 +7513,14 @@
         parts.push(agencyOauth ? 'The agency Google connection is available.'
                                : 'The agency Google connection is not connected yet.');
       }
-      parts.push(oauthWriteReady ? 'Read and write access are granted.'
-                                 : 'Read-only access is granted.');
+      parts.push(activeScope
+        ? (activeWrite ? 'Setup and automation access are granted.'
+                       : 'Read-only access is granted.')
+        : 'Connect Google to choose a property.');
+      if (activeScope && activeWrite && !liveReady) {
+        parts.push('Live actions are off; an operator must enable ' +
+                   'ALLOW_LIVE_ACTIONS before setup can write.');
+      }
       status.textContent = parts.join(' ');
       card.appendChild(status);
       var actions = el('div', 'row-actions');
@@ -7269,6 +7548,29 @@
         chooseAgency.onclick = function () { chooseGoogleProperty('agency', load); };
         actions.appendChild(chooseAgency);
       }
+      if (activeScope && !activeWrite) {
+        var upgrade = el('button', 'btn btn-primary btn-sm',
+          'Enable setup & automation');
+        upgrade.onclick = function () {
+          if (!confirm('Google will ask for write access to Analytics and Tag ' +
+                       'Manager. Setup actions you start here can then create and ' +
+                       'publish tags.')) return;
+          startGoogleAnalytics(activeScope, true);
+        };
+        actions.appendChild(upgrade);
+      }
+      if (activeScope && activeWrite) {
+        var create = el('button', 'btn btn-primary btn-sm', 'Create GA4 property');
+        create.disabled = !liveReady;
+        create.title = liveReady ? '' : 'Live actions are off';
+        create.onclick = function () { createGoogleSetup(activeScope, load); };
+        actions.appendChild(create);
+      }
+      if (containers.length) {
+        var install = el('button', 'btn btn-ghost btn-sm', 'Install GTM snippet');
+        install.onclick = function () { installGoogleTag(load); };
+        actions.appendChild(install);
+      }
       card.appendChild(actions);
       return card;
     }
@@ -7293,7 +7595,8 @@
         sessions: 'Sessions', engagedSessions: 'Engaged',
         engagementRate: 'Engagement', keyEvents: 'Key events',
         screenPageViews: 'Views', eventCount: 'Events',
-        totalUsers: 'Users', activeUsers: 'Active users'
+        totalUsers: 'Users', activeUsers: 'Active users',
+        users: 'Users', views: 'Views'
       };
       rows.sort(function (a, b) {
         return (b.metrics[definition.sort] || 0) - (a.metrics[definition.sort] || 0);
@@ -7354,6 +7657,16 @@
         key: 'audience', label: 'Audience',
         keys: ['country', 'deviceCategory'], headers: ['Country', 'Device'],
         metrics: ['activeUsers', 'sessions', 'keyEvents'], sort: 'activeUsers'
+      }, {
+        key: 'bq_events', label: 'BQ events', keys: ['event_name'], headers: ['Event'],
+        metrics: ['eventCount', 'users'], sort: 'eventCount'
+      }, {
+        key: 'bq_pages', label: 'BQ pages', keys: ['page_path'], headers: ['Page'],
+        metrics: ['views', 'users'], sort: 'views'
+      }, {
+        key: 'bq_acquisition', label: 'BQ acquisition',
+        keys: ['source', 'medium'], headers: ['Source', 'Medium'],
+        metrics: ['sessions', 'users'], sort: 'sessions'
       }];
       var card = el('div', 'panel-card');
       card.appendChild(el('h3', 'card-title', 'Reports'));
@@ -7384,6 +7697,195 @@
       card.appendChild(host);
       draw(definitions[0]);
       return card;
+    }
+
+    function setupHistoryCard() {
+      if (!canManage || !actionLog.length) return null;
+      var labels = {
+        ga4_create_property: 'Created GA4 property',
+        ga4_create_stream: 'Created web stream',
+        ga4_create_key_event: 'Marked key event',
+        ga4_create_audience: 'Created audience',
+        gtm_create_container: 'Created and published GTM container',
+        gtm_install_snippet: 'Installed GTM snippet',
+        bigquery_link: 'Linked GA4 to BigQuery',
+        bigquery_sync: 'Synced BigQuery facts',
+        alerts_evaluate: 'Evaluated analytics alerts'
+      };
+      var panel = el('div', 'panel-card');
+      panel.appendChild(el('h3', 'card-title', 'Recent Google setup actions'));
+      actionLog.slice(0, 6).forEach(function (row) {
+        var item = el('div', 'source-row');
+        var copy = el('div');
+        var label = labels[row.action] || row.action || 'Google action';
+        var meta = [row.target, String(row.created_at || '').slice(0, 16)]
+          .filter(Boolean).map(esc).join(' · ');
+        copy.innerHTML = '<strong>' + esc(label) + '</strong>' +
+          '<div class="muted">' + meta + '</div>' +
+          (row.result
+            ? '<div class="muted">' + esc(String(row.result).slice(0, 160)) + '</div>'
+            : '');
+        item.appendChild(copy);
+        item.appendChild(el('span', row.status === 'ok' ? 'pill up' : 'pill down',
+          row.status === 'ok' ? 'Done' : 'Failed'));
+        panel.appendChild(item);
+      });
+      return panel;
+    }
+
+    function intelligenceCard() {
+      var insights = (insightsData && insightsData.insights) || [];
+      if (!canManage && !insights.length && !alerts.length) return null;
+      var card = el('div', 'panel-card');
+      card.appendChild(el('h3', 'card-title', 'What changed'));
+      if (insights.length) {
+        insights.forEach(function (item) {
+          var row = el('div', 'source-row');
+          var copy = el('div');
+          copy.innerHTML = '<strong>' + esc(item.title) + '</strong>' +
+            '<div class="muted">' + esc(item.detail) + '</div>';
+          row.appendChild(copy);
+          var severity = item.severity || 'info';
+          row.appendChild(el('span',
+            'pill ' + (severity === 'info' ? 'flat' : 'down'),
+            severity === 'critical' ? 'Critical'
+              : (severity === 'warning' ? 'Watch' : 'Info')));
+          card.appendChild(row);
+        });
+      } else {
+        card.appendChild(el('p', 'muted', 'No notable change in this period yet.'));
+      }
+
+      if (alerts.length) {
+        card.appendChild(el('h4', null, 'Open alerts'));
+        alerts.slice(0, 6).forEach(function (alert) {
+          var row = el('div', 'source-row');
+          var copy = el('div');
+          copy.innerHTML = '<strong>' + esc(alert.title || 'Analytics alert') +
+            '</strong><div class="muted">' + esc(alert.detail || '') + '</div>';
+          row.appendChild(copy);
+          if (canManage) {
+            var read = el('button', 'btn btn-ghost btn-sm', 'Mark read');
+            read.onclick = function () {
+              read.disabled = true;
+              api('POST', '/api/analytics/alerts/' + alert.id + '/read', {})
+                .then(load).catch(function (e) {
+                  read.disabled = false;
+                  toast(e.message, false);
+                });
+            };
+            row.appendChild(read);
+          }
+          card.appendChild(row);
+        });
+      } else if (canManage) {
+        card.appendChild(el('p', 'fine-print', 'No open alerts.'));
+      }
+
+      if (canManage) {
+        var head = el('div', 'panel-head');
+        head.appendChild(el('h4', null, 'Alert rules'));
+        var run = el('button', 'btn btn-ghost btn-sm', 'Run now');
+        run.onclick = function () {
+          run.disabled = true;
+          api('POST', '/api/analytics/alerts/evaluate', { days: days })
+            .then(function (result) {
+              toast(result.alerts ? 'Created ' + result.alerts + ' alert(s)'
+                                  : 'No new alerts', true);
+              load();
+            })
+            .catch(function (e) { toast(e.message, false); })
+            .finally(function () { run.disabled = false; });
+        };
+        head.appendChild(run);
+        var add = el('button', 'btn btn-ghost btn-sm', 'Add rule');
+        add.onclick = addAlertRule;
+        head.appendChild(add);
+        card.appendChild(head);
+        if (!alertRules.length) {
+          var defaults = el('button', 'btn btn-primary btn-sm',
+            'Turn on default alerts');
+          defaults.onclick = function () {
+            defaults.disabled = true;
+            api('POST', '/api/analytics/alert-rules/defaults', {})
+              .then(function () {
+                toast('Default alerts are on; they stay in-app until you add email.',
+                      true);
+                load();
+              })
+              .catch(function (e) {
+                defaults.disabled = false;
+                toast(e.message, false);
+              });
+          };
+          card.appendChild(defaults);
+        }
+        alertRules.forEach(function (rule) {
+          var row = el('div', 'source-row');
+          var copy = el('div');
+          var metric = { pageviews: 'Pageviews', sessions: 'Sessions', errors: 'Errors' }[
+            rule.metric] || rule.metric;
+          copy.innerHTML = '<strong>' + esc(rule.name) + '</strong>' +
+            '<div class="muted">' + esc(metric) + ' · ' +
+            esc(rule.comparison === 'spike' ? 'spikes by' : 'falls by') + ' ' +
+            esc(rule.threshold) + '% over ' + esc(rule.window_days) + ' days' +
+            (rule.email ? ' · emails admins' : ' · in-app only') + '</div>';
+          row.appendChild(copy);
+          var remove = el('button', 'btn btn-danger btn-sm', 'Delete');
+          remove.onclick = function () {
+            if (!confirm('Delete the alert rule "' + rule.name + '"?')) return;
+            remove.disabled = true;
+            api('DELETE', '/api/analytics/alert-rules/' + rule.id)
+              .then(load)
+              .catch(function (e) {
+                remove.disabled = false;
+                toast(e.message, false);
+              });
+          };
+          row.appendChild(remove);
+          card.appendChild(row);
+        });
+      }
+      return card;
+    }
+
+    function addAlertRule() {
+      formModal('Add an alert rule', [{
+        name: 'name', label: 'Name', value: 'Pageviews falling'
+      }, {
+        name: 'metric', label: 'Metric', type: 'select',
+        options: [{ value: 'pageviews', label: 'Pageviews' },
+                  { value: 'sessions', label: 'Sessions' },
+                  { value: 'errors', label: 'Errors' }]
+      }, {
+        name: 'comparison', label: 'Condition', type: 'select',
+        options: [{ value: 'drop', label: 'Falls by at least' },
+                  { value: 'spike', label: 'Rises by at least' }]
+      }, {
+        name: 'threshold', label: 'Threshold (%)', type: 'number', value: '30'
+      }, {
+        name: 'window_days', label: 'Window', type: 'select',
+        options: [{ value: '7', label: '7 days' }, { value: '14', label: '14 days' },
+                  { value: '30', label: '30 days' }], value: '7'
+      }, {
+        name: 'email', label: 'Email client admins', type: 'select',
+        options: [{ value: 'no', label: 'No - in-app only' },
+                  { value: 'yes', label: 'Yes - send an email' }], value: 'no'
+      }], function (data, fail, ok) {
+        api('POST', '/api/analytics/alert-rules', {
+          name: data.name,
+          metric: data.metric,
+          comparison: data.comparison,
+          threshold: data.threshold,
+          window_days: data.window_days,
+          email: data.email === 'yes',
+          enabled: true
+        }).then(function () {
+          ok();
+          toast('Alert rule added', true);
+          load();
+        }).catch(function (e) { fail(e.message); });
+      }, 'Add rule');
     }
 
     function render(d) {
@@ -7445,8 +7947,12 @@
       if (panel) body.appendChild(panel);
       var googleCard = googleConnectionCard();
       if (googleCard) body.appendChild(googleCard);
+      var historyCard = setupHistoryCard();
+      if (historyCard) body.appendChild(historyCard);
       var reportsPanel = reportCard();
       if (reportsPanel) body.appendChild(reportsPanel);
+      var intelligence = intelligenceCard();
+      if (intelligence) body.appendChild(intelligence);
     }
 
     function load() {
@@ -7465,7 +7971,16 @@
         api('GET', '/api/analytics/summary?days=' + days),
         api('GET', '/api/data-sources'),
         api('GET', '/api/analytics/reports?days=' + days)
-          .catch(function () { return { reports: {} }; })
+          .catch(function () { return { reports: {} }; }),
+        api('GET', '/api/analytics/actions')
+          .catch(function () { return { actions: [] }; }),
+        api('GET', '/api/analytics/insights?days=' + days)
+          .catch(function () { return { insights: [] }; }),
+        api('GET', '/api/analytics/alerts?status=open')
+          .catch(function () { return { alerts: [] }; }),
+        canManage
+          ? api('GET', '/api/analytics/alert-rules').catch(function () { return { rules: [] }; })
+          : Promise.resolve({ rules: [] })
       ]).then(function (results) {
         var data = results[0] || {};
         var sourceData = results[1] || {};
@@ -7475,10 +7990,18 @@
         oauthReady = !!sourceData.oauth_ready;
         clientOauth = !!sourceData.client_oauth_connected;
         agencyOauth = !!sourceData.agency_oauth_connected;
-        oauthWriteReady = !!sourceData.oauth_write_ready;
+        clientWriteReady = !!sourceData.client_oauth_write_ready;
+        agencyWriteReady = !!sourceData.agency_oauth_write_ready;
+        clientBigqueryReady = !!sourceData.client_oauth_bigquery_ready;
+        agencyBigqueryReady = !!sourceData.agency_oauth_bigquery_ready;
+        liveReady = sourceData.dry_run === undefined ? true : !sourceData.dry_run;
         properties = sourceData.properties || [];
         containers = sourceData.containers || [];
         reportData = results[2] || { reports: {} };
+        actionLog = (results[3] || {}).actions || [];
+        insightsData = results[4] || { insights: [] };
+        alerts = (results[5] || {}).alerts || [];
+        alertRules = (results[6] || {}).rules || [];
         canManage = canManage || !!sourceData.can_manage;
         render(data);
       }).catch(function (e) {

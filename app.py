@@ -3530,6 +3530,48 @@ def decide_approval(approval_id, decision):
             result_text = "Business details updated."
         except (TypeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
+    elif (decision == "approve" and approval.get("status") == "pending"
+          and approval.get("tool") == "analytics_setup"):
+        # The AI drafted the setup; this approval is the moment it becomes live. The
+        # tenant comes from the job that asked, never from the approval's JSON.
+        import analytics_setup
+
+        try:
+            payload = json.loads(approval.get("args_json") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError("That Google setup is malformed.")
+            org_id = actions.approval_org_id(approval_id)
+            if org_id is None:
+                raise ValueError("This approval is not attached to a client.")
+            if actions.is_dry_run():
+                raise ValueError("Live actions are disabled. Enable ALLOW_LIVE_ACTIONS "
+                                 "before approving a Google setup.")
+            if not (is_owner() or session.get("role") == CLIENT_ADMIN_ROLE):
+                return jsonify({"error": "Only a client admin can approve a Google "
+                                        "setup."}), 403
+            site = None
+            if payload.get("site_id") not in (None, "", 0):
+                site = sites_service.get_site(int(payload.get("site_id")))
+                if not site or site.get("org_id") != org_id:
+                    raise ValueError("That website is not this client's.")
+            token, connection = analytics_oauth.write_token_for_org(
+                org_id, need_gtm=bool(payload.get("make_container")))
+            result = analytics_setup.setup(
+                org_id, "client", token, connection,
+                session.get("name") or session.get("email") or "operator",
+                payload, site)
+            if result.get("errors"):
+                result_text = ("Property created, but: %s"
+                               % "; ".join(result["errors"]))
+            else:
+                result_text = "Created GA4 property %s; container %s." % (
+                    (result.get("property") or {}).get("display_name") or "",
+                    (result.get("container") or {}).get("public_id") or "none")
+        except (TypeError, ValueError, analytics_oauth.OAuthError,
+                analytics_setup.SetupError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": "Google setup failed: %s" % exc}), 502
     row = actions.decide_approval(
         approval_id,
         "approved" if decision == "approve" else "denied",
@@ -3966,23 +4008,49 @@ def _wants_preview():
 def public_form_page(slug):
     """The page a client links to or embeds. No login: a form nobody can open is not a form."""
     import forms_page
+    import tag_install
 
     preview = _wants_preview()
     form = _form_for(slug, preview=preview)
     if not form or not orgs_service.is_active(form.get("org_id")):
         return ("This form is not available.", 404,
                 {"Content-Type": "text/plain; charset=utf-8"})
+    # A preview must not put visits into the client's analytics.
+    container = None
+    if not preview:
+        try:
+            container = tag_install.container_for_org(form.get("org_id"))
+        except Exception:
+            # The form must still open if analytics is unavailable or not migrated.
+            container = None
+    gtm_id = (container or {}).get("public_id") or ""
     suffix = "?preview=1" if preview else ""
     body = forms_page.page(
         form, forms_page.payload_for(form, {}),
         "/api/public/forms/%s/step%s" % (slug, suffix),
-        "/api/public/forms/%s%s" % (slug, suffix))
+        "/api/public/forms/%s%s" % (slug, suffix), gtm_id=gtm_id)
     response = app.make_response(body)
     response.headers["Content-Type"] = "text/html; charset=utf-8"
-    # The page is self-contained: no CDN, no fonts, nothing to leak a visitor's IP onward.
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-        "connect-src 'self'; form-action 'self'; img-src 'self' data:; base-uri 'none'")
+    # The page is self-contained except for the client's own GTM container. Keep the
+    # strict policy when there is no container; a tagged page needs only Google's tag
+    # hosts, still with no third-party CDN or font access.
+    if gtm_id:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline' https://www.googletagmanager.com "
+            "https://www.google-analytics.com; "
+            "connect-src 'self' https://*.google-analytics.com "
+            "https://analytics.google.com https://*.analytics.google.com "
+            "https://www.googletagmanager.com; "
+            "img-src 'self' data: https://*.google-analytics.com "
+            "https://www.googletagmanager.com https://www.google.com "
+            "https://www.googleadservices.com; "
+            "frame-src https://www.googletagmanager.com; "
+            "form-action 'self'; base-uri 'none'")
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "connect-src 'self'; form-action 'self'; img-src 'self' data:; base-uri 'none'")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -4956,6 +5024,7 @@ def list_data_sources():
         "ga4_email": settings.get("GA4_SERVICE_ACCOUNT_EMAIL") or "",
         "oauth_ready": analytics_oauth.configured(),
         "oauth_connected": analytics_oauth.connected(org),
+        "dry_run": actions.is_dry_run(),
         "client_oauth_connected": bool(analytics_oauth.get_connection(org, "client")),
         "agency_oauth_connected": bool(analytics_oauth.get_agency_connection()),
         "oauth_redirect_uri": analytics_oauth.redirect_uri(),
@@ -4968,6 +5037,24 @@ def list_data_sources():
                 or analytics_oauth.get_agency_connection(), scope)
             for scope in analytics_oauth.WRITE_SCOPES
         ),
+        "client_oauth_write_ready": all(
+            analytics_oauth.has_scope(analytics_oauth.get_connection(org, "client"), scope)
+            for scope in analytics_oauth.WRITE_SCOPES
+        ) if analytics_oauth.get_connection(org, "client") else False,
+        "agency_oauth_write_ready": all(
+            analytics_oauth.has_scope(analytics_oauth.get_agency_connection(), scope)
+            for scope in analytics_oauth.WRITE_SCOPES
+        ) if analytics_oauth.get_agency_connection() else False,
+        "client_oauth_bigquery_ready": bool(
+            analytics_oauth.get_connection(org, "client")
+            and analytics_oauth.has_scope(
+                analytics_oauth.get_connection(org, "client"),
+                analytics_oauth.SCOPE_BIGQUERY_READONLY)),
+        "agency_oauth_bigquery_ready": bool(
+            analytics_oauth.get_agency_connection()
+            and analytics_oauth.has_scope(
+                analytics_oauth.get_agency_connection(),
+                analytics_oauth.SCOPE_BIGQUERY_READONLY)),
         "properties": analytics_service.properties(org),
         "containers": analytics_service.containers(org),
     })
@@ -5105,11 +5192,13 @@ def start_google_analytics_oauth():
         "label": (data.get("label") or "").strip()[:200],
         "source_id": source_id,
         "write": bool(data.get("write")),
+        "bigquery": bool(data.get("bigquery")),
         "created_at": time.time(),
     }
     try:
         auth_url = analytics_oauth.authorization_url(
-            state, write=bool(data.get("write")))
+            state, write=bool(data.get("write")),
+            bigquery=bool(data.get("bigquery")))
     except analytics_oauth.OAuthError as exc:
         session.pop("ga4_oauth", None)
         return jsonify({"error": str(exc)}), 400
@@ -5226,6 +5315,50 @@ def google_tag_containers():
     return jsonify({"containers": containers, "connection_scope": scope})
 
 
+def _analytics_write_token(org, scope, need_gtm=False):
+    """A write-capable Google token, or a clear sentence about the missing upgrade."""
+    return analytics_oauth.write_token_for_org(
+        org, scope=scope, need_gtm=need_gtm)
+
+
+@app.route("/api/analytics/google/accounts", methods=["GET"])
+@client_admin_required
+def google_analytics_accounts():
+    """Analytics accounts available for creating a new property."""
+    import ga4_admin
+
+    org, scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    try:
+        token = analytics_oauth.access_token_for_org(org, scope=scope)
+        accounts = ga4_admin.list_accounts(token)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ga4_admin.GoogleApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"accounts": accounts, "connection_scope": scope})
+
+
+@app.route("/api/analytics/google/gtm-accounts", methods=["GET"])
+@client_admin_required
+def google_tag_manager_accounts():
+    """Tag Manager accounts available for creating a container."""
+    import gtm_admin
+
+    org, scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    try:
+        token = analytics_oauth.access_token_for_org(org, scope=scope)
+        accounts = gtm_admin.list_accounts(token)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except gtm_admin.GtmApiError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"accounts": accounts, "connection_scope": scope})
+
+
 @app.route("/api/analytics/google/connect", methods=["POST"])
 @client_admin_required
 def connect_google_analytics_property():
@@ -5290,6 +5423,377 @@ def connect_google_analytics_property():
     })
     return jsonify({"source": source, "property": property_row,
                     "container": container}), 201
+
+
+@app.route("/api/analytics/google/setup", methods=["POST"])
+@client_admin_required
+def setup_google_analytics():
+    """Create a GA4 property/stream, a GTM container and install the snippet."""
+    import analytics_setup
+
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    if data.get("make_container") and not str(data.get("gtm_account_id") or "").strip():
+        return jsonify({"error": "Choose the Tag Manager account that will own the "
+                                 "container."}), 400
+    site = None
+    if data.get("site_id") not in (None, ""):
+        try:
+            site_id = int(data.get("site_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "site_id must be a number"}), 400
+        site = sites_service.get_site(site_id)
+        if not site or site.get("org_id") != org:
+            return jsonify({"error": "That website was not found for this client."}), 404
+    actor = session.get("email") or session.get("name") or "operator"
+    # Creating a property/container is a live external write. Dry-run must be a hard stop,
+    # not a simulation: there is no sandbox Google account to write the pretend object to.
+    if actions.is_dry_run():
+        return jsonify({"error": "Live actions are disabled. Turn on ALLOW_LIVE_ACTIONS "
+                                 "before creating Google Analytics or Tag Manager "
+                                 "resources."}), 409
+    if analytics_service.recent_action_count(
+            org, "ga4_create_property", minutes=60) >= 3:
+        return jsonify({"error": "This client has had three GA4 setup attempts in the "
+                                 "last hour. Wait before trying again."}), 429
+    try:
+        token, connection = _analytics_write_token(
+            org, scope, need_gtm=bool(data.get("make_container")))
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    approval_id = actions.request_approval(
+        "analytics_setup",
+        "Create GA4 property / Tag Manager setup for client %s" % org,
+        {"org_id": org, "site_id": (site or {}).get("id"),
+         "connection_scope": scope,
+         "property_name": data.get("property_name") or ""},
+        None)
+    decided = actions.decide_approval(
+        approval_id, "approved", actor,
+        "Approved by the person who clicked Create GA4 property.")
+    if not decided or decided.get("status") != "approved":
+        return jsonify({"error": "This setup could not be recorded as approved."}), 500
+    try:
+        result = analytics_setup.setup(
+            org, scope, token, connection, actor, data, site)
+    except analytics_setup.SetupError as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        body = {"error": str(exc)}
+        body.update(exc.partial or {})
+        return jsonify(body), 502
+    except Exception as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        return jsonify({"error": "Google setup failed: %s" % exc}), 502
+    actions.set_result(
+        approval_id,
+        "property %s; container %s" % (
+            (result.get("property") or {}).get("property_id") or "",
+            (result.get("container") or {}).get("public_id") or "none"))
+    return jsonify(result), 201
+
+
+@app.route("/api/analytics/google/tag/install", methods=["POST"])
+@client_admin_required
+def install_google_tag():
+    """Install the client's selected GTM container on the site's published pages."""
+    import tag_install
+
+    data = request.get_json(silent=True) or {}
+    org, _scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        site_id = int(data.get("site_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a website first"}), 400
+    site = sites_service.get_site(site_id)
+    if not site or site.get("org_id") != org:
+        return jsonify({"error": "That website was not found for this client."}), 404
+    container = tag_install.container_for_org(org)
+    if not container or not container.get("public_id"):
+        return jsonify({"error": "Connect a Tag Manager container first."}), 400
+    result = tag_install.install_for_site(site, container["public_id"])
+    analytics_service.record_action(
+        org, "gtm_install_snippet", target=site.get("domain") or "",
+        payload={"site_id": site_id, "container": container["public_id"]},
+        status="ok" if result.get("ok") else "error",
+        result="%s file(s), %s updated" % (result.get("files"), result.get("updated")),
+        actor=session.get("email") or session.get("name") or "operator")
+    return jsonify(result)
+
+
+@app.route("/api/analytics/google/bigquery-link", methods=["POST"])
+@client_admin_required
+def link_google_bigquery():
+    """Create a GA4 BigQuery export link on the selected property."""
+    import ga4_admin
+
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        source_id = int(data.get("source_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a GA4 connection first."}), 400
+    source = analytics_service.get_source(source_id)
+    if (not source or source.get("org_id") != org
+            or source.get("kind") != "ga4"):
+        return jsonify({"error": "That analytics connection was not found."}), 404
+    meta = analytics_service.property_for_source(source_id)
+    if not meta or not meta.get("property_id"):
+        return jsonify({"error": "Connect a GA4 property before linking BigQuery."}), 400
+    project = str(data.get("project") or "").strip()
+    if project.startswith("projects/"):
+        project = project.split("/", 1)[1]
+    if not project:
+        return jsonify({"error": "Enter the Google Cloud project ID that will own the "
+                                 "export."}), 400
+    location = str(data.get("location") or "US").strip() or "US"
+    daily_export = bool(data.get("daily_export", True))
+    streaming_export = bool(data.get("streaming_export", False))
+    if actions.is_dry_run():
+        return jsonify({"error": "Live actions are disabled. Turn on ALLOW_LIVE_ACTIONS "
+                                 "before creating a BigQuery export."}), 409
+    if analytics_service.recent_action_count(
+            org, "bigquery_link", minutes=10) >= 2:
+        return jsonify({"error": "This client has already linked BigQuery twice in the "
+                                 "last ten minutes. Wait before trying again."}), 429
+    actor = session.get("email") or session.get("name") or "operator"
+    approval_id = actions.request_approval(
+        "bigquery_link",
+        "Link GA4 property %s to BigQuery project %s"
+        % (meta.get("property_id"), project),
+        {"org_id": org, "source_id": source_id, "project": project,
+         "location": location}, None)
+    decided = actions.decide_approval(
+        approval_id, "approved", actor,
+        "Approved by the person who clicked Link BigQuery.")
+    if not decided or decided.get("status") != "approved":
+        return jsonify({"error": "This BigQuery link could not be recorded as "
+                                 "approved."}), 500
+    try:
+        token, connection = _analytics_write_token(org, scope, need_gtm=False)
+        link = ga4_admin.create_bigquery_link(
+            token, meta["property_id"], project, location,
+            daily_export=daily_export, streaming_export=streaming_export)
+    except analytics_oauth.OAuthError as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        return jsonify({"error": str(exc)}), 400
+    except ga4_admin.GoogleApiError as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        return jsonify({"error": str(exc)}), 502
+    except Exception as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        return jsonify({"error": "BigQuery link failed: %s" % exc}), 502
+    property_id = str(meta.get("property_id")).split("/")[-1]
+    dataset = "analytics_%s" % property_id
+    updated = dict(meta)
+    updated.update({
+        "org_id": org,
+        "source_id": source_id,
+        "bigquery_project": project,
+        "bigquery_dataset": dataset,
+        "bigquery_location": location,
+        "bigquery_link_status": "linked",
+    })
+    try:
+        property_row = analytics_service.save_property(updated)
+    except Exception as exc:
+        analytics_service.record_action(
+            org, "bigquery_link", target=project, status="error",
+            result=str(exc), actor=actor)
+        actions.set_result(approval_id, "link created but not stored: %s" % exc)
+        return jsonify({"error": "The BigQuery link was created but could not be "
+                                 "stored: %s" % exc}), 502
+    analytics_service.record_action(
+        org, "bigquery_link", target=project,
+        payload={"source_id": source_id, "location": location,
+                 "daily_export": daily_export,
+                 "streaming_export": streaming_export},
+        result=dataset, actor=actor)
+    actions.set_result(approval_id, "linked %s/%s" % (project, dataset))
+    return jsonify({"link": link, "property": property_row}), 201
+
+
+@app.route("/api/analytics/bigquery/sync", methods=["POST"])
+@client_admin_required
+def sync_google_bigquery():
+    """Read the GA4 BigQuery export and store daily aggregate facts."""
+    import bigquery
+
+    data = request.get_json(silent=True) or {}
+    org, _scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        source_id = int(data.get("source_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a GA4 connection first."}), 400
+    source = analytics_service.get_source(source_id)
+    if (not source or source.get("org_id") != org
+            or source.get("kind") != "ga4"):
+        return jsonify({"error": "That analytics connection was not found."}), 404
+    meta = analytics_service.property_for_source(source_id)
+    if not meta:
+        return jsonify({"error": "Connect a GA4 property before syncing BigQuery."}), 400
+    try:
+        days = max(1, min(90, int(data.get("days") or 7)))
+    except (TypeError, ValueError):
+        days = 7
+    actor = session.get("email") or session.get("name") or "operator"
+    try:
+        result = bigquery.sync(source, meta, days=days)
+    except bigquery.BigQueryError as exc:
+        analytics_service.record_action(
+            org, "bigquery_sync", target=meta.get("bigquery_dataset") or "",
+            status="error", result=str(exc), actor=actor)
+        return jsonify({"error": str(exc)}), 400
+    analytics_service.record_action(
+        org, "bigquery_sync", target=meta.get("bigquery_dataset") or "",
+        payload={"source_id": source_id, "days": days},
+        result="%s fact(s), %s" % (result.get("rows"),
+                                   ", ".join(result.get("reports") or [])),
+        actor=actor)
+    return jsonify(result)
+
+
+@app.route("/api/analytics/insights", methods=["GET"])
+@login_required
+def analytics_insights():
+    """Explainable period-over-period changes for this client."""
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    try:
+        days = max(1, min(90, int(request.args.get("days") or 7)))
+    except ValueError:
+        days = 7
+    return jsonify(analytics_alerts.insights(org, days=days))
+
+
+@app.route("/api/analytics/alerts", methods=["GET"])
+@login_required
+def analytics_alerts_list():
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    status = (request.args.get("status") or "").strip().lower() or None
+    return jsonify({"alerts": analytics_alerts.list_alerts(org, status=status)})
+
+
+@app.route("/api/analytics/alerts/<int:alert_id>/<status>", methods=["POST"])
+@client_admin_required
+def analytics_alert_status(alert_id, status):
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(data={})
+    if problem:
+        return problem
+    try:
+        alert = analytics_alerts.mark_alert(org, alert_id, status)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not alert:
+        return jsonify({"error": "That alert was not found."}), 404
+    return jsonify({"alert": alert})
+
+
+@app.route("/api/analytics/alert-rules", methods=["GET"])
+@client_admin_required
+def analytics_alert_rules_list():
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    return jsonify({"rules": analytics_alerts.list_rules(org)})
+
+
+@app.route("/api/analytics/alert-rules", methods=["POST"])
+@client_admin_required
+def analytics_alert_rule_save():
+    import analytics_alerts
+
+    data = request.get_json(silent=True) or {}
+    org, _scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        rule = analytics_alerts.save_rule(
+            org, data, rule_id=data.get("id") or None)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not rule:
+        return jsonify({"error": "That alert rule was not found."}), 404
+    return jsonify({"rule": rule}), 201
+
+
+@app.route("/api/analytics/alert-rules/<int:rule_id>", methods=["DELETE"])
+@client_admin_required
+def analytics_alert_rule_delete(rule_id):
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(data={})
+    if problem:
+        return problem
+    if not analytics_alerts.delete_rule(org, rule_id):
+        return jsonify({"error": "That alert rule was not found."}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/analytics/alert-rules/defaults", methods=["POST"])
+@client_admin_required
+def analytics_alert_defaults():
+    import analytics_alerts
+
+    org, _scope, problem = _analytics_google_target(data={})
+    if problem:
+        return problem
+    if not analytics_alerts.alerts_enabled(org):
+        return jsonify({"error": "Analytics alerts are switched off in Settings."}), 409
+    return jsonify({"rules": analytics_alerts.ensure_default_rules(org)}), 201
+
+
+@app.route("/api/analytics/alerts/evaluate", methods=["POST"])
+@client_admin_required
+def analytics_alerts_evaluate():
+    """Run the rules now. Email is skipped in dry-run; in-app alerts are still stored."""
+    import analytics_alerts
+
+    data = request.get_json(silent=True) or {}
+    org, _scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        days = max(1, min(90, int(data.get("days") or 7)))
+    except (TypeError, ValueError):
+        days = 7
+    if not analytics_alerts.alerts_enabled(org):
+        return jsonify({"error": "Analytics alerts are switched off in Settings."}), 409
+    result = analytics_alerts.evaluate(org, days=days, notify=True)
+    analytics_service.record_action(
+        org, "alerts_evaluate", target="analytics",
+        payload={"days": days}, status="ok",
+        result="%s alert(s)" % result.get("alerts"),
+        actor=session.get("email") or session.get("name") or "operator")
+    return jsonify(result)
+
+
+@app.route("/api/analytics/actions", methods=["GET"])
+@client_admin_required
+def analytics_action_log():
+    """The client's recent GA4/GTM/site write history."""
+    org, _scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    return jsonify({"actions": analytics_service.actions(org, limit=50)})
 
 
 @app.route("/api/analytics/reports", methods=["GET"])
@@ -5607,6 +6111,8 @@ import manager as manager_mod
 # same tenancy rules as everything else.
 import automations as automations_mod
 
+
+import analytics_alerts as analytics_alerts_mod  # noqa: F401  (registers the task)
 
 # Recurring analytics sync, when configured (SITE_LOG_SYNC_HOURS). Off by default.
 import scheduler as scheduler_mod

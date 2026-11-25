@@ -149,20 +149,96 @@ source labels read-only. The operator can do the same for any client from Platfo
 Data sources, or while acting as that client.
 
 The recommended path is Google OAuth. Create a **Web application** OAuth client in
-Google Cloud, enable the Google Analytics Data API, and register this exact redirect
-URI under Platform → Analytics:
+Google Cloud, enable the Google Analytics Data API and the Tag Manager API, and register
+this exact redirect URI under Platform → Analytics:
 
 ```text
 https://<ADMIN_DOMAIN>/api/analytics/oauth/google/callback
 ```
 
+Add all six Analytics and Tag Manager scopes to the OAuth consent screen:
+`analytics.readonly`, `analytics.edit`, `tagmanager.readonly`,
+`tagmanager.edit.containers`, `tagmanager.edit.containerversions` and
+`tagmanager.publish`. Add `bigquery.readonly` too if you will use the BigQuery export.
+The first connection asks for read access only. **Enable setup & automation** on the
+Google connection card asks for the write scopes again; **Enable BigQuery** asks for
+BigQuery read access. Google shows the new permissions, and the existing refresh token
+is replaced with the broader grant.
+
 Set `GA4_OAUTH_CLIENT_ID`, `GA4_OAUTH_CLIENT_SECRET` and, if needed,
-`GA4_OAUTH_REDIRECT_URI`. The client enters their numeric property ID and clicks
-**Connect with Google**; the callback stores the refresh token for that client only.
-Existing service-account sources remain supported through `GA4_SERVICE_ACCOUNT_KEY_PATH`.
-The daily scheduler refreshes GA4 sources; the per-source **Refresh** action is for a
-client admin or the operator. Site logs are platform infrastructure and are refreshed
-by the operator's global sync, not by a client.
+`GA4_OAUTH_REDIRECT_URI`. Set a stable `OAUTH_TOKEN_KEY` (or `SECRET_KEY`) in the
+production environment before connecting: tokens are Fernet-encrypted with it, and
+changing it makes every stored grant unreadable. The client enters their numeric property
+ID and clicks **Connect with Google**; the callback stores the refresh token for that
+client only. Existing service-account sources remain supported through
+`GA4_SERVICE_ACCOUNT_KEY_PATH`. The daily scheduler refreshes GA4 sources; the per-source
+**Refresh** action is for a client admin or the operator. Site logs are platform
+infrastructure and are refreshed by the operator's global sync, not by a client.
+
+With write access, **Create GA4 property** creates a property and web stream, marks the
+chosen key events, creates a GTM web container with a GA4 configuration tag and one event
+tag per key event, publishes the container, and installs the GTM snippet on the site's
+live pages and hosted forms. **Install GTM snippet** repeats the page installation for an
+existing container. Every step is recorded in `analytics_actions` and in the Google
+connection card's Recent Google setup actions. The site write still obeys
+`ALLOW_LIVE_ACTIONS` and is a dry-run until live actions are enabled.
+
+The AI can also run the setup through `setup_analytics`. When
+`ANALYTICS_AUTONOMY` is off (the default), it drafts a pending approval that a person
+approves in Approvals; approving executes the same setup. When the client turns
+`ANALYTICS_AUTONOMY` on, the AI can execute directly, still behind
+`ALLOW_LIVE_ACTIONS`, a three-per-hour-per-client setup limit, and the audit trail. Turn
+the setting off to require a person for every Google write.
+
+### BigQuery export
+
+The BigQuery path uses the GA4 event export, not the Data API. In Google Cloud, enable
+the BigQuery API, add `bigquery.readonly` to the OAuth consent screen, and give the
+Google user **BigQuery Job User** plus read access to the export dataset. Then:
+
+1. Click **Enable BigQuery** on the GA4 source in Analytics and approve the consent.
+2. Click **Link BigQuery**, enter the Google Cloud project ID and dataset location, and
+   choose daily (and optionally streaming) export. The dataset is created by GA4 as
+   `analytics_<property_id>`; it is not user-named.
+3. GA4 can take up to 24 hours to create the first table. Click **Sync BigQuery** after
+   that; it reads the last 7 or 30 days into daily aggregate facts.
+
+Only aggregates are stored (`bq_events`, `bq_pages`, `bq_acquisition`): event counts, page
+paths, source/medium, sessions and distinct-user counts. Raw event rows and
+`user_pseudo_id` are never written to the platform database. The page query strips the
+scheme, host, query string and fragment from `page_location` before storing the path.
+
+Each BigQuery query is capped at 2 GB billed bytes, 10,000 result rows and a 60-second
+job timeout. BigQuery normally bills the Google Cloud project for bytes scanned; streaming
+export has additional cost. A service-account GA4 source can query the export if its key
+has BigQuery access; OAuth sources use the `bigquery.readonly` grant. Linking a project is
+a live write and still requires `ALLOW_LIVE_ACTIONS`; syncing is read-only. A client can
+link at most twice in ten minutes; a human GA4 setup is capped at three attempts per hour.
+
+### Intelligence and alerts
+
+Analytics shows **What changed**: pageviews, sessions and errors against the previous
+window, plus the top page and the busiest GA4/BigQuery event. Every insight names the
+metric and both windows; there is no opaque score.
+
+The first evaluation creates three in-app defaults: pageviews falling 30%, sessions
+falling 30% and errors spiking 100%. Rules are per client and can be added, deleted or
+changed from the same panel. One alert is stored per rule per ISO week, so a daily run does
+not repeat the same warning. **Run now** evaluates immediately; the scheduler also queues
+one `analytics_alerts` job per client at most every 20 hours, on the hourly verifier tick.
+If `SITE_VERIFY_MINUTES=0` and the sync loop is off, use **Run now** or re-enable a tick.
+
+Email is off for the defaults. Turn on **Email client admins** for a rule only after client
+mail and `NOTIFICATIONS_ENABLED` are configured; delivery goes through
+`notifications.notify_org`. Email is skipped while `ALLOW_LIVE_ACTIONS` is off, but the
+in-app alert is still stored. Alerts can be marked read or resolved; they never modify a
+site or a Google account.
+
+`ANALYTICS_ALERTS_ENABLED` in Settings (default on) is the client-level opt-out: turning it
+off stops default/rule evaluation and scheduled runs without deleting the rules. A client
+can have at most 50 rules, and one malformed rule cannot stop the others. The scheduler
+prunes `analytics_actions` and handled `analytics_alerts` older than 180 days once a day;
+open alerts are kept until handled.
 
 All source reads and writes are scoped to the acting workspace. A source update with an
 id from another workspace must return 404.

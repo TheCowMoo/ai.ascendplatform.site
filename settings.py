@@ -273,6 +273,28 @@ SPEC = [
         ],
     },
     {
+        "id": "analytics_automation",
+        "label": "Analytics automation",
+        "icon": "trend",
+        "scope": CLIENT,
+        "blurb": "Let the AI create GA4 properties and publish Tag Manager changes without "
+                 "a click. Off by default. Live writes still require ALLOW_LIVE_ACTIONS, "
+                 "and every action is recorded in Recent Google setup actions.",
+        "fields": [
+            _f("ANALYTICS_AUTONOMY", "Let the AI change GA4 and Tag Manager", kind="bool",
+               default="0",
+               help="When off, the AI drafts the setup and a person approves it in "
+                    "Approvals. When on, it can create the property, publish the container "
+                    "and install the snippet directly. Turn it off to stop autonomous "
+                    "writes."),
+            _f("ANALYTICS_ALERTS_ENABLED", "Enable analytics alerts", kind="bool",
+               default="1",
+               help="When on, the default traffic/error rules and your own rules create "
+                    "in-app alerts; email rules still need client mail configured. Turn "
+                    "it off to stop new alerts without deleting the rules."),
+        ],
+    },
+    {
         "id": "hosting",
         "label": "Servers & hosting",
         "icon": "server",

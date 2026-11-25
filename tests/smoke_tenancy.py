@@ -579,7 +579,7 @@ def test_owner_only_surfaces_are_shut(alpha):
         assert platform_key not in keys, "a platform key leaked into a client's panel"
     # The client's Settings page has one advanced door: SMTP. GoHighLevel is a
     # backend integration even though its credentials are per client.
-    assert [g["id"] for g in groups] == ["email"], [g["id"] for g in groups]
+    assert [g["id"] for g in groups] == ["email", "analytics_automation"], [g["id"] for g in groups]
     assert not any(key.startswith("GHL_CLIENT_") for key in keys), keys
     print("  a client sees %d group(s), client-scoped only: %s" % (len(groups), keys))
 

@@ -56,7 +56,7 @@ def _transport(url, payload=None, headers=None, timeout=20):
         return exc.code, exc.read().decode("utf-8", "replace")
 
 
-def access_token(key_path):
+def access_token(key_path, scope=SCOPE):
     """Exchange a service-account key for an access token."""
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -68,7 +68,7 @@ def access_token(key_path):
     header = {"alg": "RS256", "typ": "JWT"}
     claims = {
         "iss": key["client_email"],
-        "scope": SCOPE,
+        "scope": scope,
         "aud": TOKEN_URL,
         "iat": now,
         "exp": now + 3600,
