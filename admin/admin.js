@@ -6832,6 +6832,86 @@
       }, operator ? 'Save' : (isEdit ? 'Reconnect' : 'Connect'));
   }
 
+  // Start a Google consent for a client or the agency grant. Read scopes first; the
+  // write upgrade is a separate, explicit action in a later phase.
+  function startGoogleAnalytics(scope) {
+    var payload = { connection_scope: scope, write: false };
+    if (scope === 'client') {
+      var workspace = isOwner(state.user) ? state.user.acting_org
+        : (state.user.org && state.user.org.id);
+      if (!workspace) { toast('Choose a client first', false); return; }
+      payload.org_id = workspace;
+    }
+    api('POST', '/api/analytics/oauth/google/start', payload).then(function (r) {
+      window.location.assign(r.auth_url);
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  // After Google is connected, let the user pick the GA4 property and an optional GTM
+  // web container. The property list is only properties this grant can actually see.
+  function chooseGoogleProperty(scope, onDone) {
+    function properties() {
+      return api('GET', '/api/analytics/google/properties?connection_scope=' + scope);
+    }
+    function containers() {
+      return api('GET', '/api/analytics/google/containers?connection_scope=' + scope)
+        .catch(function () { return { containers: [] }; });
+    }
+    Promise.all([properties(), containers()]).then(function (results) {
+      var propertyRows = (results[0] || {}).properties || [];
+      var containerRows = (results[1] || {}).containers || [];
+      if (!propertyRows.length) {
+        toast('No GA4 properties found on this Google account. Create one in Google ' +
+              'Analytics, then try again.', false);
+        return;
+      }
+      var fields = [{
+        name: 'property', label: 'GA4 property', type: 'select',
+        options: propertyRows.map(function (p) {
+          return { value: p.property,
+                   label: (p.display_name || p.property) +
+                          (p.account_name ? ' — ' + p.account_name : '') };
+        })
+      }, {
+        name: 'container', label: 'Tag Manager container (optional)', type: 'select',
+        options: [{ value: '', label: 'No container yet' }].concat(
+          containerRows.map(function (c) {
+            return { value: c.container_id,
+                     label: (c.name || 'Container') +
+                            (c.public_id ? ' (' + c.public_id + ')' : '') };
+          }))
+      }, {
+        name: 'label', label: 'Name this connection (optional)', value: ''
+      }];
+      formModal('Choose a GA4 property', fields, function (data, fail, ok) {
+        var property = propertyRows.filter(function (p) {
+          return p.property === data.property;
+        })[0] || {};
+        var container = containerRows.filter(function (c) {
+          return c.container_id === data.container;
+        })[0] || null;
+        var payload = {
+          connection_scope: scope,
+          external_id: property.property,
+          label: data.label,
+          account_name: property.account_name || ''
+        };
+        if (container) {
+          payload.container_id = container.container_id;
+          payload.container_account_id = container.account_id;
+          payload.container_public_id = container.public_id;
+          payload.container_name = container.name;
+          payload.container_domain = container.domain_name;
+        }
+        api('POST', '/api/analytics/google/connect', payload).then(function () {
+          ok();
+          toast('GA4 property connected', true);
+          if (onDone) onDone();
+        }).catch(function (e) { fail(e.message); });
+      }, 'Connect property');
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
   // ---------- Platform: data sources ----------
   // A page of its own rather than a card inside viewClient: sources are per-org data
   // with their own sync state, and this keeps the client detail view untouched.
@@ -6884,10 +6964,16 @@
         .then(function (d) {
           body.innerHTML = '';
           var sources = d.sources || [];
+          var propertyRows = d.properties || [];
           var add = el('button', 'btn btn-primary', '+ Add source');
           add.onclick = function () {
             analyticsSourceForm(null, d.kinds, state.org, true, loadSources);
           };
+          var addAgency = null;
+          if (isOwner(state.user) && d.oauth_ready && !d.agency_oauth_connected) {
+            addAgency = el('button', 'btn btn-ghost', 'Connect agency Google');
+            addAgency.onclick = function () { startGoogleAnalytics('agency'); };
+          }
           if (!sources.length) {
             var empty = el('div', 'empty-state');
             empty.innerHTML = '<div class="big">' + icon('trend') + '</div>' +
@@ -6895,22 +6981,29 @@
               '<p>Connect the client\'s GHL sub-account, their GA4 property, or read our ' +
               'own site logs.</p>';
             empty.appendChild(add);
+            if (addAgency) empty.appendChild(addAgency);
             body.appendChild(empty);
             return;
           }
           body.appendChild(add);
+          if (addAgency) body.appendChild(addAgency);
           var table = el('table', 'table');
           table.innerHTML = '<thead><tr><th>Kind</th><th>Account</th><th>Status</th>' +
             '<th>Last sync</th><th></th></tr></thead>';
           var tbody = el('tbody');
           sources.forEach(function (source) {
             var tr = el('tr');
+            var property = propertyRows.filter(function (row) {
+              return String(row.source_id) === String(source.id);
+            })[0];
             var problem = source.last_error
               ? '<div class="form-error">' + esc(source.last_error.slice(0, 90)) + '</div>'
               : '';
             tr.innerHTML = '<td><span class="badge">' + esc(source.kind) + '</span>' +
               '<div class="muted">' + esc(source.label) + '</div></td>' +
-              '<td class="muted">' + esc(source.external_id || '—') + problem + '</td>' +
+              '<td class="muted">' +
+              esc((property && (property.display_name || source.external_id)) ||
+                  source.external_id || '—') + problem + '</td>' +
               '<td>' + (source.enabled ? 'enabled' : 'disabled') + '</td>' +
               '<td class="muted">' + esc((source.last_sync_at || 'never').slice(0, 16)) + '</td>';
             var td = el('td', 'row-actions');
@@ -6954,6 +7047,12 @@
     var sourceKinds = [];
     var ga4Email = '';
     var oauthReady = false;
+    var clientOauth = false;
+    var agencyOauth = false;
+    var oauthWriteReady = false;
+    var properties = [];
+    var containers = [];
+    var reportData = { reports: {} };
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Analytics</h2><p class="muted">' +
       (owner ? 'Traffic for this client, compared with the previous 7 days.'
@@ -7009,7 +7108,15 @@
       var button = el('button', 'btn btn-primary btn-sm',
         label || (oauthReady ? 'Connect Google Analytics' : 'Connect analytics'));
       button.onclick = function () {
-        analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email, oauthReady);
+        if (!oauthReady) {
+          analyticsSourceForm(null, sourceKinds, null, owner, load, ga4Email, oauthReady);
+          return;
+        }
+        if (clientOauth || agencyOauth) {
+          chooseGoogleProperty(clientOauth ? 'client' : 'agency', load);
+        } else {
+          startGoogleAnalytics('client');
+        }
       };
       return button;
     }
@@ -7051,10 +7158,22 @@
       sources.forEach(function (source) {
         var row = el('div', 'source-row');
         var copy = el('div');
+        var meta = properties.filter(function (p) {
+          return String(p.source_id) === String(source.id);
+        })[0];
+        var container = meta ? containers.filter(function (c) {
+          return String(c.id) === String(meta.tag_container_id);
+        })[0] : null;
         copy.innerHTML = '<strong>' + esc(source.label || sourceLabel(source.kind)) + '</strong>' +
           '<div class="muted">' + esc(sourceLabel(source.kind)) +
           (source.kind === 'ga4' && source.auth_mode === 'oauth' ? ' · Google sign-in' : '') +
-          (source.external_id ? ' · ' + esc(source.external_id) : '') +
+          (source.kind === 'ga4' && meta
+            ? ' · ' + esc(meta.display_name || meta.property_id)
+            : (source.external_id ? ' · ' + esc(source.external_id) : '')) +
+          (source.kind === 'ga4'
+            ? (container ? ' · GTM ' + esc(container.public_id || container.name)
+                         : ' · no GTM container')
+            : '') +
           (source.last_sync_at ? ' · Updated ' + esc(String(source.last_sync_at).slice(0, 16))
                                : ' · Not synced yet') + '</div>' +
           (source.last_error
@@ -7074,6 +7193,13 @@
             var sync = el('button', 'btn btn-ghost btn-sm', 'Refresh');
             sync.onclick = function () { syncSource(source, sync); };
             actions.appendChild(sync);
+            if (source.auth_mode === 'oauth' && (clientOauth || agencyOauth)) {
+              var change = el('button', 'btn btn-ghost btn-sm', 'Change property');
+              change.onclick = function () {
+                chooseGoogleProperty(clientOauth ? 'client' : 'agency', load);
+              };
+              actions.appendChild(change);
+            }
           }
           var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
           edit.onclick = function () {
@@ -7094,6 +7220,170 @@
         panel.appendChild(row);
       });
       return panel;
+    }
+
+    function googleConnectionCard() {
+      if (!canManage) return null;
+      var card = el('div', 'panel-card');
+      card.appendChild(el('h3', 'card-title', 'Google connection'));
+      var status = el('p', 'fine-print');
+      if (!oauthReady) {
+        status.textContent = 'Google sign-in is not configured. Add the OAuth client ID ' +
+          'and secret in Settings, then connect this client.';
+        card.appendChild(status);
+        return card;
+      }
+      var parts = [];
+      parts.push(clientOauth ? 'This client has its own Google connection.'
+                             : 'This client has no Google connection of its own.');
+      if (owner) {
+        parts.push(agencyOauth ? 'The agency Google connection is available.'
+                               : 'The agency Google connection is not connected yet.');
+      }
+      parts.push(oauthWriteReady ? 'Read and write access are granted.'
+                                 : 'Read-only access is granted.');
+      status.textContent = parts.join(' ');
+      card.appendChild(status);
+      var actions = el('div', 'row-actions');
+      if (!clientOauth) {
+        var clientButton = el('button', 'btn btn-primary btn-sm',
+          "Connect this client's Google");
+        clientButton.onclick = function () { startGoogleAnalytics('client'); };
+        actions.appendChild(clientButton);
+      }
+      if (owner && !agencyOauth) {
+        var agencyButton = el('button', 'btn btn-ghost btn-sm',
+          'Connect agency Google');
+        agencyButton.onclick = function () { startGoogleAnalytics('agency'); };
+        actions.appendChild(agencyButton);
+      }
+      if (clientOauth) {
+        var chooseClient = el('button', 'btn btn-primary btn-sm',
+          'Choose GA4 property');
+        chooseClient.onclick = function () { chooseGoogleProperty('client', load); };
+        actions.appendChild(chooseClient);
+      }
+      if (owner && agencyOauth) {
+        var chooseAgency = el('button', 'btn btn-ghost btn-sm',
+          'Use agency GA4 property');
+        chooseAgency.onclick = function () { chooseGoogleProperty('agency', load); };
+        actions.appendChild(chooseAgency);
+      }
+      card.appendChild(actions);
+      return card;
+    }
+
+    function pivotRows(rows, keys) {
+      var out = {};
+      (rows || []).forEach(function (row) {
+        var dims = row.dimensions || {};
+        var key = keys.map(function (name) { return dims[name] || ''; }).join('|');
+        if (!out[key]) {
+          out[key] = { dims: {}, metrics: {} };
+          keys.forEach(function (name) { out[key].dims[name] = dims[name] || ''; });
+        }
+        out[key].metrics[row.metric] =
+          (out[key].metrics[row.metric] || 0) + Number(row.value || 0);
+      });
+      return Object.keys(out).map(function (key) { return out[key]; });
+    }
+
+    function reportTable(definition, rows) {
+      var labels = {
+        sessions: 'Sessions', engagedSessions: 'Engaged',
+        engagementRate: 'Engagement', keyEvents: 'Key events',
+        screenPageViews: 'Views', eventCount: 'Events',
+        totalUsers: 'Users', activeUsers: 'Active users'
+      };
+      rows.sort(function (a, b) {
+        return (b.metrics[definition.sort] || 0) - (a.metrics[definition.sort] || 0);
+      });
+      var shown = rows.slice(0, 20);
+      var table = el('table', 'table');
+      var headers = definition.headers.concat(
+        definition.metrics.map(function (metric) { return labels[metric] || metric; }));
+      table.innerHTML = '<thead><tr>' + headers.map(function (header) {
+        return '<th>' + esc(header) + '</th>';
+      }).join('') + '</tr></thead>';
+      var tbody = el('tbody');
+      shown.forEach(function (row) {
+        var tr = el('tr');
+        var cells = definition.keys.map(function (key) {
+          return '<td>' + esc(row.dims[key] || '—') + '</td>';
+        }).concat(definition.metrics.map(function (metric) {
+          var number = Number(row.metrics[metric] || 0);
+          var text = metric === 'engagementRate'
+            ? (number * 100).toFixed(1) + '%'
+            : (number >= 10000 ? (number / 1000).toFixed(1) + 'k'
+                               : String(Math.round(number * 100) / 100));
+          return '<td>' + esc(text) + '</td>';
+        }));
+        tr.innerHTML = cells.join('');
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      var wrap = el('div');
+      wrap.appendChild(table);
+      if (rows.length > shown.length) {
+        wrap.appendChild(el('p', 'fine-print',
+          'Showing the top ' + shown.length + ' of ' + rows.length + ' rows.'));
+      }
+      return wrap;
+    }
+
+    function reportCard() {
+      var reports = (reportData && reportData.reports) || {};
+      var nonEmpty = Object.keys(reports).filter(function (key) {
+        return (reports[key] || []).length;
+      });
+      if (!nonEmpty.length) return null;
+      var definitions = [{
+        key: 'traffic', label: 'Acquisition',
+        keys: ['sessionDefaultChannelGroup', 'sessionSource', 'sessionMedium'],
+        headers: ['Channel', 'Source', 'Medium'],
+        metrics: ['sessions', 'engagedSessions', 'engagementRate', 'keyEvents'],
+        sort: 'sessions'
+      }, {
+        key: 'pages', label: 'Pages',
+        keys: ['pagePath', 'pageTitle'], headers: ['Page', 'Title'],
+        metrics: ['screenPageViews', 'sessions', 'keyEvents'], sort: 'screenPageViews'
+      }, {
+        key: 'events', label: 'Events', keys: ['eventName'], headers: ['Event'],
+        metrics: ['eventCount', 'keyEvents', 'totalUsers'], sort: 'eventCount'
+      }, {
+        key: 'audience', label: 'Audience',
+        keys: ['country', 'deviceCategory'], headers: ['Country', 'Device'],
+        metrics: ['activeUsers', 'sessions', 'keyEvents'], sort: 'activeUsers'
+      }];
+      var card = el('div', 'panel-card');
+      card.appendChild(el('h3', 'card-title', 'Reports'));
+      var tabs = el('div', 'row-actions');
+      var host = el('div', 'mt');
+      var buttons = {};
+      function draw(definition) {
+        Object.keys(buttons).forEach(function (key) {
+          buttons[key].className = 'btn btn-ghost btn-sm' +
+            (key === definition.key ? ' active' : '');
+        });
+        host.innerHTML = '';
+        var rows = pivotRows(reports[definition.key], definition.keys);
+        if (!rows.length) {
+          host.appendChild(el('p', 'fine-print', 'No data for this period yet.'));
+          return;
+        }
+        host.appendChild(reportTable(definition, rows));
+      }
+      definitions.forEach(function (definition) {
+        var button = el('button', 'btn btn-ghost btn-sm', definition.label);
+        button.type = 'button';
+        button.onclick = function () { draw(definition); };
+        buttons[definition.key] = button;
+        tabs.appendChild(button);
+      });
+      card.appendChild(tabs);
+      card.appendChild(host);
+      draw(definitions[0]);
+      return card;
     }
 
     function render(d) {
@@ -7153,6 +7443,10 @@
       }
       var panel = sourceCard(hasTraffic);
       if (panel) body.appendChild(panel);
+      var googleCard = googleConnectionCard();
+      if (googleCard) body.appendChild(googleCard);
+      var reportsPanel = reportCard();
+      if (reportsPanel) body.appendChild(reportsPanel);
     }
 
     function load() {
@@ -7169,7 +7463,9 @@
       body.innerHTML = '<div class="muted" style="padding:16px">Loading analytics…</div>';
       Promise.all([
         api('GET', '/api/analytics/summary?days=' + days),
-        api('GET', '/api/data-sources')
+        api('GET', '/api/data-sources'),
+        api('GET', '/api/analytics/reports?days=' + days)
+          .catch(function () { return { reports: {} }; })
       ]).then(function (results) {
         var data = results[0] || {};
         var sourceData = results[1] || {};
@@ -7177,6 +7473,12 @@
         sourceKinds = sourceData.kinds || [];
         ga4Email = sourceData.ga4_email || '';
         oauthReady = !!sourceData.oauth_ready;
+        clientOauth = !!sourceData.client_oauth_connected;
+        agencyOauth = !!sourceData.agency_oauth_connected;
+        oauthWriteReady = !!sourceData.oauth_write_ready;
+        properties = sourceData.properties || [];
+        containers = sourceData.containers || [];
+        reportData = results[2] || { reports: {} };
         canManage = canManage || !!sourceData.can_manage;
         render(data);
       }).catch(function (e) {

@@ -12,6 +12,8 @@ no user-level rows, so no PII can accumulate here even by accident.
 
 from db import get_connection, now_str
 
+import json
+
 KINDS = ("ghl", "caddy", "ga4", "meta")
 # A client workspace may configure only the adapters that are actually ready for it.
 # Caddy logs are platform infrastructure (and are read automatically); GHL/Meta adapters
@@ -111,6 +113,7 @@ def save_source(data, source_id=None, org_id=None):
 
 def delete_source(source_id):
     with get_connection() as conn:
+        conn.execute("DELETE FROM analytics_properties WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM data_sources WHERE id = ?", (source_id,))
     return True
 
@@ -132,6 +135,165 @@ def record_metrics(org_id, source, points):
             )
             written += 1
     return written
+
+
+def _dimension_key(dimensions):
+    return "|".join("%s=%s" % (key, (dimensions or {}).get(key, ""))
+                    for key in sorted(dimensions or {}))
+
+
+def record_facts(org_id, source_id, facts):
+    """Idempotent upsert of ``[(report, metric, dimensions, day, value), ...]``."""
+    written = 0
+    with get_connection() as conn:
+        for report, metric, dimensions, day, value in facts:
+            dimensions = dimensions or {}
+            conn.execute(
+                "INSERT OR IGNORE INTO analytics_facts "
+                "(org_id, source_id, report, metric, dimensions, dimension_key, day, value) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (org_id, source_id, report, metric, json.dumps(dimensions, sort_keys=True),
+                 _dimension_key(dimensions), day, float(value or 0)),
+            )
+            written += 1
+    return written
+
+
+def _fact(row):
+    item = {key: row[key] for key in row.keys()}
+    try:
+        item["dimensions"] = json.loads(item.get("dimensions") or "{}")
+    except (TypeError, ValueError):
+        item["dimensions"] = {}
+    return item
+
+
+def facts(org_id, since, report=None, source_id=None, limit=5000):
+    query = ("SELECT source_id, report, metric, dimensions, day, value "
+             "FROM analytics_facts WHERE org_id = ? AND day >= ?")
+    params = [org_id, since]
+    if report:
+        query += " AND report = ?"
+        params.append(report)
+    if source_id:
+        query += " AND source_id = ?"
+        params.append(source_id)
+    query += " ORDER BY day ASC, report ASC, metric ASC LIMIT ?"
+    params.append(max(1, int(limit)))
+    with get_connection() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [_fact(row) for row in rows]
+
+
+def properties(org_id):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analytics_properties WHERE org_id = ? ORDER BY id ASC",
+            (org_id,),
+        ).fetchall()
+    return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def property_for_source(source_id):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM analytics_properties WHERE source_id = ?", (source_id,)
+        ).fetchone()
+    return {key: row[key] for key in row.keys()} if row else None
+
+
+def save_property(data):
+    """Upsert the metadata for one GA4 source. Returns the stored row."""
+    data = data or {}
+    org_id = data.get("org_id")
+    source_id = data.get("source_id")
+    if org_id is None or source_id is None:
+        raise SourceError("A property needs a client and a data source.")
+    existing = property_for_source(source_id)
+    values = (
+        int(org_id), int(source_id),
+        str(data.get("property_id") or "").strip(),
+        str(data.get("display_name") or "").strip(),
+        str(data.get("account_name") or "").strip(),
+        str(data.get("time_zone") or "").strip(),
+        str(data.get("currency_code") or "").strip(),
+        data.get("tag_container_id"),
+        str(data.get("bigquery_project") or "").strip(),
+        str(data.get("bigquery_dataset") or "").strip(),
+        str(data.get("bigquery_link_status") or "").strip(),
+        now_str(),
+    )
+    with get_connection() as conn:
+        if existing:
+            conn.execute(
+                "UPDATE analytics_properties SET property_id = ?, display_name = ?, "
+                "account_name = ?, time_zone = ?, currency_code = ?, tag_container_id = ?, "
+                "bigquery_project = ?, bigquery_dataset = ?, bigquery_link_status = ?, "
+                "updated_at = ? WHERE id = ?",
+                values[2:] + (existing["id"],),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO analytics_properties (org_id, source_id, property_id, "
+                "display_name, account_name, time_zone, currency_code, tag_container_id, "
+                "bigquery_project, bigquery_dataset, bigquery_link_status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values,
+            )
+    return property_for_source(source_id)
+
+
+def containers(org_id):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tag_containers WHERE org_id = ? ORDER BY id ASC", (org_id,)
+        ).fetchall()
+    return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def save_container(data):
+    """Upsert one GTM container for a client. Returns the stored row."""
+    data = data or {}
+    org_id = data.get("org_id")
+    container_id = str(data.get("container_id") or "").strip()
+    if org_id is None or not container_id:
+        raise SourceError("A Tag Manager container needs a client and a container id.")
+    values = (
+        data.get("connection_id"),
+        str(data.get("account_id") or "").strip(),
+        container_id,
+        str(data.get("public_id") or "").strip(),
+        str(data.get("name") or "").strip(),
+        str(data.get("domain_name") or "").strip(),
+        str(data.get("kind") or "web").strip() or "web",
+        str(data.get("last_published_version") or "").strip(),
+        now_str(),
+    )
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM tag_containers WHERE org_id = ? AND container_id = ?",
+            (org_id, container_id),
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE tag_containers SET connection_id = ?, account_id = ?, public_id = ?, "
+                "name = ?, domain_name = ?, kind = ?, last_published_version = ?, "
+                "updated_at = ? WHERE id = ?",
+                (values[0], values[1], values[3], values[4], values[5], values[6],
+                 values[7], values[8], row["id"]),
+            )
+            stored_id = row["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO tag_containers (org_id, connection_id, account_id, "
+                "container_id, public_id, name, domain_name, kind, last_published_version, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (org_id,) + values,
+            )
+            stored_id = cur.lastrowid
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM tag_containers WHERE id = ?",
+                           (stored_id,)).fetchone()
+    return {key: row[key] for key in row.keys()} if row else None
 
 
 def metrics(org_id, since, source=None, metric=None, limit=5000):

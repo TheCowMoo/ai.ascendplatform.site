@@ -34,7 +34,8 @@ try:
 except ImportError:
     pass
 
-from db import get_connection, init_db, new_bot_id, IntegrityError, now_str, days_ago, seed_lock
+from db import (get_connection, init_db, new_bot_id, IntegrityError, now_str,
+                days_ago, seed_lock, PLATFORM_ORG)
 import meta as meta_api
 import llm
 import jobs
@@ -4955,7 +4956,20 @@ def list_data_sources():
         "ga4_email": settings.get("GA4_SERVICE_ACCOUNT_EMAIL") or "",
         "oauth_ready": analytics_oauth.configured(),
         "oauth_connected": analytics_oauth.connected(org),
+        "client_oauth_connected": bool(analytics_oauth.get_connection(org, "client")),
+        "agency_oauth_connected": bool(analytics_oauth.get_agency_connection()),
         "oauth_redirect_uri": analytics_oauth.redirect_uri(),
+        "oauth_scopes": analytics_oauth.granted_scopes(
+            analytics_oauth.get_connection(org, "client")
+            or analytics_oauth.get_agency_connection()),
+        "oauth_write_ready": all(
+            analytics_oauth.has_scope(
+                analytics_oauth.get_connection(org, "client")
+                or analytics_oauth.get_agency_connection(), scope)
+            for scope in analytics_oauth.WRITE_SCOPES
+        ),
+        "properties": analytics_service.properties(org),
+        "containers": analytics_service.containers(org),
     })
 
 
@@ -5039,24 +5053,34 @@ def _oauth_upsert_ga4_source(org_id, pending, marker):
 @app.route("/api/analytics/oauth/google/start", methods=["POST"])
 @client_admin_required
 def start_google_analytics_oauth():
-    """Start the Google consent redirect for one client's GA4 property."""
+    """Start a Google consent: a client grant, or the agency grant at org 0."""
     data = request.get_json(silent=True) or {}
-    org = current_org()
-    if org is None and is_owner():
-        raw = data.get("org_id")
-        if raw not in (None, ""):
-            try:
-                org = int(raw)
-            except (TypeError, ValueError):
-                return jsonify({"error": "org_id must be a number"}), 400
-            if not orgs_service.get_org(org):
-                return jsonify({"error": "That client does not exist."}), 404
-    if org is None:
-        return jsonify({"error": "Pick a client before connecting Google Analytics."}), 400
-    try:
-        external_id = analytics_oauth.normalize_property(data.get("external_id"))
-    except analytics_oauth.OAuthError as exc:
-        return jsonify({"error": str(exc)}), 400
+    scope = str(data.get("connection_scope") or "client").strip().lower()
+    if scope == "agency":
+        if not is_owner():
+            return jsonify({"error": "Only the agency owner can connect the agency "
+                                     "Google account."}), 403
+        org = PLATFORM_ORG
+    else:
+        scope = "client"
+        org = current_org()
+        if org is None and is_owner():
+            raw = data.get("org_id")
+            if raw not in (None, ""):
+                try:
+                    org = int(raw)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "org_id must be a number"}), 400
+                if not orgs_service.get_org(org):
+                    return jsonify({"error": "That client does not exist."}), 404
+        if org is None:
+            return jsonify({"error": "Pick a client before connecting Google."}), 400
+    external_id = ""
+    if data.get("external_id"):
+        try:
+            external_id = analytics_oauth.normalize_property(data.get("external_id"))
+        except analytics_oauth.OAuthError as exc:
+            return jsonify({"error": str(exc)}), 400
     source_id = data.get("source_id") or None
     if source_id:
         try:
@@ -5069,24 +5093,27 @@ def start_google_analytics_oauth():
             return jsonify({"error": "That analytics connection was not found."}), 404
     if not analytics_oauth.configured():
         return jsonify({
-            "error": "Google Analytics sign-in is not configured. Missing: %s."
+            "error": "Google sign-in is not configured. Missing: %s."
                      % ", ".join(analytics_oauth.missing_config())
         }), 400
     state = analytics_oauth.new_state()
     session["ga4_oauth"] = {
         "state": state,
         "org_id": org,
+        "connection_scope": scope,
         "external_id": external_id,
         "label": (data.get("label") or "").strip()[:200],
         "source_id": source_id,
+        "write": bool(data.get("write")),
         "created_at": time.time(),
     }
     try:
-        auth_url = analytics_oauth.authorization_url(state)
+        auth_url = analytics_oauth.authorization_url(
+            state, write=bool(data.get("write")))
     except analytics_oauth.OAuthError as exc:
         session.pop("ga4_oauth", None)
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"auth_url": auth_url})
+    return jsonify({"auth_url": auth_url, "connection_scope": scope})
 
 
 @app.route("/api/analytics/oauth/google/callback", methods=["GET"])
@@ -5109,27 +5136,186 @@ def google_analytics_oauth_callback():
     if not created or time.time() - created > analytics_oauth.STATE_TTL:
         return _oauth_notice("error", "The Google authorization request expired. Try again.")
     if request.args.get("error"):
-        return _oauth_notice("error", "Google Analytics access was cancelled.")
+        return _oauth_notice("error", "Google access was cancelled.")
     code = request.args.get("code") or ""
     if not code:
         return _oauth_notice("error", "Google did not return an authorization code.")
     org_id = pending.get("org_id")
-    if (not can_access_org(org_id)
-            or (not is_owner() and current_org() != org_id)):
+    scope = pending.get("connection_scope") or "client"
+    if scope == "agency":
+        if not is_owner():
+            return _oauth_notice("error", "That agency connection is not available here.")
+    elif (not can_access_org(org_id)
+          or (not is_owner() and current_org() != org_id)):
         return _oauth_notice("error", "That client is not available in this session.")
     try:
         tokens = analytics_oauth.exchange_code(code)
-        connection = analytics_oauth.save_connection(org_id, tokens)
-        _oauth_upsert_ga4_source(
-            org_id, pending, analytics_oauth.source_marker(connection["id"])
-        )
+        connection = analytics_oauth.save_connection(
+            org_id, tokens, connection_scope=scope)
+        if scope == "client" and pending.get("external_id"):
+            _oauth_upsert_ga4_source(
+                org_id, pending, analytics_oauth.source_marker(connection["id"])
+            )
     except analytics_oauth.OAuthError as exc:
-        app.logger.warning("GA4 OAuth callback failed for org %s: %s", org_id, exc)
+        app.logger.warning("Google OAuth callback failed for org %s: %s", org_id, exc)
         return _oauth_notice("error", str(exc))
     except Exception:  # pragma: no cover - defensive
-        app.logger.exception("GA4 OAuth callback crashed for org %s", org_id)
-        return _oauth_notice("error", "Google Analytics could not be connected. Try again.")
+        app.logger.exception("Google OAuth callback crashed for org %s", org_id)
+        return _oauth_notice("error", "Google could not be connected. Try again.")
+    if scope == "agency" or not pending.get("external_id"):
+        return _oauth_notice("ok", "Google connected. Choose a GA4 property.")
     return _oauth_notice("ok", "Google Analytics connected.")
+
+
+def _analytics_google_target(data=None, get=False):
+    """(org_id, connection_scope, error_response) for a Google discovery call."""
+    data = data or {}
+    raw_scope = (request.args.get("connection_scope") if get
+                 else data.get("connection_scope")) or "client"
+    scope = "agency" if str(raw_scope).strip().lower() == "agency" else "client"
+    if scope == "agency" and not is_owner():
+        return None, None, (jsonify(
+            {"error": "Only the agency owner can use the agency Google connection."}), 403)
+    org = current_org()
+    raw_org = request.args.get("org_id") if get else data.get("org_id")
+    if org is None and is_owner() and raw_org not in (None, ""):
+        try:
+            org = int(raw_org)
+        except (TypeError, ValueError):
+            return None, None, (jsonify({"error": "org_id must be a number"}), 400)
+    if org is None:
+        return None, None, (jsonify({"error": "Pick a client first"}), 400)
+    return org, scope, None
+
+
+@app.route("/api/analytics/google/properties", methods=["GET"])
+@client_admin_required
+def google_analytics_properties():
+    """The properties this Google grant can reach, for the picker."""
+    import ga4_admin
+
+    org, scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    try:
+        token = analytics_oauth.access_token_for_org(org, scope=scope)
+        properties = ga4_admin.list_properties(token)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ga4_admin.GoogleApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"properties": properties, "connection_scope": scope})
+
+
+@app.route("/api/analytics/google/containers", methods=["GET"])
+@client_admin_required
+def google_tag_containers():
+    """The GTM web containers this Google grant can reach."""
+    import gtm_admin
+
+    org, scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    try:
+        token = analytics_oauth.access_token_for_org(org, scope=scope)
+        containers = gtm_admin.list_containers(token)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except gtm_admin.GtmApiError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"containers": containers, "connection_scope": scope})
+
+
+@app.route("/api/analytics/google/connect", methods=["POST"])
+@client_admin_required
+def connect_google_analytics_property():
+    """Attach an existing GA4 property (and optional GTM container) to this client."""
+    import ga4_admin
+
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    try:
+        external_id = analytics_oauth.normalize_property(data.get("external_id"))
+        token = analytics_oauth.access_token_for_org(org, scope=scope)
+        meta = ga4_admin.get_property(token, external_id)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ga4_admin.GoogleApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    connection = (analytics_oauth.get_agency_connection() if scope == "agency"
+                  else analytics_oauth.get_connection(org, "client"))
+    if not connection:
+        return jsonify({"error": "Connect Google first, then choose a property."}), 400
+
+    existing = next(
+        (row for row in analytics_service.sources(org)
+         if row.get("kind") == "ga4"
+         and row.get("external_id") == meta["property"]), None)
+    old_connection_id = (analytics_oauth.connection_id_from_source(existing)
+                         if existing else None)
+    source = analytics_service.save_source({
+        "kind": "ga4",
+        "external_id": meta["property"],
+        "label": (data.get("label") or meta.get("display_name")
+                  or "Google Analytics"),
+        "credential_ref": analytics_oauth.source_marker(connection["id"]),
+    }, source_id=existing["id"] if existing else None, org_id=org)
+    if old_connection_id and old_connection_id != connection["id"]:
+        analytics_oauth.drop_if_unused(org, old_connection_id)
+
+    container = None
+    container_id = str(data.get("container_id") or "").strip()
+    if container_id:
+        container = analytics_service.save_container({
+            "org_id": org,
+            "connection_id": connection["id"],
+            "account_id": data.get("container_account_id"),
+            "container_id": container_id,
+            "public_id": data.get("container_public_id"),
+            "name": data.get("container_name"),
+            "domain_name": data.get("container_domain"),
+            "kind": "web",
+        })
+    property_row = analytics_service.save_property({
+        "org_id": org,
+        "source_id": source["id"],
+        "property_id": meta["property_id"],
+        "display_name": meta.get("display_name") or "",
+        "account_name": data.get("account_name") or meta.get("account") or "",
+        "time_zone": meta.get("time_zone") or "",
+        "currency_code": meta.get("currency_code") or "",
+        "tag_container_id": container["id"] if container else None,
+    })
+    return jsonify({"source": source, "property": property_row,
+                    "container": container}), 201
+
+
+@app.route("/api/analytics/reports", methods=["GET"])
+@login_required
+def analytics_reports():
+    """The multi-dimensional GA4 facts for the report tabs."""
+    import datetime as _dt
+
+    org = current_org()
+    if org is None and is_owner() and request.args.get("org_id"):
+        try:
+            org = int(request.args["org_id"])
+        except ValueError:
+            return jsonify({"error": "org_id must be a number"}), 400
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days") or 7)))
+    except ValueError:
+        days = 7
+    since = (_dt.datetime.now(_dt.timezone.utc)
+             - _dt.timedelta(days=days)).strftime("%Y-%m-%d")
+    grouped = {}
+    for row in analytics_service.facts(org, since, limit=20000):
+        grouped.setdefault(row["report"], []).append(row)
+    return jsonify({"since": since, "days": days, "reports": grouped})
 
 
 @app.route("/api/analytics/oauth/notice", methods=["GET"])
@@ -5392,6 +5578,12 @@ def demo():
 # Entrypoint
 # ---------------------------------------------------------------------------
 init_db()
+try:
+    encrypted_tokens = analytics_oauth.encrypt_legacy_tokens()
+    if encrypted_tokens:
+        app.logger.info("Encrypted %d legacy Google token row(s).", encrypted_tokens)
+except Exception as exc:
+    app.logger.warning("Legacy Google token encryption skipped: %s", exc)
 seed_initial_data()
 
 # Seed the default agent roster (no-op once agents exist).

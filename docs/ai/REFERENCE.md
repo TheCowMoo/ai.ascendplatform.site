@@ -96,6 +96,10 @@ responsibility:
 - `site_builder.py`, `sites.py`, `provisioner.py`, `versions.py` — site records, page
   snapshots, DNS/vhost/provisioning.
 - `site_logs.py`, `analytics.py`, `ga4.py`, `analytics_oauth.py` — traffic sources.
+  `analytics_oauth.py` is the unified Google grant (client or agency, encrypted tokens);
+  `ga4_admin.py` discovers properties, `gtm_admin.py` discovers Tag Manager containers,
+  and `ga4.py` writes curated daily reports into `analytics_facts` plus the legacy
+  `metrics_daily` series.
 
 ### CRM and communication
 
@@ -121,7 +125,8 @@ responsibility:
 - **Hosting:** `sites`, `ssh_hosts`, `action_approvals`.
 - **CRM/forms:** `contacts`, `contact_sync_state`, `ghl_object_links`, `forms`,
   `form_responses`.
-- **Analytics:** `data_sources`, `oauth_connections`, `metrics_daily`, `sync_runs`.
+- **Analytics:** `data_sources`, `oauth_connections`, `analytics_properties`,
+  `tag_containers`, `analytics_facts`, `metrics_daily`, `sync_runs`.
 - **Billing:** `usage_events`, `credit_ledger`, `credit_balances`, `rate_card`,
   `usage_reconciliations`.
 - **Platform:** `settings`, `settings_events`, `mail_senders`, `invites`, `password_resets`,

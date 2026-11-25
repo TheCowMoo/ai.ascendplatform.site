@@ -7,6 +7,7 @@ response, so the test exercises our state handling, source creation, refresh pat
 client scoping without needing real credentials.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -28,6 +29,8 @@ import analytics_oauth  # noqa: E402
 import app as appmod  # noqa: E402
 import db  # noqa: E402
 import ga4  # noqa: E402
+import ga4_admin  # noqa: E402
+import gtm_admin  # noqa: E402
 import orgs as orgs_service  # noqa: E402
 
 TAG = uuid.uuid4().hex[:8]
@@ -64,6 +67,13 @@ def cleanup():
     with db.get_connection() as conn:
         conn.execute("DELETE FROM metrics_daily WHERE org_id IN "
                      "(SELECT id FROM orgs WHERE name IN (?, ?))", (ORG_NAME, OTHER_NAME))
+        conn.execute("DELETE FROM analytics_facts WHERE org_id IN "
+                     "(SELECT id FROM orgs WHERE name IN (?, ?))", (ORG_NAME, OTHER_NAME))
+        conn.execute("DELETE FROM analytics_properties WHERE org_id IN "
+                     "(SELECT id FROM orgs WHERE name IN (?, ?))", (ORG_NAME, OTHER_NAME))
+        conn.execute("DELETE FROM tag_containers WHERE org_id IN "
+                     "(SELECT id FROM orgs WHERE name IN (?, ?))", (ORG_NAME, OTHER_NAME))
+        conn.execute("DELETE FROM oauth_connections WHERE org_id = 0")
         conn.execute("DELETE FROM oauth_connections WHERE org_id IN "
                      "(SELECT id FROM orgs WHERE name IN (?, ?))", (ORG_NAME, OTHER_NAME))
         conn.execute("DELETE FROM data_sources WHERE org_id IN "
@@ -102,7 +112,8 @@ def start(client, **payload):
 def test_start_url_and_state():
     auth_url, query = start(STATE["client"], external_id="123456789", label="Main site")
     check("start points at Google", auth_url.startswith(analytics_oauth.AUTH_URL), True)
-    check("read-only scope", query.get("scope"), [analytics_oauth.SCOPE])
+    check("read-only scopes", query.get("scope"),
+          [" ".join(analytics_oauth.READ_SCOPES)])
     check("offline access", query.get("access_type"), ["offline"])
     check("consent is requested", "consent" in (query.get("prompt") or [""])[0], True)
     check("state is present", bool(query.get("state")), True)
@@ -111,6 +122,19 @@ def test_start_url_and_state():
     STATE["auth_url"] = auth_url
     STATE["state"] = query["state"][0]
     print("start URL carries scope, redirect and one-time state")
+
+
+def test_write_upgrade_requests_both_scope_sets():
+    client = login(ORG_EMAIL, ORG_PASSWORD)
+    _url, query = start(client, external_id="", write=True)
+    scopes = set((query.get("scope") or [""])[0].split())
+    check("write upgrade includes Analytics edit",
+          analytics_oauth.SCOPE_ANALYTICS_EDIT in scopes, True)
+    check("write upgrade includes Tag Manager publish",
+          analytics_oauth.SCOPE_TAGMANAGER_PUBLISH in scopes, True)
+    check("the read scopes remain",
+          analytics_oauth.SCOPE_ANALYTICS_READONLY in scopes, True)
+    print("a write upgrade asks for both scope sets")
 
 
 def test_missing_configuration_is_explicit():
@@ -149,6 +173,12 @@ def test_callback_saves_connection_and_source():
 
     connection = analytics_oauth.get_connection(STATE["org"]["id"])
     check("the refresh token was stored", connection.get("refresh_token"), "refresh-one")
+    with db.get_connection() as conn:
+        stored = conn.execute(
+            "SELECT refresh_token, refresh_token_enc FROM oauth_connections "
+            "WHERE org_id = ?", (STATE["org"]["id"],)).fetchone()
+    check("the plaintext refresh token is blanked", stored["refresh_token"], "")
+    check("the refresh token is encrypted at rest", bool(stored["refresh_token_enc"]), True)
     source = [row for row in analytics.sources(STATE["org"]["id"])
               if row.get("kind") == "ga4"][0]
     check("the source has the OAuth marker",
@@ -182,6 +212,124 @@ def test_members_cannot_start_oauth():
     print("members cannot start a Google Analytics connection")
 
 
+def _fake_ga4(url, headers=None, timeout=20):
+    if "accountSummaries" in url:
+        return 200, json.dumps({
+            "accountSummaries": [{
+                "account": "accounts/1", "displayName": "Agency",
+                "propertySummaries": [
+                    {"property": "properties/123456789",
+                     "displayName": "Main site",
+                     "propertyType": "PROPERTY_TYPE_ORDINARY"},
+                    {"property": "properties/987654321",
+                     "displayName": "Agency property",
+                     "propertyType": "PROPERTY_TYPE_ORDINARY"},
+                ],
+            }],
+        })
+    if "987654321" in url:
+        return 200, json.dumps({
+            "name": "properties/987654321", "displayName": "Agency property",
+            "account": "accounts/1", "timeZone": "Europe/London",
+            "currencyCode": "GBP", "propertyType": "PROPERTY_TYPE_ORDINARY",
+        })
+    if "123456789" in url:
+        return 200, json.dumps({
+            "name": "properties/123456789", "displayName": "Main site",
+            "account": "accounts/1", "timeZone": "Europe/London",
+            "currencyCode": "GBP", "propertyType": "PROPERTY_TYPE_ORDINARY",
+        })
+    return 404, "{}"
+
+
+def _fake_gtm(url, headers=None, timeout=20):
+    if url.endswith("/accounts"):
+        return 200, json.dumps({"account": [{"accountId": "1",
+                                             "name": "accounts/1"}]})
+    if "/containers" in url:
+        return 200, json.dumps({"container": [{
+            "accountId": "1", "containerId": "42", "name": "Main container",
+            "publicId": "GTM-ABC", "domainName": "example.com",
+            "usageContext": ["web"],
+        }]})
+    return 404, "{}"
+
+
+def test_agency_connection_property_and_container_pickers():
+    owner = STATE["owner"]
+    org = STATE["org"]["id"]
+    _url, query = start(owner, external_id="", connection_scope="agency")
+    state = query["state"][0]
+    original = analytics_oauth.exchange_code
+    analytics_oauth.exchange_code = lambda code: {
+        "access_token": "agency-access",
+        "refresh_token": "agency-refresh",
+        "expires_in": 3600,
+        "scope": " ".join(analytics_oauth.READ_SCOPES),
+    }
+    try:
+        response = owner.get("/api/analytics/oauth/google/callback?code=fake&state="
+                             + urllib.parse.quote(state))
+    finally:
+        analytics_oauth.exchange_code = original
+    check("agency callback succeeds",
+          response.headers.get("Location", "").endswith("oauth-ok"), True)
+    connection = analytics_oauth.get_agency_connection()
+    check("agency connection exists", bool(connection), True)
+    check("agency connection scope", connection.get("connection_scope"), "agency")
+    check("agency connection lives at org 0", connection.get("org_id"), 0)
+
+    denied = STATE["client"].get("/api/analytics/google/properties"
+                                 "?connection_scope=agency")
+    check("a client cannot use the agency grant", denied.status_code, 403)
+
+    original_ga4 = ga4_admin._transport
+    ga4_admin._transport = _fake_ga4
+    try:
+        properties = owner.get(
+            "/api/analytics/google/properties?org_id=%d&connection_scope=agency" % org)
+        connected = owner.post("/api/analytics/google/connect", json={
+            "org_id": org,
+            "connection_scope": "agency",
+            "external_id": "987654321",
+            "label": "Agency property",
+            "account_name": "Agency",
+            "container_id": "42",
+            "container_account_id": "1",
+            "container_public_id": "GTM-ABC",
+            "container_name": "Main container",
+            "container_domain": "example.com",
+        })
+    finally:
+        ga4_admin._transport = original_ga4
+    check("the property picker lists the properties",
+          len((properties.get_json() or {}).get("properties") or []), 2)
+
+    original_gtm = gtm_admin._transport
+    gtm_admin._transport = _fake_gtm
+    try:
+        containers = owner.get(
+            "/api/analytics/google/containers?org_id=%d&connection_scope=agency" % org)
+    finally:
+        gtm_admin._transport = original_gtm
+    check("the container picker lists the web container",
+          len((containers.get_json() or {}).get("containers") or []), 1)
+
+    check("connect existing succeeds", connected.status_code, 201)
+    payload = connected.get_json() or {}
+    source = payload.get("source") or {}
+    check("the agency marker is on the source",
+          source.get("credential_ref"),
+          analytics_oauth.source_marker(connection["id"]))
+    check("the property metadata is stored",
+          (payload.get("property") or {}).get("display_name"), "Agency property")
+    check("the container is stored",
+          (payload.get("container") or {}).get("container_id"), "42")
+    check("the agency token resolves for the source",
+          analytics_oauth.access_token_for_source(source), "agency-access")
+    print("agency connection, property picker and GTM container picker are wired")
+
+
 def test_access_token_refresh_preserves_the_refresh_token():
     org_id = STATE["org"]["id"]
     with db.get_connection() as conn:
@@ -206,34 +354,61 @@ def test_access_token_refresh_preserves_the_refresh_token():
 def test_ga4_sync_uses_the_oauth_token():
     org_id = STATE["org"]["id"]
     source = [row for row in analytics.sources(org_id) if row.get("kind") == "ga4"][0]
-    original_token = analytics_oauth.access_token_for_org
-    original_report = ga4.run_report
-    seen = {}
-    analytics_oauth.access_token_for_org = lambda org: "oauth-access-token"
-    ga4.run_report = lambda property_id, token, days=7: seen.update(
-        {"property_id": property_id, "token": token}) or {
-        "rows": [{"dimensionValues": [{"value": "20261019"}, {"value": "/"}],
-                  "metricValues": [{"value": "4"}, {"value": "9"}]}]
-    }
+    original_token = analytics_oauth.access_token_for_source
+    original_report = ga4.run_named_report
+    seen = {"reports": []}
+
+    def fake_report(property_id, token, report_name, days=7):
+        seen["property_id"] = property_id
+        seen["token"] = token
+        seen["reports"].append(report_name)
+        if report_name == "pages":
+            return {
+                "dimensionHeaders": [{"name": "date"}, {"name": "pagePath"},
+                                     {"name": "pageTitle"}],
+                "metricHeaders": [{"name": "screenPageViews"}, {"name": "sessions"},
+                                  {"name": "engagedSessions"}, {"name": "keyEvents"}],
+                "rows": [{"dimensionValues": [{"value": "20261019"}, {"value": "/"},
+                                              {"value": "Home"}],
+                          "metricValues": [{"value": "9"}, {"value": "4"},
+                                           {"value": "3"}, {"value": "1"}]}],
+            }
+        return {
+            "dimensionHeaders": [{"name": "date"}, {"name": "eventName"}],
+            "metricHeaders": [{"name": "eventCount"}],
+            "rows": [{"dimensionValues": [{"value": "20261019"}, {"value": "page_view"}],
+                      "metricValues": [{"value": "4"}]}],
+        }
+
+    analytics_oauth.access_token_for_source = lambda src: "oauth-access-token"
+    ga4.run_named_report = fake_report
     try:
         result = ga4.sync(source)
     finally:
-        analytics_oauth.access_token_for_org = original_token
-        ga4.run_report = original_report
+        analytics_oauth.access_token_for_source = original_token
+        ga4.run_named_report = original_report
     check("sync passes the property id", seen.get("property_id"), "properties/123456789")
     check("sync uses the OAuth bearer token", seen.get("token"), "oauth-access-token")
-    check("sync writes metric rows", result.get("rows", 0) > 0, True)
-    print("GA4 sync selects the OAuth token path for an OAuth source")
+    check("sync runs every curated report",
+          sorted(seen.get("reports") or []), sorted(ga4.SYNC_REPORTS))
+    check("sync writes fact rows", result.get("rows", 0) > 0, True)
+    check("sync keeps the legacy daily series", result.get("legacy_rows", 0) > 0, True)
+    facts = analytics.facts(org_id, "2026-10-19")
+    check("the pages facts were stored",
+          any(row["report"] == "pages" for row in facts), True)
+    print("GA4 sync selects the OAuth token path and writes both fact stores")
 
 
 def main():
     try:
         setup()
         test_start_url_and_state()
+        test_write_upgrade_requests_both_scope_sets()
         test_missing_configuration_is_explicit()
         test_callback_saves_connection_and_source()
         test_callback_rejects_a_bad_state()
         test_members_cannot_start_oauth()
+        test_agency_connection_property_and_container_pickers()
         test_access_token_refresh_preserves_the_refresh_token()
         test_ga4_sync_uses_the_oauth_token()
     finally:

@@ -850,11 +850,17 @@ oauth_connections = Table(
     "oauth_connections",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("provider", Text, nullable=False, server_default=_literal("google_analytics")),
+    Column("provider", Text, nullable=False, server_default=_literal("google")),
     Column("org_id", Integer, nullable=False),
+    # 'client' = that client's own Google grant; 'agency' = the platform's grant at
+    # org 0, usable for any client the operator chooses. Tokens are stored encrypted;
+    # the legacy plaintext columns stay for older rows and are blanked on the next save.
+    Column("connection_scope", Text, nullable=False, server_default=_literal("client")),
     Column("account_email", Text, nullable=False, server_default=_literal("")),
     Column("refresh_token", Text, nullable=False, server_default=_literal("")),
     Column("access_token", Text, nullable=False, server_default=_literal("")),
+    Column("refresh_token_enc", Text, nullable=False, server_default=_literal("")),
+    Column("access_token_enc", Text, nullable=False, server_default=_literal("")),
     Column("expires_at", Text),
     Column("scope", Text, nullable=False, server_default=_literal("")),
     _created_at(),
@@ -863,6 +869,70 @@ oauth_connections = Table(
 )
 
 Index("idx_oauth_connections_org", oauth_connections.c.org_id)
+
+# GA4 metadata for one connected property. The data source is still the generic binding;
+# this table holds what the Data/Admin APIs told us about it, and the chosen GTM container.
+analytics_properties = Table(
+    "analytics_properties",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("source_id", Integer, nullable=False),
+    Column("property_id", Text, nullable=False, server_default=_literal("")),
+    Column("display_name", Text, nullable=False, server_default=_literal("")),
+    Column("account_name", Text, nullable=False, server_default=_literal("")),
+    Column("time_zone", Text, nullable=False, server_default=_literal("")),
+    Column("currency_code", Text, nullable=False, server_default=_literal("")),
+    Column("tag_container_id", Integer),
+    Column("bigquery_project", Text, nullable=False, server_default=_literal("")),
+    Column("bigquery_dataset", Text, nullable=False, server_default=_literal("")),
+    Column("bigquery_link_status", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    UniqueConstraint("org_id", "source_id", name="uq_analytics_property_source"),
+    Index("ix_analytics_properties_org", "org_id"),
+)
+
+# One GTM web container per client/site. Phase 1 lists and stores existing containers;
+# Phase 2 creates/publishes versions and installs the snippet.
+tag_containers = Table(
+    "tag_containers",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("connection_id", Integer),
+    Column("account_id", Text, nullable=False, server_default=_literal("")),
+    Column("container_id", Text, nullable=False, server_default=_literal("")),
+    Column("public_id", Text, nullable=False, server_default=_literal("")),
+    Column("name", Text, nullable=False, server_default=_literal("")),
+    Column("domain_name", Text, nullable=False, server_default=_literal("")),
+    Column("kind", Text, nullable=False, server_default=_literal("web")),
+    Column("last_published_version", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+    UniqueConstraint("org_id", "container_id", name="uq_tag_container_org"),
+    Index("ix_tag_containers_org", "org_id"),
+)
+
+# Multi-dimensional GA4 facts. `metrics_daily` stays the simple legacy series; this is
+# where acquisition/events/audience rows go without exploding the old unique key.
+analytics_facts = Table(
+    "analytics_facts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("source_id", Integer, nullable=False),
+    Column("report", Text, nullable=False, server_default=_literal("")),
+    Column("metric", Text, nullable=False, server_default=_literal("")),
+    Column("dimensions", Text, nullable=False, server_default=_literal("{}")),
+    Column("dimension_key", Text, nullable=False, server_default=_literal("")),
+    Column("day", Text, nullable=False, server_default=_literal("")),
+    Column("value", Float, nullable=False, server_default=text("0")),
+    UniqueConstraint("org_id", "source_id", "report", "metric", "dimension_key", "day",
+                     name="uq_analytics_fact"),
+    Index("ix_analytics_facts_org_day", "org_id", "day"),
+    Index("ix_analytics_facts_source", "source_id"),
+)
 
 # One row per metric per day per dimension: long and narrow so every source answers the
 # same questions. Aggregates only - no user-level rows, so no PII can accumulate here.
@@ -1388,6 +1458,13 @@ _ADDITIVE_COLUMNS = (
     # saved and switched on in one step.
     ("automation_proposals", "trigger_type", "trigger_type TEXT NOT NULL DEFAULT 'manual'"),
     ("automation_proposals", "trigger_config", "trigger_config TEXT NOT NULL DEFAULT '{}'"),
+    # Google connections (migration 0037): agency/client scope and encrypted tokens.
+    ("oauth_connections", "connection_scope",
+     "connection_scope TEXT NOT NULL DEFAULT 'client'"),
+    ("oauth_connections", "refresh_token_enc",
+     "refresh_token_enc TEXT NOT NULL DEFAULT ''"),
+    ("oauth_connections", "access_token_enc",
+     "access_token_enc TEXT NOT NULL DEFAULT ''"),
     ("users", "org_id", "org_id INTEGER"),
     ("users", "onboarded_at", "onboarded_at TEXT"),
     ("users", "status", "status TEXT NOT NULL DEFAULT 'active'"),

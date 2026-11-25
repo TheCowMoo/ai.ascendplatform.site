@@ -119,6 +119,7 @@ def test_sqlite_schema():
         "build_sessions", "mail_senders", "invites",
         "data_sources", "oauth_connections", "metrics_daily", "sync_runs", "site_versions",
         "automations", "automation_runs", "automation_proposals", "contacts", "email_templates", "agent_tools",
+        "analytics_properties", "tag_containers", "analytics_facts",
         "forms", "form_responses", "media", "assistant_sessions", "assistant_messages",
         "usage_events", "credit_ledger", "credit_balances", "rate_card",
         "voice_sessions", "usage_reconciliations", "contact_sync_state",

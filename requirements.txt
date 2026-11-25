@@ -36,3 +36,5 @@ websockets>=16,<17
 # hard dependencies of media_library.py, which the app imports at startup.
 Pillow>=10
 pypdf>=4
+# Google OAuth tokens are encrypted at rest with Fernet.
+cryptography>=42

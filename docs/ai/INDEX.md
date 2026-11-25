@@ -18,9 +18,13 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/agents` | owner | `create_agent` | `app.py` |
 | DELETE | `/api/agents/<int:agent_id>` | owner | `delete_agent` | `app.py` |
 | PUT | `/api/agents/<int:agent_id>` | owner | `update_agent` | `app.py` |
+| POST | `/api/analytics/google/connect` | client_admin | `connect_google_analytics_property` | `app.py` |
+| GET | `/api/analytics/google/containers` | client_admin | `google_tag_containers` | `app.py` |
+| GET | `/api/analytics/google/properties` | client_admin | `google_analytics_properties` | `app.py` |
 | GET | `/api/analytics/oauth/google/callback` | login (manual session check) | `google_analytics_oauth_callback` | `app.py` |
 | POST | `/api/analytics/oauth/google/start` | client_admin | `start_google_analytics_oauth` | `app.py` |
 | GET | `/api/analytics/oauth/notice` | client_admin | `google_analytics_oauth_notice` | `app.py` |
+| GET | `/api/analytics/reports` | login | `analytics_reports` | `app.py` |
 | GET | `/api/analytics/summary` | login | `analytics_summary` | `app.py` |
 | GET | `/api/approvals` | login | `list_approvals` | `app.py` |
 | POST | `/api/approvals/<int:approval_id>/<decision>` | login | `decide_approval` | `app.py` |
@@ -289,6 +293,8 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `action_approvals`
 - `agent_tools`
 - `agents`
+- `analytics_facts`
+- `analytics_properties`
 - `assistant_messages`
 - `assistant_sessions`
 - `automation_proposals`
@@ -331,6 +337,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `sites`
 - `ssh_hosts`
 - `sync_runs`
+- `tag_containers`
 - `usage_events`
 - `usage_reconciliations`
 - `user_events`
