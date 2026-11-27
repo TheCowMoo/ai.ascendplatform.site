@@ -1298,6 +1298,55 @@
     location.hash = '#/app/studio';
   }
 
+  // Suggestions that stay visible after the first message. Domains are the user's own
+  // scope; the recommendation batch supplies the next-step chips. Clicking only fills
+  // the composer, so a suggestion can never start work by itself.
+  function assistantChoices(host, onPick) {
+    if (!host || !state.user) return;
+    var canListSites = !isOwner(state.user) ||
+      !!(state.user && state.user.acting_org);
+    var sitesRequest = canListSites
+      ? api('GET', '/api/sites?summary=1').catch(function () { return { sites: [] }; })
+      : Promise.resolve({ sites: [] });
+    var ideasRequest = api('GET', '/api/recommendations?limit=3')
+      .catch(function () { return { recommendations: [] }; });
+    Promise.all([sitesRequest, ideasRequest]).then(function (results) {
+      if (!host.parentNode) return;
+      var sites = ((results[0] || {}).sites || []).filter(function (site) {
+        return site && site.domain;
+      });
+      var ideas = ((results[1] || {}).recommendations || []).slice(0, 3);
+      host.innerHTML = '';
+      if (!sites.length && !ideas.length) { host.hidden = true; return; }
+      host.hidden = false;
+      function chip(label, text, title) {
+        var button = el('button', 'asst-chip', label);
+        button.type = 'button';
+        if (title) button.title = title;
+        button.onclick = function () {
+          onPick(text);
+          try { host.scrollIntoView({ block: 'nearest' }); } catch (e) { /* older browser */ }
+        };
+        host.appendChild(button);
+      }
+      if (sites.length) {
+        host.appendChild(el('span', 'asst-suggest-label', 'Your sites'));
+        sites.slice(0, 3).forEach(function (site) {
+          chip(site.domain, 'Use ' + site.domain + ' for this.',
+               site.status ? 'Status: ' + site.status : '');
+        });
+      }
+      if (ideas.length) {
+        host.appendChild(el('span', 'asst-suggest-label', 'Next'));
+        ideas.forEach(function (idea) {
+          chip(idea.title || idea.action_text || 'Next step',
+               idea.action_text || idea.title || '', idea.why || '');
+        });
+      }
+    });
+  }
+
+
   function renderChecklist(card, prof, sites, content, bots) {
     var steps = [
       { label: 'Add your business details', done: !!prof.name, href: '#/app/profile' },
@@ -3560,6 +3609,18 @@
     };
     actions.appendChild(dns);
     actions.appendChild(check);
+    if (manager && site.linked_bot_id) {
+      var chatButton = el('button', 'btn btn-primary btn-sm', 'Refresh chat button');
+      chatButton.onclick = function () {
+        chatButton.disabled = true;
+        api('POST', '/api/sites/' + site.id + '/widget').then(function (d) {
+          toast(d.message || 'Chat button updated', true);
+          refresh();
+        }).catch(function (e) { toast(e.message, false); })
+          .finally(function () { chatButton.disabled = false; });
+      };
+      actions.appendChild(chatButton);
+    }
     if (manager) actions.appendChild(provision);
     if (owner) {
       var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
@@ -3711,11 +3772,25 @@
     }
     if (mayLinkBot) {
       modal.appendChild(field('Linked chatbot', linkedBot));
+      modal.appendChild(el('p', 'fine-print',
+        'If the chat button is missing from the live page, press Refresh chat button. ' +
+        'It updates the page directly and does not wait for a queued job.'));
     }
 
     var actions = el('div', 'modal-actions');
     var cancel = el('button', 'btn btn-ghost', 'Cancel');
     cancel.onclick = function () { backdrop.remove(); };
+    var repair = el('button', 'btn btn-ghost', 'Refresh chat button');
+    repair.onclick = function () {
+      if (!site.id) { toast('Save the domain first', false); return; }
+      repair.disabled = true;
+      api('POST', '/api/sites/' + site.id + '/widget').then(function (d) {
+        toast(d.message || 'Chat button updated', true);
+        if (d.site) site = d.site;
+        if (onSaved) onSaved();
+      }).catch(function (e) { toast(e.message, false); })
+        .finally(function () { repair.disabled = false; });
+    };
     var save = el('button', 'btn btn-primary', owner ? 'Save' : 'Continue');
     save.onclick = function () {
       var payload = owner
@@ -3736,6 +3811,8 @@
         .finally(function () { save.disabled = false; });
     };
     actions.appendChild(cancel);
+    if (!isNew) actions.appendChild(repair);
+
     actions.appendChild(save);
     modal.appendChild(actions);
 
@@ -8912,6 +8989,13 @@
     composer.setAttribute('data-tour', 'studio-composer');
     composer.appendChild(box);
     composer.appendChild(send);
+    var suggestionBar = el('div', 'asst-suggest asst-suggest-bar');
+    suggestionBar.hidden = true;
+    chat.appendChild(suggestionBar);
+    assistantChoices(suggestionBar, function (text) {
+      box.value = text;
+      box.focus();
+    });
     chat.appendChild(composer);
     if (pendingStudioPrompt) {
       box.value = pendingStudioPrompt;
@@ -9132,17 +9216,6 @@
         });
       }
       paint(fallback.map(function (text) { return { title: text, action_text: text }; }));
-      var timer = 0;
-      function loadIdeas() {
-        api('GET', '/api/recommendations?limit=3').then(function (data) {
-          if (!chips.parentNode) return;
-          var items = (data.recommendations || []).slice(0, 3);
-          if (items.length) paint(items);
-          if (data.refreshing) timer = setTimeout(loadIdeas, 3000);
-        }).catch(function () { /* the local prompts still work */ });
-      }
-      loadIdeas();
-      onCleanup(function () { if (timer) clearTimeout(timer); });
       card.appendChild(chips);
       thread.appendChild(card);
     }
@@ -13060,6 +13133,13 @@
       row.appendChild(go);
       row.appendChild(mic);
       sheet.appendChild(row);
+      var sheetChoices = el('div', 'asst-suggest asst-suggest-bar');
+      sheetChoices.hidden = true;
+      sheet.appendChild(sheetChoices);
+      assistantChoices(sheetChoices, function (text) {
+        input.value = text;
+        input.focus();
+      });
       document.body.appendChild(sheet);
       input.focus();
 

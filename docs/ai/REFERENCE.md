@@ -103,6 +103,9 @@ responsibility:
   open refinement job is not duplicated. `GET /api/recommendations` and the
   refresh/dismiss/done routes are login-scoped; the batch is shared by all users of the
   client, and member responses exclude `audience=admin` cards.
+- `voice.py` — browser-direct Live voice. The read-only `list_domains` tool returns only
+  the signed-in client's sites; the voice client turns them into clickable choices, and
+  the model never supplies a tenant id or a domain from memory.
 - `tools/` — agent tools; every side-effecting tool must respect policy and approvals.
   An agent-initiated `publish_page`/`publish_site` asks for the same approval card as
   the Publish button; the button and an explicit voice "yes" record the operator's
@@ -129,7 +132,10 @@ responsibility:
   the UI, `sites.create_site`/`update_site` and the agent tools; a new entry point must
   call it rather than trusting a dotted string. A site may only link a chat assistant
   owned by the same org; `widget_embed.py` injects that bot's `<script>` before
-  `</body>` when provisioning, publishing or writing an index page.
+  `</body>` when provisioning, publishing or writing an index page. `POST
+  /api/sites/<id>/widget` is the queue-independent repair: it injects the linked bot
+  into the stored/live page and writes `index.html` directly, with the same approval
+  gate in live mode.
 - `site_logs.py`, `analytics.py`, `ga4.py`, `analytics_oauth.py` — traffic sources.
   `analytics_oauth.py` is the unified Google grant (client or agency, encrypted tokens);
   `ga4_admin.py` discovers properties/accounts and creates properties/streams/key
@@ -236,9 +242,13 @@ a secret, token or provider key into a URL, log line or client-facing error.
 - The form builder exposes accent colour and submit-label settings; the site editor
   offers a dropdown of the client's chat assistants instead of a raw bot id.
 - The dashboard renders an evidence-backed **Recommended next steps** card when the user
-  has a client selected; the Studio welcome chips use the same cached batch. A Studio
-  chip only inserts text into the composer. Dashboard **Ask AI** starts a normal Manager
-  turn with that action; outward changes still go through the existing approval gates.
+  has a client selected; the Studio and floating Assistant also keep a persistent
+  suggestion bar with the client's domains and recommendation chips. A Studio chip only
+  inserts text into the composer. Dashboard **Ask AI** starts a normal Manager turn with
+  that action; outward changes still go through the existing approval gates.
+- The site editor has a **Refresh chat button** action for sites whose linked assistant
+  is missing from the live page; it calls the direct widget repair instead of waiting
+  for a queued provisioning run.
 - `admin/admin.css` holds the design tokens and component patterns.
 - `admin/index.html` holds the static shell and icon sprite.
 - JS role gates must mirror server gates; hidden UI is not a security boundary.

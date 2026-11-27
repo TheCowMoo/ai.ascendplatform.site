@@ -210,12 +210,50 @@ def test_publishing_injects_the_linked_widget():
     check("the live page carries the bot id", 'data-bot="%s"' % bot["id"] in body, True)
     check("the page still has its content", "<h1>Hello</h1>" in body, True)
 
+def test_refresh_widget_repairs_a_live_page_without_a_queue():
+    org_id = new_org("Widget Repair")
+    bot = bots_service.create_bot({"name": "Repair helper"}, org_id)
+    docroot = tempfile.mkdtemp(prefix="widget-repair-")
+    path = os.path.join(docroot, "index.html")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("<html><body><h1>Live page</h1></body></html>")
+    site = sites_service.create_site({
+        "domain": "widget-repair.test", "docroot": docroot,
+        "linked_bot_id": bot["id"],
+    }, org_id=org_id)
+    original = actions.is_dry_run
+    original_root = provisioner.SITES_ROOT
+    provisioner.SITES_ROOT = docroot
+    try:
+        actions.is_dry_run = lambda: True
+        dry = sites_service.refresh_widget(site["id"])
+        check("a dry-run repair does not write the live file", dry.get("dry_run"), True)
+        with open(path, encoding="utf-8") as handle:
+            check("the page is unchanged in dry-run", "data-bot=" in handle.read(), False)
+
+        actions.is_dry_run = lambda: False
+        result = sites_service.refresh_widget(site["id"])
+    finally:
+        actions.is_dry_run = original
+        provisioner.SITES_ROOT = original_root
+    check("the direct repair succeeds", result.get("ok"), True)
+    with open(path, encoding="utf-8") as handle:
+        body = handle.read()
+    check("the repair writes the chat button", 'data-bot="%s"' % bot["id"] in body, True)
+    check("and keeps the page content", "<h1>Live page</h1>" in body, True)
+    check("the stored page also carries it",
+          "data-bot=" in (sites_service.get_site(site["id"]).get("content_html") or ""),
+          True)
+
+
+
 
 if __name__ == "__main__":
     test_create_read_update_and_attach()
     test_cross_tenant_bots_and_member_writes_are_refused()
     test_the_widget_is_injected_and_not_duplicated()
     test_publishing_injects_the_linked_widget()
+    test_refresh_widget_repairs_a_live_page_without_a_queue()
     if FAILED:
         print("\n%d FAILED" % len(FAILED))
         raise SystemExit(1)

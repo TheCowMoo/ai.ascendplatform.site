@@ -1053,6 +1053,19 @@ body.graph-full { overflow: hidden; }
 .asst-welcome { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px 2px; }
 .asst-welcome h3 { margin: 0; font-size: 17px; }
 .asst-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Domain choices returned by the read-only list_domains voice tool. */
+.voice-choices { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 8px 0 2px; }
+.voice-choice {
+  border: 1px solid var(--line); background: #fff; color: var(--ink-900);
+  border-radius: 999px; padding: 7px 12px; font: inherit; font-size: var(--fs-sm);
+  cursor: pointer; transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.voice-choice:hover { border-color: var(--accent-600); transform: translateY(-1px); }
+.asst-suggest-bar { align-items: center; padding: 6px 2px 0; }
+.asst-suggest-label {
+  font-size: var(--fs-micro); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ink-400); margin-right: 2px;
+}
 .asst-chip {
   border: 1px solid var(--line); background: #fff; border-radius: 999px;
   padding: 8px 14px; font-size: 13px; cursor: pointer; color: var(--ink-700);

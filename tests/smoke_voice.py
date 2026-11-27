@@ -7,6 +7,7 @@ these tests because it never enters this server.
 """
 
 import os
+import secrets
 import sys
 import json
 import urllib.request
@@ -19,6 +20,7 @@ import app as appmod  # noqa: E402
 import db  # noqa: E402
 import llm  # noqa: E402
 import profile as profile_mod  # noqa: E402
+import sites as sites_service  # noqa: E402
 import voice  # noqa: E402
 
 FAILED = []
@@ -57,9 +59,12 @@ def test_status_tells_the_truth():
 def test_setup_declares_team_tools():
     setup = voice.setup()["setup"]
     names = [item["name"] for item in setup["tools"][0]["functionDeclarations"]]
-    check("the voice can delegate, remember and answer", names,
-          ["delegate_to_team", "remember_preference", "answer_team_question",
+    check("the voice can list domains and use the team tools", names,
+          ["list_domains", "delegate_to_team", "remember_preference", "answer_team_question",
            "publish_page"])
+    text = setup["systemInstruction"]["parts"][0]["text"]
+    check("the instruction tells it to use the domain tool",
+          "list_domains" in text, True)
     check("it asks for audio back", setup["generationConfig"]["responseModalities"], ["AUDIO"])
     check("it asks for the user's words", setup.get("inputAudioTranscription"), {})
     check("it asks for its own words", setup.get("outputAudioTranscription"), {})
@@ -349,8 +354,8 @@ def test_the_routes():
         check("the setup carries the tools",
               [item["name"] for item in
                data["setup"]["setup"]["tools"][0]["functionDeclarations"]],
-              ["delegate_to_team", "remember_preference", "answer_team_question",
-               "publish_page"])
+              ["list_domains", "delegate_to_team", "remember_preference",
+               "answer_team_question", "publish_page"])
 
         voice.model_availability = lambda: {
             "ok": False, "checked": True, "model": voice.model(),
@@ -405,6 +410,16 @@ def test_the_routes():
     orgs = client.get("/api/orgs").get_json().get("orgs") or []
     if orgs:
         client.post("/api/session/org", json={"org_id": orgs[0]["id"]})
+        domain = "voice-domains-%s.test" % secrets.token_hex(4)
+        site = sites_service.create_site({"domain": domain}, org_id=orgs[0]["id"])
+        try:
+            listed = client.post("/api/voice/tool", json={"name": "list_domains"})
+            listed_body = listed.get_json() or {}
+            names = [item.get("domain") for item in listed_body.get("domains") or []]
+            check("the voice lists this client's domains", listed.status_code, 200)
+            check("and includes the real domain", domain in names, True)
+        finally:
+            sites_service.delete_site(site["id"])
         before_profile = profile_mod.get_profile(orgs[0]["id"])
         before_rules = (before_profile or {}).get("preferences", "")
         rule = "Keep spoken updates brief (%s)." % db.now_str()
@@ -519,6 +534,10 @@ def test_the_browser_half_is_wired():
     check("the client has a setup timeout", "SETUP_TIMEOUT" in client_js, True)
     check("the client rejects a missing endpoint before connecting",
           "usable WebSocket endpoint" in client_js, True)
+    check("the voice can show domain choices", "showDomainChoices" in client_js, True)
+    check("the assistant keeps clickable suggestions",
+          "assistantChoices" in admin_js and "asst-suggest-bar" in admin_js, True)
+    check("the site editor can repair the chat button", "/widget" in admin_js, True)
     check("the timeout points at the Voice Test for the operator",
           "Settings -> Voice -> Test" in client_js, True)
     check("a client's timeout stays plain",

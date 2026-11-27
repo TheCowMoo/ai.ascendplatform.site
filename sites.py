@@ -302,6 +302,87 @@ def disconnect_site(site_id, actor="", legacy_cleanup=False):
                 message=("Removed %s from the web server. DNS records and website files "
                          "were left in place." % domain))
 
+def refresh_widget(site_id, actor="", job_id=None, emit=None):
+    """Add or replace the public chat button in a site's current page.
+
+    The normal path is a provisioning job. This is the small, synchronous repair
+    used when that job is queued or the worker is unavailable: it writes only
+    ``index.html``, does not touch DNS/vhosts and does not need a queue.
+
+    The stored page is the source of truth. If it is empty, the live file is read so
+    an older site can still be repaired without regenerating its content.
+    """
+    import provisioner
+    import widget_embed
+
+    site = get_site(site_id)
+    if not site:
+        raise SiteError("That domain was not found.")
+    bot = widget_embed.bot_for_site(site)
+    if not bot:
+        raise SiteError("Link a chat assistant to this site first.")
+    if not widget_embed.snippet(bot["id"]):
+        raise SiteError("The public platform URL is not configured, so the chat "
+                        "button cannot be built yet.")
+
+    target, docroot = provisioner.target_docroot(site)
+    path = provisioner.join_path(docroot, "index.html")
+    stored = (site.get("content_html") or "").strip()
+    live = target.read_file(path) or ""
+    # Repair the page that is actually being served; fall back to the stored page only
+    # when the live file is missing. Comparing against the live file matters: a stored
+    # page can already contain a widget that the live copy never received.
+    content = live.strip() or stored
+    if not content.strip():
+        raise SiteError("This site has no page yet. Publish a page first, then "
+                        "refresh the chat button.")
+
+    updated = widget_embed.inject_for_site(content, site)
+    if live.strip() and updated == live:
+        return {
+            "ok": True, "already": True, "dry_run": actions.is_dry_run(),
+            "message": "The chat button is already on this page.",
+            "site": site,
+        }
+
+    live = not actions.is_dry_run()
+    approval_id = None
+    if live:
+        approval_id = actions.request_approval(
+            "file_write",
+            "add the chat button to %s" % site.get("domain", "the site"),
+            {"site_id": site_id, "path": path, "bytes": len(updated)},
+            job_id,
+        )
+        decided = actions.decide_approval(approval_id, "approved", actor or "operator")
+        if not decided or decided.get("status") != "approved":
+            raise SiteError("The chat-button update could not be recorded as approved.")
+
+    result = target.write_file(
+        path, updated, job_id, emit,
+        summary="add the chat button to %s" % site.get("domain", "the site"),
+        preapproved=live,
+    )
+    if approval_id:
+        actions.set_result(approval_id, result.get("output") or
+                           ("updated" if result.get("ok") else "failed"))
+    if not result.get("ok"):
+        raise SiteError(result.get("output") or "The page could not be updated.")
+    if result.get("dry_run"):
+        return {
+            "ok": True, "already": False, "dry_run": True,
+            "message": "Dry-run: would add the chat button to the page.",
+            "site": site, "result": result,
+        }
+    updated_site = update_site(site_id, {"content_html": updated})
+    return {
+        "ok": True, "already": False, "dry_run": False,
+        "message": "The chat button is now on the page. Reload the site to see it.",
+        "site": updated_site or site, "result": result,
+    }
+
+
+
 
 def _first_failure(result):
     for step in (result or {}).get("steps") or []:

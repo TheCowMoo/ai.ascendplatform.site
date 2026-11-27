@@ -198,6 +198,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/sites/<int:site_id>/refresh-config` | client_admin | `refresh_site_config` | `app.py` |
 | POST | `/api/sites/<int:site_id>/verify` | login | `verify_site` | `app.py` |
 | GET | `/api/sites/<int:site_id>/versions` | client_admin | `list_site_versions` | `app.py` |
+| POST | `/api/sites/<int:site_id>/widget` | client_admin | `repair_site_widget` | `app.py` |
 | GET | `/api/ssh-hosts` | owner | `list_ssh_hosts` | `app.py` |
 | POST | `/api/ssh-hosts` | owner | `create_ssh_host` | `app.py` |
 | DELETE | `/api/ssh-hosts/<int:host_id>` | owner | `delete_ssh_host` | `app.py` |

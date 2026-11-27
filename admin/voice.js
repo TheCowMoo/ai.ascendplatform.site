@@ -208,6 +208,9 @@
     var transcript = make('div', 'voice-transcript');
     transcript.setAttribute('aria-live', 'polite');
     panel.appendChild(transcript);
+    var choices = make('div', 'voice-choices');
+    choices.hidden = true;
+    panel.appendChild(choices);
 
     var note = make('p', 'voice-note');
     panel.appendChild(note);
@@ -282,6 +285,7 @@
     ui = {
       overlay: overlay, panel: panel, stage: stage, orb: orb,
       state: stateLine, detail: detail, transcript: transcript, note: note,
+      choices: choices,
       stop: stopButton, minimise: minimiseButton, retry: retryButton,
       copy: copyButton, pill: pill, pillDot: pillDot, pillLabel: pillLabel,
       pillOpen: pillOpen
@@ -449,6 +453,28 @@
     if (!ui || !text) return;
     ui.transcript.appendChild(make('p', 'voice-system', text));
     scrollTranscript();
+  }
+
+  function showDomainChoices(domains) {
+    if (!ui) return;
+    ui.choices.innerHTML = '';
+    (domains || []).slice(0, 6).forEach(function (item) {
+      var domain = String((item && item.domain) || item || '').trim();
+      if (!domain) return;
+      var button = make('button', 'voice-choice', domain);
+      button.type = 'button';
+      button.onclick = function () {
+        ui.choices.hidden = true;
+        var sent = send({ clientContent: {
+          turns: [{ role: 'user', parts: [{ text: 'Use ' + domain + ' for this.' }] }],
+          turnComplete: true
+        }});
+        if (sent) setPhase('thinking', 'Using ' + domain, 'The team has the domain.');
+      };
+      ui.choices.appendChild(button);
+    });
+    ui.choices.hidden = !ui.choices.children.length;
+    if (!ui.choices.hidden) scrollTranscript();
   }
 
   function updateNote() {
@@ -1285,6 +1311,7 @@
   function relay(call) {
     var isAnswer = call.name === 'answer_team_question';
     var isRemember = call.name === 'remember_preference';
+    var isDomains = call.name === 'list_domains';
     if (isAnswer && !state.team.awaitingAnswer) {
       // The model may try to answer before the team's question actually reached the user.
       // Do not turn that guess into a job; the server would refuse it too.
@@ -1304,7 +1331,8 @@
       ? 'Passing your answer to the team…'
       : (isRemember
          ? 'Saving that rule to Business details…'
-         : (detail ? 'On it: ' + detail : 'Handing that to the team…')));
+         : (isDomains ? 'Reading your domains…'
+                      : (detail ? 'On it: ' + detail : 'Handing that to the team…'))));
     var turnId = state.sessionId + ':' + (call.id || stableId(call));
     state.calls += 1;
     var generation = state.generation;
@@ -1317,7 +1345,7 @@
     // The canvas on screen is part of a spoken request, not just a typed one. The server
     // validates the id against this session's client; the model never learns a job id
     // or a tenant from it.
-    if (!isAnswer && !isRemember) {
+    if (!isAnswer && !isRemember && !isDomains) {
       var artifact = voiceContext();
       if (artifact) body.artifact = artifact;
     }
@@ -1360,6 +1388,7 @@
         }
         startTeamWatch(data.job_id);
       }
+      if (data.domains && data.domains.length) showDomainChoices(data.domains);
       appendSystemNote(message);
       sendToolResponse(call, message);
     }).catch(function (error) {
@@ -1403,6 +1432,10 @@
     state.opener = document.activeElement;
 
     ui.transcript.innerHTML = '';
+    if (ui.choices) {
+      ui.choices.innerHTML = '';
+      ui.choices.hidden = true;
+    }
     ui.detail.textContent = '';
     ui.retry.hidden = true;
     ui.stop.textContent = 'Stop';
@@ -1472,6 +1505,10 @@
     teardownTransport();
     unmountHost();
     hideAll();
+    if (ui && ui.choices) {
+      ui.choices.innerHTML = '';
+      ui.choices.hidden = true;
+    }
     setPhase('idle');
     var close = state.opts.onClose;
     state.opts = {};

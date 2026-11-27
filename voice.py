@@ -216,6 +216,18 @@ def delegate_declaration():
     }
 
 
+def domains_declaration():
+    """List the client's own websites so the voice can offer a choice."""
+    return {
+        "name": "list_domains",
+        "description": (
+            "List the websites/domains this client owns. Use this when the user asks "
+            "which domains they have, or before asking which one to use. The answer comes "
+            "from the signed-in client and never from the model."),
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+    }
+
+
 def remember_declaration():
     """Save a lasting writing rule the user states aloud."""
     return {
@@ -300,8 +312,8 @@ def live_config(org_name="", page="", intro=False, role=""):
         "systemInstruction": {"parts": [{"text": instruction(org_name, page, intro,
                                                               role)}]},
         "tools": [{"functionDeclarations": [
-            delegate_declaration(), remember_declaration(), answer_declaration(),
-            publish_declaration()]}],
+            domains_declaration(), delegate_declaration(), remember_declaration(),
+            answer_declaration(), publish_declaration()]}],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "realtimeInputConfig": {
@@ -364,7 +376,9 @@ def instruction(org_name="", page="", intro=False, role=""):
         "short numbered list. You explain what is on screen, answer questions about it, and can "
         "walk a new user through the product one step at a time.%s%s "
         "%s"
-        "You have four tools. Use delegate_to_team for new work: if the user asks for anything "
+        "You have five tools. Call list_domains when the user asks which domains or "
+        "websites they own, and read the exact names back before asking them to choose. "
+        "Use delegate_to_team for new work: if the user asks for anything "
         "to be built, changed or sent, call it with one clear sentence, then say you are on "
         "it. Never claim work is done until a team update says it is. "
         "Use remember_preference when the user states a lasting writing rule - tone, length, "

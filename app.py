@@ -3270,9 +3270,10 @@ def voice_tool():
     data = request.get_json(silent=True) or {}
     name = str(data.get("name") or "")
     if name not in ("delegate_to_team", "remember_preference", "answer_team_question",
-                    "publish_page"):
+                    "publish_page", "list_domains"):
         return jsonify({"error": "The voice may only delegate to the team, remember a "
-                                 "writing rule, answer its questions, or publish a page."}), 403
+                                 "writing rule, answer its questions, publish a page, or "
+                                 "list the client's domains."}), 403
     # The voice can talk with Gemini alone, but the team it delegates to needs a chat
     # provider. Refuse before creating a job that would only fail in the transcript.
     import llm
@@ -3291,6 +3292,24 @@ def voice_tool():
     args = data.get("args") or {}
     if not isinstance(args, dict):
         args = {}
+
+    if name == "list_domains":
+        org = current_org()
+        if org is None:
+            return jsonify({"error": "Pick a client first; a domain belongs to one."}), 400
+        rows = sites_service.list_sites(org, include_content=False)
+        domains = [{
+            "id": row.get("id"),
+            "domain": row.get("domain") or "",
+            "status": row.get("status") or "",
+            "url": row.get("url") or (("https://" + row["domain"]) if row.get("domain") else ""),
+        } for row in rows if row.get("domain")]
+        names = ", ".join(item["domain"] for item in domains) or "none yet"
+        return jsonify({
+            "ok": True,
+            "domains": domains,
+            "message": "Your domains: %s." % names,
+        }), 200
 
     if name == "remember_preference":
         preference = str(args.get("preference") or "").strip()
@@ -3677,6 +3696,23 @@ def refresh_site_config(site_id):
         return jsonify({"error": error or "The web config was not refreshed.",
                         "result": result}), 400
     return jsonify({"ok": True, "site": site, "result": result})
+
+
+@app.route("/api/sites/<int:site_id>/widget", methods=["POST"])
+@client_admin_required
+def repair_site_widget(site_id):
+    """Put the linked assistant's chat button on the page without waiting for a job."""
+    site = _site_for_request(site_id)
+    if not site:
+        return jsonify({"error": "Not found"}), 404
+    try:
+        result = sites_service.refresh_widget(
+            site_id,
+            actor=session.get("email") or session.get("name") or "operator",
+        )
+    except sites_service.SiteError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------

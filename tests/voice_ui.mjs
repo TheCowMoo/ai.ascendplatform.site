@@ -174,6 +174,16 @@ window.fetch = async (url, options) => {
   if (url === '/api/voice/tool') {
     const body = JSON.parse((options && options.body) || '{}');
     toolCalls.push(body);
+    if (body.name === 'list_domains') {
+      return { ok: true, status: 200, json: async () => ({
+        ok: true,
+        domains: [
+          { domain: 'germany.example.test', status: 'live' },
+          { domain: 'second.example.test', status: 'pending_dns' }
+        ],
+        message: 'Your domains: germany.example.test, second.example.test.'
+      }) };
+    }
     const jobId = body.name === 'answer_team_question' ? 8 : 7;
     return { ok: true, status: 202,
              json: async () => ({ message: 'Working on it.', job_id: jobId }) };
@@ -383,6 +393,25 @@ assert.match(text('voice-detail'), /endpoint/i,
              'the visible error names the missing endpoint');
 Voice.stop();
 session.endpoint = originalEndpoint;
+
+// ---------- The voice lists domains as clickable choices ----------
+assert.equal(await Voice.open({ page: 'domains' }), true, 'a domain session opens');
+ws = FakeWebSocket.last;
+ws.onopen();
+binaryMessage(ws, { setupComplete: {} });
+message(ws, { toolCall: { functionCalls: [{
+  id: 'call-domains', name: 'list_domains', args: {}
+}] } });
+await new Promise((resolve) => setTimeout(resolve, 20));
+const domainChoices = findAll(overlay(), 'voice-choice');
+assert.deepEqual(domainChoices.map((node) => node.textContent),
+                 ['germany.example.test', 'second.example.test'],
+                 'the domains are clickable choices');
+domainChoices[0].onclick();
+const domainUpdate = ws.sent.filter((item) => item.clientContent).pop();
+assert.ok(domainUpdate.clientContent.turns[0].parts[0].text.includes(
+  'Use germany.example.test'), 'choosing a domain sends that exact site back');
+Voice.stop();
 
 console.log('VOICE UI OK - the gate, the transcripts, the shared thread and the failure paths');
 
