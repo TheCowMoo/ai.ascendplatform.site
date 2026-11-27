@@ -177,6 +177,10 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/public/forms/<slug>` | public | `public_form_submit` | `app.py` |
 | POST | `/api/public/forms/<slug>/step` | public | `public_form_step` | `app.py` |
 | POST | `/api/public/lead/<path:token>` | public | `public_lead` | `app.py` |
+| GET | `/api/recommendations` | login | `recommendations_index` | `app.py` |
+| POST | `/api/recommendations/<key>/dismiss` | login | `recommendations_dismiss` | `app.py` |
+| POST | `/api/recommendations/<key>/done` | login | `recommendations_done` | `app.py` |
+| POST | `/api/recommendations/refresh` | login | `recommendations_refresh` | `app.py` |
 | GET | `/api/session/org` | login | `get_acting_org` | `app.py` |
 | POST | `/api/session/org` | owner | `set_acting_org` | `app.py` |
 | GET | `/api/settings` | client_admin | `get_settings` | `app.py` |
@@ -360,6 +364,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `orgs`
 - `password_resets`
 - `rate_card`
+- `recommendation_batches`
 - `settings`
 - `settings_events`
 - `site_versions`
@@ -451,6 +456,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_marketing_tools`
 - `test_chat_tools`
 - `test_site_tool_scope`
+- `test_recommendations`
 
 ## JS harnesses
 
@@ -518,6 +524,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_publish_live`
 - `test_publish_tool`
 - `test_read_only_jobs`
+- `test_recommendations`
 - `test_scheduler_idempotency`
 - `test_site_extras`
 - `test_site_tool_scope`

@@ -96,6 +96,7 @@ FAST_SUITES = (
     "test_marketing_tools",
     "test_chat_tools",
     "test_site_tool_scope",
+    "test_recommendations",
 )
 
 
@@ -112,6 +113,7 @@ def check_imports():
 
     assert "site_review" in jobs.TASKS, jobs.TASKS
     assert "build" in jobs.TASKS, jobs.TASKS
+    assert "recommendations" in jobs.TASKS, jobs.TASKS
     assert "proposal" in deliverables.KINDS, deliverables.KINDS
     assert callable(scheduler.queue_reviews)
     assert callable(scheduler.verify_pending), "the DNS sweep is what makes SSL automatic"

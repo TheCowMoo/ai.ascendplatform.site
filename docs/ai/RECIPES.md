@@ -89,6 +89,21 @@ Keep old hashes working when renaming a page. Preserve role gates (`adminOnly`,
 6. Add tests for valid input, invalid input, tenant scope and dry-run/live behavior.
 7. Update `docs/ai/REFERENCE.md` if the capability is user-visible.
 
+## Recipe 7b — Add a recommendation rule
+
+1. Add the tenant-scoped fact to `signals()` in `recommendations.py`; never include a
+   contact name, email, raw form answer or secret. Add it to the fingerprint if a change
+   should invalidate the cache.
+2. Add a candidate in `candidates()` with a stable `key`, `title`, `why`, `action_text`,
+   `href`, `evidence` and `audience`. `evidence` must be a short fact the UI can show.
+3. Keep the action a normal request to the Manager ("Draft…", "Check…"); do not execute
+   anything from the recommendation engine.
+4. If it is client-admin-only, set `audience="admin"`; the API filters it for members.
+5. Extend `tests/test_recommendations.py` with the fact and the negative/PII assertion.
+6. The AI job may reword the card but cannot add a key; `_parse_ai` keeps the server
+   evidence. Do not let a model-generated metric override the rule.
+7. Run the focused suite, `tools/ai_reference.py`, and preflight.
+
 ## Recipe 8 — Add an external integration
 
 1. Create a service module that owns the HTTP transport and token handling.

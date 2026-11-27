@@ -373,5 +373,16 @@ assert.equal(sessionTurns[0].url, '/api/assistant/sessions/55/messages',
              'the turn goes to the active chat session');
 Voice.stop();
 
+// ---------- A missing endpoint is a clear error, not an opaque 1006 ----------
+const originalEndpoint = session.endpoint;
+session.endpoint = '';
+assert.equal(await Voice.open({ page: 'missing-endpoint' }), true,
+             'a malformed session still resolves the opener');
+assert.equal(Voice.phase(), 'error', 'it enters the error phase');
+assert.match(text('voice-detail'), /endpoint/i,
+             'the visible error names the missing endpoint');
+Voice.stop();
+session.endpoint = originalEndpoint;
+
 console.log('VOICE UI OK - the gate, the transcripts, the shared thread and the failure paths');
 

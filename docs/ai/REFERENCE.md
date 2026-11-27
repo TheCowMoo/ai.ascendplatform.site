@@ -95,6 +95,14 @@ responsibility:
   and enables the automation. Form triggers are scoped by `form_id`.
 - `manager.py`, `assistant_sessions.py`, `studio.py` — manager chat, Studio state and
   assistant sessions.
+- `recommendations.py` — deterministic, evidence-backed next steps from tenant-scoped
+  signals (site/form/CRM/chat/analytics/content), a 12-hour cached batch, a manual
+  refresh, and an optional `recommendations` job that lets the model rank/reword only
+  real candidates. The deterministic batch is the fallback, so a dashboard still works
+  with no provider. A manual refresh is coalesced for one minute per client, and an
+  open refinement job is not duplicated. `GET /api/recommendations` and the
+  refresh/dismiss/done routes are login-scoped; the batch is shared by all users of the
+  client, and member responses exclude `audience=admin` cards.
 - `tools/` — agent tools; every side-effecting tool must respect policy and approvals.
   An agent-initiated `publish_page`/`publish_site` asks for the same approval card as
   the Publish button; the button and an explicit voice "yes" record the operator's
@@ -106,7 +114,9 @@ responsibility:
   last two are read-only and in the roster for markup inspection; neither can write.
   Marketing tools are split by surface: `tools/forms.py` reads/updates forms and form
   responses; `tools/chat.py` lists/creates/updates chat assistants and attaches one to a
-  site; `tools/manager.py` lists contacts and reads/updates email templates. The shared
+  site; `tools/manager.py` lists contacts and reads/updates email templates; and
+  `tools/recommendations.py` exposes the read-only `recommend_next_steps` tool so a
+  Manager question uses the same cached evidence instead of inventing ideas. The shared
   `tools/access.py` gate keeps client-admin writes aligned with the console screens, and
   every tool takes its org from the job row.
 
@@ -161,7 +171,7 @@ responsibility:
   per-account onboarding and versioned Studio-tour completion flags.
 - **AI/runtime:** `agents`, `jobs`, `job_events`, `job_artifacts`, `assistant_sessions`,
   `assistant_messages`, `voice_sessions`, `agent_tools`, `automations`,
-  `automation_runs`, `automation_proposals`.
+  `automation_runs`, `automation_proposals`, `recommendation_batches`.
 - **Content:** `deliverables`, `deliverable_versions`, `site_versions`, `media`,
   `build_sessions`, `business_profiles`.
 - **Hosting:** `sites`, `ssh_hosts`, `action_approvals`. Hot-path indexes are
@@ -225,6 +235,10 @@ a secret, token or provider key into a URL, log line or client-facing error.
 - Shared helpers: `el`, `api`, `formModal`, `toast`, `empty-state`, badges.
 - The form builder exposes accent colour and submit-label settings; the site editor
   offers a dropdown of the client's chat assistants instead of a raw bot id.
+- The dashboard renders an evidence-backed **Recommended next steps** card when the user
+  has a client selected; the Studio welcome chips use the same cached batch. A Studio
+  chip only inserts text into the composer. Dashboard **Ask AI** starts a normal Manager
+  turn with that action; outward changes still go through the existing approval gates.
 - `admin/admin.css` holds the design tokens and component patterns.
 - `admin/index.html` holds the static shell and icon sprite.
 - JS role gates must mirror server gates; hidden UI is not a security boundary.
@@ -239,6 +253,8 @@ a secret, token or provider key into a URL, log line or client-facing error.
 - Add new fast suites to `FAST_SUITES`; add JS harnesses to `check_js()`.
 - Marketing/tool coverage is pinned by `test_marketing_tools`, `test_chat_tools` and
   `test_site_tool_scope`; the last one covers cross-tenant site reads and writes.
+  `test_recommendations` pins deterministic evidence, the 12-hour cache/fingerprint,
+  tenant isolation, dismiss/done and the AI-output validator.
 - Run `tests/preflight.py` before claiming completion.
 
 ## Deployment and operations

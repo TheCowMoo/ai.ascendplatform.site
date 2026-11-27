@@ -108,7 +108,8 @@ DEFAULT_ROSTER = [
         ),
         "tools": ["current_time", "fetch_page", "fetch_page_html", "read_deliverable",
                   "list_media", "list_forms", "read_form", "list_templates",
-                  "read_template", "list_chat_assistants", "read_chat_assistant"],
+                  "read_template", "list_chat_assistants", "read_chat_assistant",
+                  "recommend_next_steps"],
         "turn_order": 6,
     },
     {
@@ -131,7 +132,7 @@ DEFAULT_ROSTER = [
                   "create_chat_assistant", "update_chat_assistant",
                   "attach_chat_assistant", "list_contacts", "tag_contact",
                   "create_template", "list_templates", "read_template",
-                  "update_template"],
+                  "update_template", "recommend_next_steps"],
         "turn_order": 7,
     },
 ]

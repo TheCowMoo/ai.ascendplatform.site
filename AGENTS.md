@@ -81,6 +81,8 @@ They are large and contain stale snapshots.
 | Add a Platform Console page | `AREAS.platform` + view | CSS, tests, route |
 | Add a background job | `jobs.py` | `worker.py` task registry, tests |
 | Add an agent tool | `tools/` | `tools/__init__.py`, roster/policy, tests |
+| Add or change a recommendation rule | `recommendations.py` | `tests/test_recommendations.py`, fingerprint/cache tests |
+| Add a recommendation surface | `admin/admin.js` dashboard/Studio view | CSS, `docs/ai/REFERENCE.md`, API |
 | Add an integration | New service module | Settings, routes, UI, docs, tests |
 | Change client-facing copy | `admin/admin.js`, `settings.py` | Tests that pin labels |
 | Add a test | `tests/` | `tests/preflight.py` if it is a fast suite |

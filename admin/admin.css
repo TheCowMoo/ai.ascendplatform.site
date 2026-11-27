@@ -1862,3 +1862,16 @@ textarea.build-input { min-height: 92px; resize: vertical; }
   }
   body.nav-open .assist-orb, body.nav-open .assist-sheet { display: none; }
 }
+/* Recommendation cards (dashboard; the Studio uses the existing chip style) */
+.rec-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.rec-head h3 { margin: 0 0 4px; }
+.rec-head p { margin: 0; }
+.rec-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.rec-list { display: flex; flex-direction: column; gap: 10px; }
+.rec-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--raised); }
+.rec-check { margin-top: 3px; accent-color: var(--accent-600); flex: 0 0 auto; }
+.rec-main { min-width: 0; flex: 1; }
+.rec-title { color: var(--ink-900); font-weight: 650; line-height: 1.35; }
+.rec-why { color: var(--ink-500); font-size: var(--fs-sm); line-height: 1.45; margin-top: 3px; }
+.rec-evidence { color: var(--ink-400); font-size: var(--fs-micro); margin-top: 5px; }
+.rec-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 9px; }

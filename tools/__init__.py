@@ -42,6 +42,7 @@ READ_ONLY_TOOLS = frozenset({
     "read_deliverable",
     "read_form",
     "read_template",
+    "recommend_next_steps",
     "search_photos",
     "start_job",
 })
@@ -141,4 +142,5 @@ from . import library as _library_tools  # noqa: E402,F401
 from . import forms as _form_tools  # noqa: E402,F401
 from . import manager as _manager_tools  # noqa: E402,F401
 from . import chat as _chat_tools  # noqa: E402,F401
+from . import recommendations as _recommendation_tools  # noqa: E402,F401
 from . import web as _web_tools  # noqa: E402,F401

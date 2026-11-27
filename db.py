@@ -691,6 +691,23 @@ action_approvals = Table(
     Column("decided_by", Text, nullable=False, server_default=_literal("")),
 )
 
+# One current recommendation batch per client. The payload is JSON so a batch can be
+# read and updated atomically without a second table; the fingerprint is what makes
+# cached advice go stale when the client's site, forms, leads or drafts change.
+recommendation_batches = Table(
+    "recommendation_batches",
+    metadata,
+    Column("org_id", Integer, primary_key=True),
+    Column("fingerprint", Text, nullable=False, server_default=_literal("")),
+    Column("source", Text, nullable=False, server_default=_literal("rules")),
+    Column("payload", Text, nullable=False, server_default=_literal("[]")),
+    Column("generated_at", Text, nullable=False, server_default=_now_default()),
+    Column("ai_at", Text, nullable=False, server_default=_literal("")),
+    _created_at(),
+    Column("updated_at", Text, nullable=False, server_default=_now_default()),
+)
+
+
 # What the team produced for a client: a blog post, a funnel, an email. The
 # "Websites" tab is the ``sites`` table - these are the things published *onto* a
 # site or sent from it.

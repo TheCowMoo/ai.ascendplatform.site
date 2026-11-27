@@ -63,6 +63,7 @@ import contacts as contacts_service
 import contact_sync
 import media_library as media_service
 import assistant_sessions as assistant_service
+import recommendations as recommendations_service
 from tools import policy as tool_policy
 from tools import ssh as ssh_tool
 
@@ -3084,15 +3085,15 @@ _VOICE_TURNS = {}
 def _voice_public(payload):
     """Strip provider and model details from a voice payload for a non-owner.
 
-    The Live socket is browser->Google, so the setup JSON still names the model when a
-    client actually starts a session. What this removes is the advertising of it: the
-    status row, the diagnostics and the error hints.
+    The endpoint is deliberately kept: it is the Google WebSocket URL the browser must
+    open, not a secret. Removing it made a client-role session connect to
+    ``undefined?access_token=...`` and fail as an opaque WebSocket close (1006). The
+    model, API version, provider hints and available-model lists are still hidden.
     """
     if is_owner():
         return payload
     for key in ("model", "model_note", "api_version", "default_model", "voice",
-                "available_models", "elsewhere", "hint", "transcription",
-                "endpoint"):
+                "available_models", "elsewhere", "hint", "transcription"):
         payload.pop(key, None)
     return payload
 
@@ -6244,6 +6245,62 @@ def analytics_insights():
     except ValueError:
         days = 7
     return jsonify(analytics_alerts.insights(org, days=days))
+
+
+@app.route("/api/recommendations", methods=["GET"])
+@login_required
+def recommendations_index():
+    """The cached, evidence-backed next steps for the acting client."""
+    org = current_org()
+    if org is None:
+        return jsonify({
+            "recommendations": [], "generated_at": "", "source": "rules",
+            "refreshing": False, "stale": False,
+            "reason": "Pick a client in the workspace switcher first.",
+        })
+    include_admin = is_owner() or session.get("role") == CLIENT_ADMIN_ROLE
+    return jsonify(recommendations_service.get(
+        org, include_admin=include_admin, requester_id=session.get("user_id")))
+
+
+@app.route("/api/recommendations/refresh", methods=["POST"])
+@login_required
+def recommendations_refresh():
+    """Rebuild the deterministic batch and ask the configured model to refine it."""
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    include_admin = is_owner() or session.get("role") == CLIENT_ADMIN_ROLE
+    return jsonify(recommendations_service.refresh(
+        org, requester_id=session.get("user_id"), include_admin=include_admin))
+
+
+@app.route("/api/recommendations/<key>/dismiss", methods=["POST"])
+@login_required
+def recommendations_dismiss(key):
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    include_admin = is_owner() or session.get("role") == CLIENT_ADMIN_ROLE
+    result = recommendations_service.set_status(
+        org, key, "dismissed", include_admin=include_admin)
+    if result is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(result)
+
+
+@app.route("/api/recommendations/<key>/done", methods=["POST"])
+@login_required
+def recommendations_done(key):
+    org = current_org()
+    if org is None:
+        return jsonify({"error": "Pick a client first"}), 400
+    include_admin = is_owner() or session.get("role") == CLIENT_ADMIN_ROLE
+    result = recommendations_service.set_status(
+        org, key, "done", include_admin=include_admin)
+    if result is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(result)
 
 
 @app.route("/api/analytics/alerts", methods=["GET"])

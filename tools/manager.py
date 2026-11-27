@@ -624,6 +624,10 @@ def _build_describe_capabilities(emit, job_id=None):
                 "tag": "tag_contact(contact_id, tags)",
                 "note": "No bulk email or broadcast is available.",
             },
+            "recommendations": {
+                "tool": "recommend_next_steps() - current evidence-backed next steps",
+                "note": "Explain the reason first; act only after the user chooses.",
+            },
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
             "template_tools": {

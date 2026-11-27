@@ -1288,6 +1288,16 @@
     return card;
   }
 
+  // A recommendation card can hand its action text to the Studio without submitting it.
+  // Chips only fill the composer. "Ask AI" is an explicit turn and may auto-send it.
+  var pendingStudioPrompt = '';
+  var pendingStudioSend = false;
+  function openStudioWithPrompt(text, sendAfter) {
+    pendingStudioPrompt = String(text || '').trim();
+    pendingStudioSend = !!sendAfter;
+    location.hash = '#/app/studio';
+  }
+
   function renderChecklist(card, prof, sites, content, bots) {
     var steps = [
       { label: 'Add your business details', done: !!prof.name, href: '#/app/profile' },
@@ -1316,6 +1326,138 @@
       'Need help? Ask your agency. They can set up anything you are unsure about.'));
   }
 
+  function recommendationCopy(text, button) {
+    if (!(navigator.clipboard && navigator.clipboard.writeText)) {
+      toast('Clipboard is not available here', false);
+      return;
+    }
+    navigator.clipboard.writeText(String(text || '')).then(function () {
+      var old = button ? button.textContent : '';
+      if (button) button.textContent = 'Copied';
+      toast('Copied', true);
+      if (button) setTimeout(function () { button.textContent = old; }, 1200);
+    }).catch(function () { toast('Could not copy', false); });
+  }
+
+  function renderRecommendations(host, data, opts) {
+    opts = opts || {};
+    var rows = (data && data.recommendations) || [];
+    host.innerHTML = '';
+    host.hidden = !rows.length;
+    if (!rows.length) return;
+    var head = el('div', 'rec-head');
+    var title = el('div');
+    title.innerHTML = '<h3>Recommended next steps</h3>' +
+      '<p class="muted">Evidence from this workspace' +
+      (data.source === 'ai' ? ', ranked by AI' : '') + '. Nothing changes until you ask.</p>';
+    head.appendChild(title);
+    var refresh = el('button', 'btn btn-ghost btn-sm', 'Refresh');
+    refresh.onclick = function () {
+      refresh.disabled = true;
+      api('POST', '/api/recommendations/refresh').then(function (next) {
+        renderRecommendations(host, next, opts);
+        if (opts.onRefresh) opts.onRefresh();
+      }).catch(function (e) { toast(e.message, false); })
+        .finally(function () { refresh.disabled = false; });
+    };
+    head.appendChild(refresh);
+    host.appendChild(head);
+    if (data.refreshing) {
+      host.appendChild(el('p', 'fine-print', 'Updating the wording with AI...'));
+    }
+    if (data.stale) {
+      host.appendChild(el('p', 'fine-print',
+        'The underlying facts changed. Press Refresh for a fresh batch.'));
+    }
+
+    var selected = {};
+    var list = el('div', 'rec-list');
+    var toolbar = el('div', 'rec-toolbar');
+    var copySelected = el('button', 'btn btn-ghost btn-sm', 'Copy selected');
+    var askSelected = el('button', 'btn btn-primary btn-sm', 'Ask AI with selected');
+    function picked() {
+      return rows.filter(function (item) { return selected[item.key]; });
+    }
+    function syncToolbar() {
+      var count = picked().length;
+      copySelected.disabled = !count;
+      askSelected.disabled = !count;
+      copySelected.textContent = count ? 'Copy selected (' + count + ')' : 'Copy selected';
+    }
+    rows.forEach(function (item) {
+      var row = el('div', 'rec-row');
+      var check = el('input');
+      check.type = 'checkbox';
+      check.className = 'rec-check';
+      check.setAttribute('aria-label', 'Select ' + (item.title || 'recommendation'));
+      check.onchange = function () {
+        selected[item.key] = check.checked;
+        syncToolbar();
+      };
+      row.appendChild(check);
+      var main = el('div', 'rec-main');
+      main.appendChild(el('div', 'rec-title', item.title || 'Next step'));
+      if (item.why) main.appendChild(el('div', 'rec-why', item.why));
+      if ((item.evidence || []).length) {
+        main.appendChild(el('div', 'rec-evidence', item.evidence.join(' - ')));
+      }
+      var actions = el('div', 'rec-actions');
+      var copy = el('button', 'btn btn-ghost btn-sm', 'Copy');
+      copy.onclick = function () { recommendationCopy(item.action_text || item.title, copy); };
+      var ask = el('button', 'btn btn-primary btn-sm', 'Ask AI');
+      ask.onclick = function () { openStudioWithPrompt(item.action_text || item.title, true); };
+      actions.appendChild(copy);
+      actions.appendChild(ask);
+      if (item.href) {
+        var open = el('button', 'btn btn-ghost btn-sm', 'Open');
+        open.onclick = function () { location.hash = item.href; };
+        actions.appendChild(open);
+      }
+      var dismiss = el('button', 'btn btn-ghost btn-sm', 'Not useful');
+      dismiss.onclick = function () {
+        api('POST', '/api/recommendations/' + encodeURIComponent(item.key) + '/dismiss')
+          .then(function (next) {
+            renderRecommendations(host, next, opts);
+            if (next.refreshing && opts.onRefresh) opts.onRefresh();
+          })
+          .catch(function (e) { toast(e.message, false); });
+      };
+      actions.appendChild(dismiss);
+      main.appendChild(actions);
+      row.appendChild(main);
+      list.appendChild(row);
+    });
+    copySelected.onclick = function () {
+      var text = picked().map(function (item) { return '- ' + (item.action_text || item.title); })
+        .join('\n');
+      recommendationCopy(text, copySelected);
+    };
+    askSelected.onclick = function () {
+      var text = picked().map(function (item) { return '- ' + (item.action_text || item.title); })
+        .join('\n');
+      openStudioWithPrompt('Please help me with these next steps:\n' + text, true);
+    };
+    toolbar.appendChild(copySelected);
+    toolbar.appendChild(askSelected);
+    host.appendChild(toolbar);
+    host.appendChild(list);
+    syncToolbar();
+  }
+
+  function loadDashboardRecommendations(host) {
+    var timer = 0;
+    function tick() {
+      api('GET', '/api/recommendations').then(function (data) {
+        renderRecommendations(host, data, { onRefresh: tick });
+        if (data.refreshing) {
+          timer = setTimeout(tick, 3000);
+        }
+      }).catch(function () { host.hidden = true; });
+    }
+    tick();
+    onCleanup(function () { if (timer) clearTimeout(timer); });
+  }
+
   function viewDashboard() {
     var container = el('div', 'container');
     var owner = isOwner(state.user);
@@ -1327,6 +1469,11 @@
 
     var grid = el('div', 'stats-grid');
     container.appendChild(grid);
+
+    var recHost = el('div', 'panel-card mt');
+    recHost.hidden = true;
+    container.appendChild(recHost);
+    loadDashboardRecommendations(recHost);
 
     var checklist = null;
     if (!owner) {
@@ -8766,6 +8913,17 @@
     composer.appendChild(box);
     composer.appendChild(send);
     chat.appendChild(composer);
+    if (pendingStudioPrompt) {
+      box.value = pendingStudioPrompt;
+      pendingStudioPrompt = '';
+      box.focus();
+    }
+    if (pendingStudioSend) {
+      pendingStudioSend = false;
+      // Wait until the rest of the Studio view, its session and its send handler are
+      // initialized. This is an explicit Ask AI turn, not a recommendation chip click.
+      setTimeout(function () { sendTurn(); }, 0);
+    }
 
     var answerHint = el('p', 'asst-hint');
     answerHint.hidden = true;
@@ -8957,16 +9115,34 @@
         'Open a draft on the right, then say what to change. Voice and typing share ' +
         'this thread, and the team\u2019s questions arrive here and on the canvas.'));
       var chips = el('div', 'asst-suggest');
-      ['Make the headline shorter',
-       'Move the sign-up form to the top',
-       'Warmer tone, same structure'].forEach(function (text) {
-        var suggestion = el('button', 'asst-chip', text);
-        suggestion.onclick = function () {
-          box.value = text;
-          sendTurn();
-        };
-        chips.appendChild(suggestion);
-      });
+      var fallback = ['Make the headline shorter',
+                      'Move the sign-up form to the top',
+                      'Warmer tone, same structure'];
+      function paint(items) {
+        chips.innerHTML = '';
+        items.forEach(function (item) {
+          var text = item.action_text || item.title || String(item);
+          var button = el('button', 'asst-chip', item.title || text);
+          if (item.why) button.title = item.why;
+          button.onclick = function () {
+            box.value = text;
+            box.focus();
+          };
+          chips.appendChild(button);
+        });
+      }
+      paint(fallback.map(function (text) { return { title: text, action_text: text }; }));
+      var timer = 0;
+      function loadIdeas() {
+        api('GET', '/api/recommendations?limit=3').then(function (data) {
+          if (!chips.parentNode) return;
+          var items = (data.recommendations || []).slice(0, 3);
+          if (items.length) paint(items);
+          if (data.refreshing) timer = setTimeout(loadIdeas, 3000);
+        }).catch(function () { /* the local prompts still work */ });
+      }
+      loadIdeas();
+      onCleanup(function () { if (timer) clearTimeout(timer); });
       card.appendChild(chips);
       thread.appendChild(card);
     }

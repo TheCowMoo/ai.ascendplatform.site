@@ -298,6 +298,26 @@ def test_settings_voice_check():
         voice.probe_matrix = original_matrix
 
 
+def test_client_payload_keeps_the_socket_endpoint():
+    """A client still needs the WebSocket URL; hiding it made voice close with 1006."""
+    payload = {
+        "endpoint": "wss://generativelanguage.googleapis.com/ws/live",
+        "model": "gemini-3.8-live",
+        "api_version": "v1beta",
+        "token": "ephemeral-token",
+        "setup": {"setup": {}},
+    }
+    with appmod.app.test_request_context("/api/voice/session"):
+        from flask import session as flask_session
+
+        flask_session["role"] = "member"
+        public = appmod._voice_public(dict(payload))
+    check("a client still receives the socket endpoint",
+          public.get("endpoint"), payload["endpoint"])
+    check("provider model details stay hidden", "model" in public, False)
+    check("the client keeps the token", public.get("token"), "ephemeral-token")
+
+
 def test_the_routes():
     client = appmod.app.test_client()
     check("status needs a login", client.get("/api/voice/status").status_code, 401)
@@ -497,6 +517,8 @@ def test_the_browser_half_is_wired():
     check("setupComplete is the gate to listening",
           "setPhase('listening'" in setup_handler, True)
     check("the client has a setup timeout", "SETUP_TIMEOUT" in client_js, True)
+    check("the client rejects a missing endpoint before connecting",
+          "usable WebSocket endpoint" in client_js, True)
     check("the timeout points at the Voice Test for the operator",
           "Settings -> Voice -> Test" in client_js, True)
     check("a client's timeout stays plain",
@@ -575,6 +597,7 @@ if __name__ == "__main__":
     test_live_model_and_token_constraints()
     test_probe_accepts_empty_setup_complete()
     test_settings_voice_check()
+    test_client_payload_keeps_the_socket_endpoint()
     test_the_routes()
     test_the_browser_half_is_wired()
     if FAILED:

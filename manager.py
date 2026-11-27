@@ -79,6 +79,9 @@ SYSTEM = (
     "You can see this client's contacts and email templates: call list_contacts, "
     "read_template and update_template. You cannot send a bulk email or message "
     "everyone; automations send per contact after their own approval.\n"
+    "When the user asks what to do next, call recommend_next_steps and choose from its "
+    "evidence-backed list. Explain the reason first; do not invent metrics or start a "
+    "change until they choose one.\n"
     "Before calling apply_automation, explain in plain language what starts it and "
     "what it does, then ask for confirmation with ask_user. Apply only after a yes. If it "
     "sends email or publishes, that outward step still asks for its own approval when the "
@@ -129,7 +132,8 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "get_insights", "st
            "update_chat_assistant", "attach_chat_assistant",
            "list_automations", "remember_preference", "propose_business_fact",
            "publish_page", "add_form_link", "apply_automation",
-           "fetch_page", "fetch_page_html", "start_build", "check_site_dns")
+           "fetch_page", "fetch_page_html", "start_build", "check_site_dns",
+           "recommend_next_steps")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "

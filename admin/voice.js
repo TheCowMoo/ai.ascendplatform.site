@@ -682,11 +682,20 @@
   }
 
   function connect(data, generation) {
+    var endpoint = data && typeof data.endpoint === 'string' ? data.endpoint.trim() : '';
+    if (!data || !data.token || !/^wss?:\/\//i.test(endpoint)) {
+      fail('The voice service did not provide a usable WebSocket endpoint.',
+           'The session response was incomplete. Try again; if it repeats, ask your ' +
+           'agency to check the voice setup.');
+      teardownTransport();
+      return;
+    }
     var ws;
     try {
-      ws = new WebSocket(data.endpoint + '?access_token=' + encodeURIComponent(data.token));
+      ws = new WebSocket(endpoint + '?access_token=' + encodeURIComponent(data.token));
     } catch (error) {
       fail('The voice socket could not be opened.', String((error && error.message) || error));
+      teardownTransport();
       return;
     }
     state.ws = ws;
