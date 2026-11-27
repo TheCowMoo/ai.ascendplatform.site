@@ -9,6 +9,8 @@ Ownership comes from the job row, not from the model: ``org_id`` and ``requester
 are read from ``jobs``, so a tool call can never write into another client's Library.
 """
 
+import json
+
 import deliverables as deliverables_service
 from db import get_connection
 
@@ -28,6 +30,16 @@ DESCRIPTION = (
     "For a second website page, pass slug='about' (and site_id when known) so it is a "
     "sibling page, not an overwrite of the page on the canvas. "
     "It is always saved as a draft - the user decides when to publish or send."
+)
+
+READ_DESCRIPTION = (
+    "Read one draft that belongs to this client, including its complete HTML content, "
+    "so you can inspect or edit the actual source instead of guessing from the preview. "
+    "Returns JSON with id, kind, title, status, slug, url, summary, characters, "
+    "truncated and content. Use it before changing a page, and pass the same "
+    "deliverable_id to save_deliverable with the complete revised content. If truncated "
+    "is true, do not save a partial body; report that the draft is too large to read "
+    "safely in this turn. A draft belonging to another client is reported as not found."
 )
 
 
@@ -284,4 +296,51 @@ def _build_save_deliverable(emit, job_id=None):
     return save_deliverable
 
 
+MAX_READ_CHARS = 200_000
+
+
+def _build_read_deliverable(emit, job_id=None):
+    async def read_deliverable(deliverable_id: int) -> str:
+        """Return the source of one draft owned by this job's client."""
+        org_id, _requester, _read_only = _job_context(job_id)
+        if org_id is None:
+            return ("This chat is not attached to a client, so it cannot read a draft. "
+                    "Pick a client in the workspace switcher first.")
+        try:
+            wanted = int(deliverable_id or 0)
+        except (TypeError, ValueError):
+            wanted = 0
+        if wanted <= 0:
+            return "A draft id is required."
+        item = deliverables_service.get_deliverable(wanted)
+        # A missing row and another tenant's row get the same answer, so an id cannot
+        # be probed from one client's chat.
+        if not item or item.get("org_id") != org_id:
+            return "No draft #%s belongs to this client." % wanted
+        content = item.get("content") or ""
+        clipped = content[:MAX_READ_CHARS]
+        payload = {
+            "id": item.get("id"),
+            "kind": item.get("kind"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "slug": item.get("slug"),
+            "url": item.get("url"),
+            "summary": item.get("summary"),
+            "characters": len(content),
+            "returned_characters": len(clipped),
+            "truncated": len(content) > MAX_READ_CHARS,
+            "content": clipped,
+        }
+        if emit is not None:
+            emit("tool", "tool_result",
+                 "read_deliverable: #%s (%s chars%s)"
+                 % (item.get("id"), len(clipped),
+                    ", truncated" if payload["truncated"] else ""))
+        return json.dumps(payload, indent=1)
+
+    return read_deliverable
+
+
 register("save_deliverable", DESCRIPTION, _build_save_deliverable)
+register("read_deliverable", READ_DESCRIPTION, _build_read_deliverable)

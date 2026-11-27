@@ -16,7 +16,11 @@ Environment:
 """
 
 import dataclasses
+import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 def _env(name, default=""):
@@ -198,6 +202,100 @@ def list_providers():
 def configured_providers():
     """Names of the providers that are ready to use."""
     return [name for name in PROVIDERS if is_configured(name)]
+
+
+def _probe_transport(url, headers, payload=None, timeout=12):
+    """One tiny provider request. Tests replace this, so no network is needed."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(url, data=data, headers=headers or {},
+                                     method="POST" if data is not None else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def _probe_error(provider, status, body, key):
+    """A short, secret-free sentence about a provider probe failure."""
+    detail = str(body or "")
+    if key:
+        detail = detail.replace(str(key), "***")
+    detail = detail[:240]
+    if status in (401, 403):
+        return "%s rejected the API key (%s). Update the key in Settings -> AI " \
+               "providers, or switch the agent to another provider." % (provider, status)
+    if status == 402:
+        return ("%s accepted the key but has no remaining credit (402). Top up that "
+                "provider or switch the agent to another provider." % provider)
+    if status == 429:
+        return "%s accepted the key but is rate-limiting the test. Try again later." \
+               % provider
+    if not status:
+        return "%s could not be reached: %s" % (provider, detail)
+    return "%s returned %s: %s" % (provider, status, detail or "no detail")
+
+
+def probe_provider(provider, timeout=12):
+    """Prove a provider's key works with one minimal authenticated request.
+
+    The old Settings test only checked that a key was present. A revoked Anthropic key
+    therefore looked healthy until a paid team job failed with ``invalid x-api-key``.
+    This probe deliberately bypasses the metered AutoGen wrapper: a broken key should not
+    create usage records or require a credit balance.
+    """
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return {"ok": False, "output": "Unknown provider %r." % provider}
+    if gateway_enabled():
+        url = LLM_GATEWAY_URL.rstrip("/") + "/chat/completions"
+        model = _gateway_model(provider, _resolve_model(spec))
+        headers = {"Authorization": "Bearer %s" % LLM_GATEWAY_KEY,
+                   "Content-Type": "application/json"}
+        status, body = _probe_transport(url, headers, {
+            "model": model, "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }, timeout=timeout)
+        if status and status < 400:
+            return {"ok": True, "output": "Gateway accepted %s." % provider}
+        return {"ok": False, "output": _probe_error(
+            "LiteLLM gateway", status, body, LLM_GATEWAY_KEY)}
+
+    key = _resolve_api_key(spec)
+    if not key:
+        return {"ok": False, "output": "%s has no API key." % spec["label"]}
+    model = _resolve_model(spec)
+    if provider == "anthropic":
+        base = (_env("ANTHROPIC_BASE_URL", "") or "https://api.anthropic.com").rstrip("/")
+        url = base + ("/messages" if base.endswith("/v1") else "/v1/messages")
+        status, body = _probe_transport(url, {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }, {
+            "model": model, "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }, timeout=timeout)
+    elif provider == "gemini":
+        url = ("https://generativelanguage.googleapis.com/v1beta/models"
+               "?pageSize=1&key=" + urllib.parse.quote(key))
+        status, body = _probe_transport(url, {"Accept": "application/json"},
+                                         timeout=timeout)
+    else:
+        base = _resolve_base_url(spec).rstrip("/")
+        url = base + "/chat/completions"
+        status, body = _probe_transport(url, {
+            "Authorization": "Bearer %s" % key,
+            "Content-Type": "application/json",
+        }, {
+            "model": model, "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }, timeout=timeout)
+    if status and status < 400:
+        return {"ok": True, "output": "%s accepted the key." % spec["label"]}
+    return {"ok": False, "output": _probe_error(spec["label"], status, body, key)}
 
 
 def _clean_messages(messages):

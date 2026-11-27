@@ -141,6 +141,29 @@ so even a draft whose slug is `home` can be published to `/about.html` without r
 the live front page. Use the home-page choice only when the page really is the new root;
 the server still asks for confirmation before replacing a different live page.
 
+## First login and the Studio walkthrough
+
+A new account gets a short spoken welcome, with the same words in a text card when voice
+is not configured or unavailable. Closing it opens the four-step Studio walkthrough:
+
+1. Start with a plain request in the composer.
+2. Name the page with **Working on**, **Choose** or **Create something**.
+3. Watch the **Live job** pane and answer the team's questions.
+4. Review the result in **Preview**.
+
+The walkthrough is versioned per account (`users.studio_tour_at` and
+`users.studio_tour_version`), so it survives a new browser and a future copy change can
+re-arm it. Skipping counts as seen; **How Studio works** in the Studio header replays it.
+The completion card offers **Show me the rest**, which runs the wider tour without
+repeating the Studio steps. The welcome and walkthrough do not depend on a working
+microphone.
+
+In the Client Workspace, client admins and members see **Studio** plus a single **More**
+disclosure. It opens the existing Home, Website, Content, Leads and Account groups only
+when asked, with the current page highlighted. The platform owner keeps the full grouped
+workspace nav for cross-client work.
+
+
 ## Analytics sources
 
 Analytics is workspace-scoped. A client admin can connect a Google Analytics 4
@@ -149,46 +172,80 @@ source labels read-only. The operator can do the same for any client from Platfo
 Data sources, or while acting as that client.
 
 The recommended path is Google OAuth. Create a **Web application** OAuth client in
-Google Cloud, enable the Google Analytics Data API and the Tag Manager API, and register
-this exact redirect URI under Platform → Analytics:
+Google Cloud and enable the **Analytics Admin API**, **Analytics Data API**, **Tag
+Manager API** and, if you use the export, **BigQuery API**. Register both redirect URIs
+under Platform → Analytics:
 
 ```text
 https://<ADMIN_DOMAIN>/api/analytics/oauth/google/callback
+https://<ADMIN_DOMAIN>/api/analytics/google/account-ticket/callback
 ```
 
 Add all six Analytics and Tag Manager scopes to the OAuth consent screen:
 `analytics.readonly`, `analytics.edit`, `tagmanager.readonly`,
 `tagmanager.edit.containers`, `tagmanager.edit.containerversions` and
 `tagmanager.publish`. Add `bigquery.readonly` too if you will use the BigQuery export.
-The first connection asks for read access only. **Enable setup & automation** on the
-Google connection card asks for the write scopes again; **Enable BigQuery** asks for
-BigQuery read access. Google shows the new permissions, and the existing refresh token
-is replaced with the broader grant.
+The first connection asks for read access only. **Grant Google setup access** on the
+Google connection card asks for the write and BigQuery scopes again. Google shows the new
+permissions, and the existing refresh token is replaced with the broader grant.
 
-Set `GA4_OAUTH_CLIENT_ID`, `GA4_OAUTH_CLIENT_SECRET` and, if needed,
-`GA4_OAUTH_REDIRECT_URI`. Set a stable `OAUTH_TOKEN_KEY` (or `SECRET_KEY`) in the
-production environment before connecting: tokens are Fernet-encrypted with it, and
-changing it makes every stored grant unreadable. The client enters their numeric property
-ID and clicks **Connect with Google**; the callback stores the refresh token for that
-client only. Existing service-account sources remain supported through
-`GA4_SERVICE_ACCOUNT_KEY_PATH`. The daily scheduler refreshes GA4 sources; the per-source
-**Refresh** action is for a client admin or the operator. Site logs are platform
-infrastructure and are refreshed by the operator's global sync, not by a client.
+Set `GA4_OAUTH_CLIENT_ID`, `GA4_OAUTH_CLIENT_SECRET`, `GA4_OAUTH_REDIRECT_URI` and
+`GA4_ACCOUNT_TICKET_REDIRECT_URI` (or a stable `PLATFORM_URL` that derives both). Set a
+stable `OAUTH_TOKEN_KEY` (or `SECRET_KEY`) in the production environment before
+connecting: tokens are Fernet-encrypted with it, and changing it makes every stored grant
+unreadable. The client enters their numeric property ID and clicks **Connect with
+Google**; the callback stores the refresh token for that client only. Existing
+service-account sources remain supported through `GA4_SERVICE_ACCOUNT_KEY_PATH`. The
+daily scheduler refreshes GA4 sources; the per-source **Refresh** action is for a client
+admin or the operator. Site logs are platform infrastructure and are refreshed by the
+operator's global sync, not by a client.
 
-With write access, **Create GA4 property** creates a property and web stream, marks the
-chosen key events, creates a GTM web container with a GA4 configuration tag and one event
-tag per key event, publishes the container, and installs the GTM snippet on the site's
-live pages and hosted forms. **Install GTM snippet** repeats the page installation for an
-existing container. Every step is recorded in `analytics_actions` and in the Google
-connection card's Recent Google setup actions. The site write still obeys
-`ALLOW_LIVE_ACTIONS` and is a dry-run until live actions are enabled.
+### One-click Google setup
 
-The AI can also run the setup through `setup_analytics`. When
-`ANALYTICS_AUTONOMY` is off (the default), it drafts a pending approval that a person
-approves in Approvals; approving executes the same setup. When the client turns
-`ANALYTICS_AUTONOMY` on, the AI can execute directly, still behind
-`ALLOW_LIVE_ACTIONS`, a three-per-hour-per-client setup limit, and the audit trail. Turn
-the setting off to require a person for every Google write.
+The Google connection card is the persistent setup view. It shows whether the grant is
+read-only or setup-capable, whether BigQuery is available, which Analytics and Tag
+Manager accounts Google can see, whether a BigQuery export is already linked, and whether
+full setup automation is on. **Set up everything** is idempotent: it creates the GA4
+property and web stream only when none exists, reuses the stored property and stream on
+later clicks, creates the GTM container only when one is missing, installs the snippet on
+the selected live site, and records every write in `analytics_actions`. The optional
+audience is a single event filter wrapped in the GA4-required `andGroup` → `orGroup`
+shape; if Google rejects the audience, the property, stream and container are still
+kept and the failure is reported as a retryable note.
+
+**Connect Google & set up** is the one-flow path. If consent, live actions and write
+scopes are already present, the OAuth return starts the same idempotent setup
+automatically and then syncs the first reports. If a prerequisite is missing, the
+console opens the consent or Google account step and resumes automatically after it is
+resolved. A separate **Connect read-only** action never writes.
+
+Before the first write, the client admin must open **Grant full setup automation** and
+tick the versioned consent. The consent states that setup is recurring, that Google's
+terms and OAuth verification remain the client's responsibility, that privacy/cookie
+notices and any Google Cloud/BigQuery charges are theirs, and that revocation stops
+future actions but does not undo resources already created. Granting it also turns
+`ANALYTICS_AUTONOMY` on for that workspace; **Stop automation** revokes the consent and
+turns it off. A consent-version bump requires a fresh grant. The operator's
+`ALLOW_LIVE_ACTIONS` switch remains a separate hard stop and cannot be waived by a client.
+
+The **Test connection** button for AI providers now makes one minimal authenticated
+request per configured provider. A present-but-revoked key therefore fails with
+"rejected the API key" instead of looking healthy until a paid team job fails. A 402
+response means the provider accepted the key but has no remaining credit; top up that
+provider or switch the affected agent, then retry. This probe bypasses the metered
+wrapper, but a provider with no remaining balance can still reject the request.
+
+If Google exposes no Analytics account, **Create Analytics account** calls
+`accounts:provisionAccountTicket` and sends the browser to Google's account form. Google
+requires the person to accept its own Analytics terms there. The callback returns to
+Analytics, which refreshes the account list. If Google changes that browser route, the
+same helper offers **Open Google Analytics** and **I created it — refresh**. Google does
+not let an app create a Tag Manager account or a Google Cloud project: those remain
+explicit links to Tag Manager and Google Cloud, and setup will reuse what the person
+creates. The AI can also run the setup through `setup_analytics`; with
+`ANALYTICS_AUTONOMY` off it drafts an approval, and with it on it writes directly, still
+behind `ALLOW_LIVE_ACTIONS`, the three-per-hour-per-client setup limit and the audit
+trail.
 
 ### BigQuery export
 
@@ -214,6 +271,15 @@ export has additional cost. A service-account GA4 source can query the export if
 has BigQuery access; OAuth sources use the `bigquery.readonly` grant. Linking a project is
 a live write and still requires `ALLOW_LIVE_ACTIONS`; syncing is read-only. A client can
 link at most twice in ten minutes; a human GA4 setup is capped at three attempts per hour.
+
+### Voice troubleshooting
+
+Voice is a browser-to-Google WebSocket, not a platform WebSocket. If **Talk** closes with
+code `1006`, run **Settings → Voice → Test** first: it mints a token with the same
+`bidiGenerateContentSetup`, opens the exact v1beta constrained socket server-side and
+reports Google's answer. A failing test means the Gemini key, Live model or API version
+needs fixing; a passing test points at the browser's network or proxy. A client who sees
+the generic voice error should ask the agency to run that test.
 
 ### Intelligence and alerts
 

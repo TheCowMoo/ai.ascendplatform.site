@@ -399,6 +399,17 @@ def test_ga4_sync_uses_the_oauth_token():
     print("GA4 sync selects the OAuth token path and writes both fact stores")
 
 
+def test_auto_setup_intent_is_remembered():
+    _url, _query = start(STATE["client"], external_id="", auto_setup=True)
+    with STATE["client"].session_transaction() as stored:
+        pending = stored.get("ga4_oauth") or {}
+    check("auto setup is stored on the OAuth request",
+          pending.get("auto_setup"), True)
+    check("auto setup is scoped to the client",
+          pending.get("connection_scope"), "client")
+    print("the OAuth request remembers the automatic setup intent")
+
+
 def main():
     try:
         setup()
@@ -411,6 +422,7 @@ def main():
         test_agency_connection_property_and_container_pickers()
         test_access_token_refresh_preserves_the_refresh_token()
         test_ga4_sync_uses_the_oauth_token()
+        test_auto_setup_intent_is_remembered()
     finally:
         cleanup()
     if FAILED:

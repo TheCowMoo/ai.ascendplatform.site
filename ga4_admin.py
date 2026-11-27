@@ -187,6 +187,55 @@ def list_accounts(token):
     } for item in (data.get("accounts") or [])]
 
 
+def provision_account_ticket(token, display_name, redirect_uri):
+    """Create a short-lived ticket for Google's own Analytics account form.
+
+    Google requires the person to accept its terms in its UI; the API returns a ticket,
+    not a ready account. The caller redirects the browser to ``account_ticket_url`` and
+    Google returns to ``redirect_uri`` afterwards.
+    """
+    name = str(display_name or "").strip()
+    if not name:
+        raise GoogleApiError("Give the Google Analytics account a name.")
+    redirect = str(redirect_uri or "").strip()
+    if not redirect:
+        raise GoogleApiError(
+            "The Google account setup redirect URI is not configured. Add "
+            "GA4_ACCOUNT_TICKET_REDIRECT_URI in Settings."
+        )
+    data = _post(token, BASE + "/accounts:provisionAccountTicket", {
+        "account": {"displayName": name[:100]},
+        "redirectUri": redirect,
+    })
+    ticket = str(data.get("accountTicketId") or "").strip()
+    if not ticket:
+        raise GoogleApiError(
+            "Google did not return an account setup ticket. Try again from Analytics."
+        )
+    return {
+        "account_ticket_id": ticket,
+        "redirect_uri": redirect,
+    }
+
+
+def account_ticket_url(ticket_id, account_email=""):
+    """The Google Analytics page that accepts a provisioning ticket.
+
+    Google does not publish this browser URL in the Admin API reference; it is the
+    provision route used by the official account-creation flow. Keep the fallback link
+    visible in the UI because Google can change an undocumented browser route.
+    """
+    ticket = str(ticket_id or "").strip()
+    if not ticket:
+        return ""
+    query = ""
+    email = str(account_email or "").strip()
+    if email:
+        query = "?authuser=" + urllib.parse.quote(email)
+    return ("https://analytics.google.com/analytics/web/" + query
+            + "#/provision/" + urllib.parse.quote(ticket))
+
+
 def create_property(token, account, display_name, time_zone="Etc/UTC",
                     currency_code="USD"):
     """Create a GA4 property under an existing Analytics account."""
@@ -212,6 +261,49 @@ def create_property(token, account, display_name, time_zone="Etc/UTC",
         "time_zone": data.get("timeZone") or time_zone,
         "currency_code": data.get("currencyCode") or currency_code,
     }
+
+
+def list_web_streams(token, property_id):
+    """The data streams already on a property, including their measurement IDs.
+
+    The one-click setup uses this to attach a Tag Manager container to an existing
+    property instead of creating a second property just to learn its measurement ID.
+    """
+    data = _get(token, BASE + "/" + _property_path(property_id)
+                + "/dataStreams?pageSize=200")
+    rows = []
+    for item in data.get("dataStreams") or []:
+        web = item.get("webStreamData") or {}
+        rows.append({
+            "stream": item.get("name") or "",
+            "stream_id": str(item.get("name") or "").split("/")[-1],
+            "display_name": item.get("displayName") or "",
+            "type": item.get("type") or "",
+            "measurement_id": web.get("measurementId") or "",
+            "default_uri": web.get("defaultUri") or "",
+        })
+    return rows
+
+
+def list_key_events(token, property_id):
+    """Key events already configured on a property, so setup does not duplicate them."""
+    data = _get(token, BASE + "/" + _property_path(property_id)
+                + "/keyEvents?pageSize=200")
+    return [{
+        "key_event": item.get("name") or "",
+        "event_name": item.get("eventName") or "",
+        "counting_method": item.get("countingMethod") or "",
+    } for item in (data.get("keyEvents") or [])]
+
+
+def list_event_audiences(token, property_id):
+    """Audiences already on a property, used to keep one-click setup idempotent."""
+    data = _get(token, BASE_ALPHA + "/" + _property_path(property_id)
+                + "/audiences?pageSize=200")
+    return [{
+        "audience": item.get("name") or "",
+        "display_name": item.get("displayName") or "",
+    } for item in (data.get("audiences") or [])]
 
 
 def create_web_stream(token, property_id, display_name="Website",
@@ -266,10 +358,18 @@ def create_event_audience(token, property_id, display_name, event_name,
             "clauseType": "INCLUDE",
             "simpleFilter": {
                 "scope": "AUDIENCE_FILTER_SCOPE_WITHIN_SAME_EVENT",
+                # GA4 requires the top-level andGroup to contain only orGroups;
+                # an eventFilter directly under andGroup is rejected with
+                # "'and_group' can only contain AudienceFilterExpressions with
+                # 'or_group'". Keep the event filter inside the orGroup.
                 "filterExpression": {
                     "andGroup": {
                         "filterExpressions": [{
-                            "eventFilter": {"eventName": event[:100]},
+                            "orGroup": {
+                                "filterExpressions": [{
+                                    "eventFilter": {"eventName": event[:100]},
+                                }],
+                            },
                         }],
                     },
                 },

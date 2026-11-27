@@ -47,6 +47,8 @@ FAST_SUITES = (
     "test_analytics_sources",
     "test_ga4_oauth",
     "test_google_setup",
+    "test_analytics_consent",
+    "test_provider_probe",
     "test_bigquery",
     "test_alerts",
     "test_ai_reference",
@@ -363,6 +365,16 @@ def check_js():
             raise AssertionError("the build card harness failed: %s"
                                  % ((result.stdout or "") + (result.stderr or ""))[:1200])
         print("build card harness OK")
+
+    # The first-run Studio walkthrough is four anchored steps; losing a target or the
+    # replay path leaves onboarding with a card pointing at nothing.
+    harness = os.path.join(ROOT, "tests", "studio_tour.mjs")
+    if os.path.exists(harness):
+        result = subprocess.run(["node", harness], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("the Studio tour harness failed: %s"
+                                 % ((result.stdout or "") + (result.stderr or ""))[:1200])
+        print("Studio tour harness OK")
 
 
 def check_suites():

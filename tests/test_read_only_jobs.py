@@ -9,6 +9,7 @@ team instructions, and the tool-level refusal.
 """
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -68,6 +69,11 @@ def draft(org_id, title="Cow Barn Tour", content="<h1>Cow Barn Tour</h1>"):
 def start(parent, **kwargs):
     tool = tool_registry.resolve(["start_job"], job_id=parent)[0]
     return asyncio.run(tool.run_json(kwargs, DRY))
+
+
+def read_draft(job_id, deliverable_id):
+    tool = tool_registry.resolve(["read_deliverable"], job_id=job_id)[0]
+    return asyncio.run(tool.run_json({"deliverable_id": deliverable_id}, DRY))
 
 
 def test_the_qa_replay_is_read_only():
@@ -136,6 +142,57 @@ def test_the_qa_replay_is_read_only():
     check("the Studio block offers the edit path", "save_deliverable" in block, True)
     check("and names the read-only path", "READ-ONLY" in block, True)
     check("the Manager prompt names the read-only rule", "READ-ONLY" in manager.SYSTEM, True)
+
+
+def test_a_draft_can_be_read_but_not_across_clients():
+    org_id = org("Draft Reader")
+    content = "<header><nav><a href=\"/\">Home</a><a href=\"/tour.html\">Tour</a></nav></header>"
+    item = draft(org_id, content=content)
+    job = jobs.create_job("Read source", "read it", user_id(), "selector", "chat",
+                          org_id=org_id, deliverable_id=item["id"])
+    payload = json.loads(read_draft(job, item["id"]))
+    check("the draft id is returned", payload["id"], item["id"])
+    check("the exact source is returned", payload["content"], content)
+    check("the draft is not truncated", payload["truncated"], False)
+    check("the reader is in the read-only allowlist",
+          "read_deliverable" in tool_registry.READ_ONLY_TOOLS, True)
+    operator = next(row for row in agents.DEFAULT_ROSTER if row["name"] == "Operator")
+    check("the Operator can read a draft", "read_deliverable" in operator["tools"], True)
+    check("the Manager can read a draft", "read_deliverable" in manager.GRANTED, True)
+    check("a read-only Manager keeps it",
+          "read_deliverable" in manager.granted_for({"read_only": 1}), True)
+
+    other_org = org("Other Client")
+    other = draft(other_org, title="Private", content="<h1>secret</h1>")
+    refused = read_draft(job, other["id"])
+    check("another client's draft looks missing", "No draft" in refused, True)
+    check("and its content is not leaked", "secret" in refused, False)
+
+
+def test_raw_markup_can_be_read_and_saved_back():
+    org_id = org("Markup Edit")
+    original = ('<!doctype html><html><body><header><nav>'
+                '<a class="active" href="/">Home</a>'
+                '<a href="/tour.html">The tour</a>'
+                '</nav></header></body></html>')
+    item = draft(org_id, title="Home", content=original)
+    job = jobs.create_job("Splice header", "splice the nav", user_id(), "selector",
+                          "chat", org_id=org_id, deliverable_id=item["id"])
+    payload = json.loads(read_draft(job, item["id"]))
+    revised = payload["content"].replace(
+        '<a class="active" href="/">Home</a>',
+        '<a href="/">Home</a><a class="active" href="/tour.html">The tour</a>')
+    save = tool_registry.resolve(["save_deliverable"], job_id=job)[0]
+    result = asyncio.run(save.run_json({
+        "kind": "website", "title": "Home", "content": revised,
+        "deliverable_id": item["id"],
+    }, DRY))
+    check("the revised markup saves", "Updated" in result, True)
+    check("the stored markup is exact",
+          deliverables.get_deliverable(item["id"])["content"], revised)
+    check("the pre-splice body has a version",
+          any(version["bytes"] == len(original.encode("utf-8"))
+              for version in deliverables.versions(item["id"])), True)
 
 
 def test_an_edit_job_still_saves_and_keeps_a_version():
@@ -207,6 +264,8 @@ def test_the_parent_read_only_is_inherited():
 if __name__ == "__main__":
     try:
         test_the_qa_replay_is_read_only()
+        test_a_draft_can_be_read_but_not_across_clients()
+        test_raw_markup_can_be_read_and_saved_back()
         test_an_edit_job_still_saves_and_keeps_a_version()
         test_published_edits_return_to_draft()
         test_intent_only_calls_a_review_a_review()

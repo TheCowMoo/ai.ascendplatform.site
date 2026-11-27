@@ -161,8 +161,14 @@ def test_ga4_write_calls():
           "AUDIENCE_FILTER_SCOPE_WITHIN_SAME_EVENT")
     expressions = ((simple.get("filterExpression") or {}).get("andGroup") or {}) \
         .get("filterExpressions") or []
-    check("audience filters the event",
-          ((expressions[0] if expressions else {}).get("eventFilter") or {})
+    first = expressions[0] if expressions else {}
+    check("the top-level andGroup contains an orGroup",
+          "orGroup" in first, True)
+    check("eventFilter is not a direct child of andGroup",
+          "eventFilter" in first, False)
+    or_expressions = (first.get("orGroup") or {}).get("filterExpressions") or []
+    check("audience filters the event inside the orGroup",
+          ((or_expressions[0] if or_expressions else {}).get("eventFilter") or {})
           .get("eventName"), "form_submit")
     check("audience uses the alpha endpoint", "/v1alpha/" in audience_call["url"], True)
     print("GA4 property, stream, key event and audience payloads are wired")

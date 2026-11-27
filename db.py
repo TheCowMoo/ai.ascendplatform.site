@@ -126,6 +126,10 @@ users = Table(
     # The first login gets a short spoken welcome. Per account, not per browser: a second
     # device must not replay it, and clearing localStorage must not bring it back.
     Column("onboarded_at", Text),
+    # The Studio walkthrough is versioned: a new guide can re-arm it without replaying the
+    # old one, and completion follows the account to every device.
+    Column("studio_tour_at", Text),
+    Column("studio_tour_version", Text, nullable=False, server_default=_literal("")),
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
@@ -950,6 +954,22 @@ analytics_actions = Table(
     Index("ix_analytics_actions_org", "org_id"),
 )
 
+analytics_consents = Table(
+    "analytics_consents",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Integer, nullable=False),
+    Column("user_id", Integer),
+    Column("kind", Text, nullable=False, server_default=_literal("setup_automation")),
+    Column("version", Text, nullable=False, server_default=_literal("")),
+    Column("scopes", Text, nullable=False, server_default=_literal("[]")),
+    Column("accepted_at", Text, nullable=False, server_default=_now_default()),
+    Column("revoked_at", Text, nullable=False, server_default=_literal("")),
+    Column("metadata", Text, nullable=False, server_default=_literal("{}")),
+    _created_at(),
+    Index("ix_analytics_consents_org_kind", "org_id", "kind"),
+)
+
 analytics_alert_rules = Table(
     "analytics_alert_rules",
     metadata,
@@ -1521,6 +1541,9 @@ _ADDITIVE_COLUMNS = (
      "access_token_enc TEXT NOT NULL DEFAULT ''"),
     ("users", "org_id", "org_id INTEGER"),
     ("users", "onboarded_at", "onboarded_at TEXT"),
+    ("users", "studio_tour_at", "studio_tour_at TEXT"),
+    ("users", "studio_tour_version",
+     "studio_tour_version TEXT NOT NULL DEFAULT ''"),
     ("users", "status", "status TEXT NOT NULL DEFAULT 'active'"),
     ("users", "last_login_at", "last_login_at TEXT"),
     ("users", "updated_at", "updated_at TEXT"),

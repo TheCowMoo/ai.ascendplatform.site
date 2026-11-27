@@ -914,7 +914,9 @@
     state.closeInfo = 'code ' + code + (reason ? ' · ' + reason : '');
     var ownerView = !!(state.session && state.session.model);
     if (!ownerView) {
-      fail('The voice session ended. Please try again, or type your request.');
+      fail('The voice session ended. Please try again, or type your request.',
+           closeHint(code) + ' If this repeats, ask your agency to run Settings -> ' +
+           'Voice -> Test; that verifies the Gemini Live key, model and API version.');
       return;
     }
     var suffix = reason ? ': ' + reason : (code ? ' (code ' + code + ')' : '');

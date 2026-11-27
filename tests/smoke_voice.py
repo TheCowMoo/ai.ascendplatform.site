@@ -555,8 +555,11 @@ def test_the_browser_half_is_wired():
     check("the speaking colour is a token", "--voice-speaking" in css, True)
     check("the sheet remains for text", ".assist-sheet" in css, True)
 
-    check("the orb and the tour are booted with the shell",
-          "assistOrb();" in admin_js and "startTour(false);" in admin_js, True)
+    check("the orb and the Studio walkthrough are booted with the shell",
+          "assistOrb();" in admin_js and
+          "startStudioTour(false, null, true);" in admin_js, True)
+    check("the wider tour skips the Studio repeat",
+          "startTour(false, { skipStudio: true });" in admin_js, True)
     check("the tour remembers being seen", "'tour:' +" in admin_js, True)
     check("the sheet sends page context with the question",
           "context: where" in admin_js and "var where = record ?" in admin_js, True)

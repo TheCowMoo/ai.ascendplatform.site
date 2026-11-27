@@ -60,7 +60,7 @@
         { id: 'account', label: 'Account', icon: 'sliders', children: [
           { id: 'profile', label: 'Business details', hash: '#/app/profile' },
           { id: 'team', label: 'Team', hash: '#/app/team', adminOnly: true },
-          { id: 'settings', label: 'Settings', clientLabel: 'Email settings',
+          { id: 'settings', label: 'Settings', clientLabel: 'Settings',
             hash: '#/app/settings', adminOnly: true }
         ] }
       ]
@@ -767,6 +767,108 @@
     });
   }
 
+  // A client's sidebar is Studio plus one deliberate disclosure. The old grouped nav is
+  // still the operator's fast path; a client should not have to scan six headings before
+  // asking for a page.
+  var simpleNavCleanup = null;
+
+  function simpleClientNav(tab, navLeaf) {
+    if (simpleNavCleanup) {
+      simpleNavCleanup();
+      simpleNavCleanup = null;
+    }
+    var nav = el('nav', 'side-nav side-simple');
+    var activeGroup = groupFor(AREAS.app.nav, tab);
+    var activeLabel = '';
+    var activeFound = false;
+    AREAS.app.nav.forEach(function (item) {
+      var children = item.children ? visibleChildren(item) : [item];
+      children.forEach(function (child) {
+        if (child.id === tab) {
+          activeFound = true;
+          activeLabel = child.clientLabel || child.label;
+        }
+      });
+    });
+
+    var studio = AREAS.app.nav.filter(function (item) {
+      return item.id === 'studio';
+    })[0];
+    if (studio) {
+      var primary = navLeaf(studio, false);
+      primary.classList.add('side-primary');
+      primary.setAttribute('data-nav-primary', 'studio');
+      nav.appendChild(primary);
+    }
+
+    var open = activeFound && !!activeGroup;
+    var more = el('button', 'side-more' + (open ? ' open has-active' : ''));
+    more.type = 'button';
+    more.id = 'side-more-button';
+    more.setAttribute('aria-expanded', open ? 'true' : 'false');
+    more.setAttribute('aria-controls', 'side-more-panel');
+    more.innerHTML = '<span class="side-icon">' + icon('menu') + '</span>' +
+      '<span class="side-label">' + (activeLabel ? 'More · ' + esc(activeLabel) : 'More') +
+      '</span>' +
+      (open ? '<span class="side-dot" aria-hidden="true"></span>' : '') +
+      '<span class="side-chevron" aria-hidden="true">›</span>';
+
+    var panel = el('div', 'side-more-panel');
+    panel.id = 'side-more-panel';
+    panel.hidden = !open;
+    AREAS.app.nav.forEach(function (item) {
+      if (item.id === 'studio') return;
+      if (item.adminOnly && !canAdmin(state.user)) return;
+      if (item.ownerOnly && !isOwner(state.user)) return;
+      if (item.clientHidden && !isOwner(state.user)) return;
+      var children = item.children ? visibleChildren(item) : (item.hash ? [item] : []);
+      if (!children.length) return;
+      var section = el('div', 'side-more-group');
+      section.appendChild(el('div', 'side-more-heading', item.label));
+      children.forEach(function (child) {
+        var link = navLeaf(child, true);
+        link.classList.add('side-more-link');
+        link.addEventListener('click', function () { setOpen(false); });
+        section.appendChild(link);
+      });
+      panel.appendChild(section);
+    });
+    nav.appendChild(more);
+    nav.appendChild(panel);
+
+    function onKey(event) {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      try { more.focus(); } catch (e) { /* not focusable */ }
+    }
+    function onOutside(event) {
+      if (!nav.contains(event.target)) setOpen(false);
+    }
+    function detach() {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('click', onOutside);
+      if (simpleNavCleanup === detach) simpleNavCleanup = null;
+    }
+    function setOpen(next) {
+      open = !!next;
+      panel.hidden = !open;
+      more.classList.toggle('open', open);
+      more.classList.toggle('has-active', open);
+      more.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        if (simpleNavCleanup && simpleNavCleanup !== detach) simpleNavCleanup();
+        simpleNavCleanup = detach;
+        document.addEventListener('keydown', onKey);
+        document.addEventListener('click', onOutside);
+      } else {
+        detach();
+      }
+    }
+    more.onclick = function () { setOpen(!open); };
+    if (open) setOpen(true);
+    return nav;
+  }
+
   function sidebar(parts) {
     var area = parts[0] === 'platform' ? 'platform' : 'app';
     var tab = parts[1] || '';
@@ -789,11 +891,9 @@
       aside.appendChild(areas);
     }
 
-    aside.appendChild(el('div', 'side-heading', AREAS[area].label));
-
-    var nav = el('nav', 'side-nav');
     var openGroups = readOpenGroups();
     var activeGroup = groupFor(AREAS[area].nav, tab);
+    var simpleClient = area === 'app' && !isOwner(state.user);
 
     function navLeaf(item, child) {
       var link = el('a', 'side-item' + (child ? ' side-child' : '') +
@@ -808,47 +908,54 @@
       return link;
     }
 
-    AREAS[area].nav.forEach(function (item) {
-      if (item.adminOnly && !canAdmin(state.user)) return;
-      if (item.ownerOnly && !isOwner(state.user)) return;
-      if (item.clientHidden && !isOwner(state.user)) return;
-      if (!item.children || !item.children.length) {
-        nav.appendChild(navLeaf(item, false));
-        return;
-      }
-      var children = visibleChildren(item);
-      if (!children.length) return;          // a member with only admin children
-      var active = !!(activeGroup && activeGroup.id === item.id);
-      var open = active || openGroups.indexOf(item.id) !== -1;
-      if (active && openGroups.indexOf(item.id) === -1) {
-        // Remember it: a group you were just in should not snap shut when you move on.
-        openGroups.push(item.id);
-        writeOpenGroup(item.id, true);
-      }
-      var sub = el('div', 'side-sub');
-      sub.id = 'side-sub-' + item.id;
-      sub.hidden = !open;
-      var group = el('button', 'side-group' + (open ? ' open' : '') +
-        (active ? ' has-active' : ''));
-      group.type = 'button';
-      group.setAttribute('aria-expanded', open ? 'true' : 'false');
-      group.setAttribute('aria-controls', sub.id);
-      group.innerHTML = '<span class="side-icon">' + icon(item.icon) + '</span>' +
-        '<span class="side-label">' + esc(item.label) + '</span>' +
-        (active ? '<span class="side-dot" aria-hidden="true"></span>' : '') +
-        '<span class="side-chevron" aria-hidden="true">›</span>';
-      group.onclick = function () {
-        var next = !group.classList.contains('open');
-        group.classList.toggle('open', next);
-        group.setAttribute('aria-expanded', next ? 'true' : 'false');
-        sub.hidden = !next;
-        writeOpenGroup(item.id, next);
-      };
-      children.forEach(function (child) { sub.appendChild(navLeaf(child, true)); });
-      nav.appendChild(group);
-      nav.appendChild(sub);
-    });
-    aside.appendChild(nav);
+    if (simpleClient) {
+      aside.setAttribute('data-simple-nav', 'true');
+      aside.appendChild(simpleClientNav(tab, navLeaf));
+    } else {
+      aside.appendChild(el('div', 'side-heading', AREAS[area].label));
+      var nav = el('nav', 'side-nav');
+      AREAS[area].nav.forEach(function (item) {
+        if (item.adminOnly && !canAdmin(state.user)) return;
+        if (item.ownerOnly && !isOwner(state.user)) return;
+        if (item.clientHidden && !isOwner(state.user)) return;
+        if (!item.children || !item.children.length) {
+          nav.appendChild(navLeaf(item, false));
+          return;
+        }
+        var children = visibleChildren(item);
+        if (!children.length) return;          // a member with only admin children
+        var active = !!(activeGroup && activeGroup.id === item.id);
+        var open = active || openGroups.indexOf(item.id) !== -1;
+        if (active && openGroups.indexOf(item.id) === -1) {
+          // Remember it: a group you were just in should not snap shut when you move on.
+          openGroups.push(item.id);
+          writeOpenGroup(item.id, true);
+        }
+        var sub = el('div', 'side-sub');
+        sub.id = 'side-sub-' + item.id;
+        sub.hidden = !open;
+        var group = el('button', 'side-group' + (open ? ' open' : '') +
+          (active ? ' has-active' : ''));
+        group.type = 'button';
+        group.setAttribute('aria-expanded', open ? 'true' : 'false');
+        group.setAttribute('aria-controls', sub.id);
+        group.innerHTML = '<span class="side-icon">' + icon(item.icon) + '</span>' +
+          '<span class="side-label">' + esc(item.label) + '</span>' +
+          (active ? '<span class="side-dot" aria-hidden="true"></span>' : '') +
+          '<span class="side-chevron" aria-hidden="true">›</span>';
+        group.onclick = function () {
+          var next = !group.classList.contains('open');
+          group.classList.toggle('open', next);
+          group.setAttribute('aria-expanded', next ? 'true' : 'false');
+          sub.hidden = !next;
+          writeOpenGroup(item.id, next);
+        };
+        children.forEach(function (child) { sub.appendChild(navLeaf(child, true)); });
+        nav.appendChild(group);
+        nav.appendChild(sub);
+      });
+      aside.appendChild(nav);
+    }
 
     // The operator works in both areas: their own brand and sites live in the
     // workspace, the clients they host live in the console.
@@ -2336,14 +2443,16 @@
   function viewClientSettings() {
     var container = el('div', 'container');
     var head = el('div', 'page-head');
-    head.innerHTML = '<div><h2>Email sending</h2><p>Choose the mailbox the platform uses ' +
-      'when it sends email for you. This is optional: leave it blank and we will use the ' +
-      'agency default.</p></div>';
+    head.innerHTML = '<div><h2>Workspace settings</h2><p>Choose the mailbox the platform ' +
+      'uses when it sends email for you, and control how much the AI can do in ' +
+      'Analytics. Email is optional: leave it blank and we will use the agency ' +
+      'default.</p></div>';
     container.appendChild(head);
 
     var note = el('div', 'panel-card');
-    note.innerHTML = '<p class="muted">You only need this if you want messages to come from ' +
-      'your own domain. Your password is stored securely and is never shown again.</p>' +
+    note.innerHTML = '<p class="muted">Your email password is stored securely and is never ' +
+      'shown again. Analytics automation needs full setup consent on the Analytics page ' +
+      'and can be switched off here or there at any time.</p>' +
       '<p class="fine-print">Need help? Ask your agency to set this up with you.</p>';
     container.appendChild(note);
 
@@ -2352,7 +2461,7 @@
 
     function refresh() {
       clientSettingsCards(groupsWrap, null, refresh,
-        'Email settings are managed by your agency.');
+        'Workspace settings are managed by your agency.');
     }
 
     refresh();
@@ -6834,9 +6943,9 @@
 
   // Start a Google consent for a client or the agency grant. Read scopes first; the
   // write upgrade is a separate, explicit action when the user asks for setup/automation.
-  function startGoogleAnalytics(scope, write, bigquery) {
+  function startGoogleAnalytics(scope, write, bigquery, autoSetup) {
     var payload = { connection_scope: scope, write: !!write,
-                    bigquery: !!bigquery };
+                    bigquery: !!bigquery, auto_setup: !!autoSetup };
     if (scope === 'client') {
       var workspace = isOwner(state.user) ? state.user.acting_org
         : (state.user.org && state.user.org.id);
@@ -6862,8 +6971,7 @@
       var propertyRows = (results[0] || {}).properties || [];
       var containerRows = (results[1] || {}).containers || [];
       if (!propertyRows.length) {
-        toast('No GA4 properties found on this Google account. Create one in Google ' +
-              'Analytics, then try again.', false);
+        openGoogleAccountHelp(scope, onDone);
         return;
       }
       var fields = [{
@@ -6904,10 +7012,10 @@
           payload.container_name = container.name;
           payload.container_domain = container.domain_name;
         }
-        api('POST', '/api/analytics/google/connect', payload).then(function () {
+        api('POST', '/api/analytics/google/connect', payload).then(function (result) {
           ok();
           toast('GA4 property connected', true);
-          if (onDone) onDone();
+          syncAnalyticsSource((result.source || {}).id, onDone);
         }).catch(function (e) { fail(e.message); });
       }, 'Connect property');
     }).catch(function (e) { toast(e.message, false); });
@@ -6927,8 +7035,7 @@
       var gtmAccounts = (results[1] || {}).accounts || [];
       var sites = (results[2] || {}).sites || [];
       if (!accounts.length) {
-        toast('No Google Analytics account is available to own a new property. ' +
-              'Create one in Google Analytics, then try again.', false);
+        openGoogleAccountHelp(scope, onDone);
         return;
       }
       var firstSite = sites[0] || null;
@@ -7023,12 +7130,303 @@
             toast('GA4 and Tag Manager are set up. The snippet will be added on the ' +
                   'next publish.', true);
           }
-          if (onDone) onDone();
+          syncAnalyticsSource((result.source || {}).id, onDone);
         }).catch(function (e) { fail(e.message); });
       }, 'Create & publish');
     }).catch(function (e) { toast(e.message, false); });
   }
 
+
+  function analyticsSetupStatus(scope, discover) {
+    return api('GET', '/api/analytics/setup/status?connection_scope=' +
+      encodeURIComponent(scope) + (discover ? '&discover=1' : ''));
+  }
+
+  // After a property is connected or created, pull its first reports without making the
+  // person hunt for Refresh. A brand-new GA4 property may not have report rows yet; that
+  // is a normal wait, not a setup failure.
+  function syncAnalyticsSource(sourceId, onDone) {
+    if (!sourceId) {
+      if (onDone) onDone();
+      return;
+    }
+    toast('Setup complete. Syncing the first Analytics reports…', true);
+    api('POST', '/api/data-sources/' + sourceId + '/sync', {})
+      .then(function (result) {
+        if (result.rows) toast('Analytics synced: ' + result.rows + ' rows', true);
+      })
+      .catch(function () {
+        toast('Setup is complete. The first GA4 reports will appear as Google ' +
+              'collects data.', true);
+      })
+      .then(function () { if (onDone) onDone(); });
+  }
+
+  function setupModalShell(title, wide) {
+    var backdrop = el('div', 'modal-backdrop');
+    var modal = el('div', 'modal' + (wide ? ' modal-wide' : ''));
+    var close = el('button', 'btn btn-ghost btn-sm', '\u00d7');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close');
+    close.onclick = function () { backdrop.remove(); };
+    modal.appendChild(close);
+    modal.appendChild(el('h3', null, title));
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    return { backdrop: backdrop, modal: modal, close: close };
+  }
+
+  // The OAuth grant says the platform may call Google; this modal is where the person
+  // accepts that setup is recurring and that Google's terms, privacy and costs stay theirs.
+  function openGoogleSetupConsent(scope, onDone) {
+    analyticsSetupStatus(scope).then(function (status) {
+      var consent = status.consent || {};
+      var shell = setupModalShell('Grant full setup automation', true);
+      var intro = el('p', 'muted',
+        'This lets AscendPlatform finish Analytics setup now and keep it working later. ' +
+        'It does not replace Google\'s own terms.');
+      shell.modal.appendChild(intro);
+      var list = el('div', 'consent-terms');
+      (consent.disclaimer || []).forEach(function (line) {
+        list.appendChild(el('p', null, line));
+      });
+      shell.modal.appendChild(list);
+      var label = el('label', 'consent-check');
+      var check = el('input');
+      check.type = 'checkbox';
+      label.appendChild(check);
+      label.appendChild(document.createTextNode(
+        ' I have read and accept these terms for this workspace.'));
+      shell.modal.appendChild(label);
+      var error = el('div', 'form-error');
+      shell.modal.appendChild(error);
+      var actions = el('div', 'modal-actions');
+      var cancel = el('button', 'btn btn-ghost', 'Cancel');
+      cancel.type = 'button';
+      cancel.onclick = function () { shell.backdrop.remove(); };
+      var agree = el('button', 'btn btn-primary', 'I agree — grant access');
+      agree.type = 'button';
+      agree.onclick = function () {
+        if (!check.checked) {
+          error.textContent = 'Tick the box to confirm you have read the terms.';
+          return;
+        }
+        agree.disabled = true;
+        api('POST', '/api/analytics/setup/consent', {
+          accepted: true, version: consent.version, connection_scope: scope
+        }).then(function (result) {
+          shell.backdrop.remove();
+          toast('Full setup automation granted', true);
+          if (!result.write_ready) {
+            toast('Now let Google grant setup access.', true);
+            startGoogleAnalytics(scope, true, true, true);
+          } else if (onDone) {
+            onDone();
+          }
+        }).catch(function (e) {
+          agree.disabled = false;
+          error.textContent = e.message;
+        });
+      };
+      actions.appendChild(cancel);
+      actions.appendChild(agree);
+      shell.modal.appendChild(actions);
+    }).catch(function (e) { toast(e.message, false); });
+  }
+
+  function revokeGoogleSetup(scope, onDone) {
+    if (!confirm('Stop future Analytics setup automation? Resources already created ' +
+                 'and data already collected stay in place.')) return;
+    api('POST', '/api/analytics/setup/revoke', { connection_scope: scope })
+      .then(function () {
+        toast('Future setup automation is off', true);
+        if (onDone) onDone();
+      }).catch(function (e) { toast(e.message, false); });
+  }
+
+  // No Analytics account is a normal first-run state, not an error. Google requires the
+  // person to accept its terms, so the API creates a ticket and this modal sends them to
+  // Google's form; "I created it" is the fallback if Google changes that browser route.
+  function openGoogleAccountHelp(scope, onDone, autoSetup) {
+    var shell = setupModalShell('Create a Google Analytics account', true);
+    var body = el('div');
+    body.innerHTML = '<p>A GA4 property has to belong to an Analytics account. None is ' +
+      'visible to this Google connection yet.</p>' +
+      '<p class="muted">Create one with Google below. Google will show its own terms; ' +
+      'accepting them is yours. Then come back here and run setup again.</p>';
+    shell.modal.appendChild(body);
+    var nameWrap = el('label', 'field');
+    nameWrap.appendChild(el('span', null, 'Account name (shown in Google Analytics)'));
+    var name = el('input');
+    name.type = 'text';
+    name.value = 'AscendPlatform Analytics';
+    nameWrap.appendChild(name);
+    shell.modal.appendChild(nameWrap);
+    var error = el('div', 'form-error');
+    shell.modal.appendChild(error);
+    var actions = el('div', 'modal-actions');
+    var refresh = el('button', 'btn btn-ghost', 'I created it — refresh');
+    refresh.type = 'button';
+    refresh.onclick = function () {
+      shell.backdrop.remove();
+      if (onDone) onDone();
+    };
+    var open = el('button', 'btn btn-ghost', 'Open Google Analytics');
+    open.type = 'button';
+    open.onclick = function () {
+      window.open('https://analytics.google.com/analytics/web/', '_blank', 'noopener');
+    };
+    var create = el('button', 'btn btn-primary', 'Create account with Google');
+    create.type = 'button';
+    create.onclick = function () {
+      create.disabled = true;
+      error.textContent = '';
+      api('POST', '/api/analytics/google/account-ticket', {
+        connection_scope: scope, display_name: name.value,
+        auto_setup: !!autoSetup
+      }).then(function (result) {
+        // The ticket page is the only place Google accepts its Analytics terms.
+        window.location.assign(result.tos_url || result.fallback_url);
+      }).catch(function (e) {
+        create.disabled = false;
+        error.textContent = e.message;
+        if (e.status === 403) {
+          var consent = el('button', 'btn btn-ghost btn-sm', 'Grant setup consent');
+          consent.type = 'button';
+          consent.onclick = function () {
+            shell.backdrop.remove();
+            openGoogleSetupConsent(scope, onDone);
+          };
+          error.appendChild(document.createTextNode(' '));
+          error.appendChild(consent);
+        }
+      });
+    };
+    var reconnect = el('button', 'btn btn-ghost', 'Reconnect Google');
+    reconnect.type = 'button';
+    reconnect.onclick = function () {
+      shell.backdrop.remove();
+      startGoogleAnalytics(scope, true, true, true);
+    };
+    actions.appendChild(refresh);
+    actions.appendChild(open);
+    actions.appendChild(reconnect);
+    actions.appendChild(create);
+    shell.modal.appendChild(actions);
+    shell.modal.appendChild(el('p', 'fine-print',
+      'If Google shows an error or the account form does not open, use Open Google ' +
+      'Analytics, create the account there, then click I created it — refresh.'));
+  }
+
+  // Google exposes no API that creates a Tag Manager account. Be explicit rather than
+  // promising automation Google does not allow.
+  function openGoogleTagManagerHelp(onDone) {
+    var shell = setupModalShell('Create a Tag Manager account', false);
+    shell.modal.appendChild(el('p', null,
+      'GA4 is ready. Google does not let apps create Tag Manager accounts, so create ' +
+      'one in Tag Manager, then run Set up everything again to create and publish the ' +
+      'container.'));
+    shell.modal.appendChild(el('p', 'muted',
+      'The GA4 property and any BigQuery link are already saved; setup will reuse them.'));
+    var actions = el('div', 'modal-actions');
+    var open = el('button', 'btn btn-primary', 'Open Tag Manager');
+    open.type = 'button';
+    open.onclick = function () {
+      window.open('https://tagmanager.google.com/', '_blank', 'noopener');
+    };
+    var done = el('button', 'btn btn-ghost', 'I created it — refresh');
+    done.type = 'button';
+    done.onclick = function () {
+      shell.backdrop.remove();
+      if (onDone) onDone();
+    };
+    actions.appendChild(done);
+    actions.appendChild(open);
+    shell.modal.appendChild(actions);
+  }
+
+  function startGoogleSetup(scope, onDone) {
+    analyticsSetupStatus(scope).then(function (status) {
+      var consent = status.consent || {};
+      if (!consent.accepted) {
+        openGoogleSetupConsent(scope, function () { startGoogleSetup(scope, onDone); });
+        return;
+      }
+      if (!status.write_ready) {
+        toast('Let Google grant setup access first.', true);
+        startGoogleAnalytics(scope, true, true, true);
+        return;
+      }
+      if (!status.live_actions) {
+        toast('Live actions are off. An operator must enable ALLOW_LIVE_ACTIONS.',
+              false);
+        return;
+      }
+      Promise.all([
+        api('GET', '/api/analytics/google/accounts?connection_scope=' + scope),
+        api('GET', '/api/analytics/google/gtm-accounts?connection_scope=' + scope)
+          .catch(function () { return { accounts: [] }; }),
+        api('GET', '/api/sites').catch(function () { return { sites: [] }; })
+      ]).then(function (results) {
+        var accounts = (results[0] || {}).accounts || [];
+        var gtmAccounts = (results[1] || {}).accounts || [];
+        var sites = (results[2] || {}).sites || [];
+        if (!accounts.length) {
+          openGoogleAccountHelp(scope, onDone, true);
+          return;
+        }
+        var site = sites[0] || null;
+        var timezone = 'Etc/UTC';
+        try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || timezone; }
+        catch (e) { /* older browsers */ }
+        var makeContainer = gtmAccounts.length > 0;
+        var account = accounts[0];
+        var gtm = gtmAccounts[0] || {};
+        var payload = {
+          connection_scope: scope,
+          site_id: site ? site.id : null,
+          account: account.account,
+          account_name: account.display_name || '',
+          property_name: site ? site.domain : 'Website',
+          time_zone: timezone,
+          currency_code: 'USD',
+          key_events: 'form_submit',
+          audience_event: 'form_submit',
+          make_container: makeContainer,
+          gtm_account_id: makeContainer ? gtm.account_id : '',
+          container_name: site ? site.domain : 'Website'
+        };
+        api('POST', '/api/analytics/setup/bootstrap', payload).then(function (result) {
+          var needs = result.needs || [];
+          if (needs.indexOf('ga4_account') >= 0) {
+            openGoogleAccountHelp(scope, onDone, true);
+            return;
+          }
+          if (needs.indexOf('gtm_account') >= 0) {
+            openGoogleTagManagerHelp(onDone);
+            return;
+          }
+          if (result.errors && result.errors.length) {
+            toast('Setup finished with a note: ' + result.errors[0], false);
+          } else if ((result.tag || {}).updated) {
+            toast('Google Analytics and Tag Manager are ready; the snippet is on ' +
+                  result.tag.updated + ' page(s).', true);
+          } else {
+            toast(result.mode === 'existing'
+              ? 'Google Analytics setup is already complete.'
+              : 'Google Analytics and Tag Manager are ready.', true);
+          }
+          syncAnalyticsSource((result.source || {}).id, onDone);
+        }).catch(function (e) {
+          if (e.data && (e.data.needs || []).indexOf('ga4_account') >= 0) {
+            openGoogleAccountHelp(scope, onDone, true);
+            return;
+          }
+          toast(e.message, false);
+        });
+      }).catch(function (e) { toast(e.message, false); });
+    }).catch(function (e) { toast(e.message, false); });
+  }
 
   // Re-run tag installation for a client that already has a container selected.
   function installGoogleTag(onDone) {
@@ -7216,6 +7614,14 @@
     var insightsData = { insights: [] };
     var alerts = [];
     var alertRules = [];
+    var setupStatus = {};
+    var autoSetupPending = false;
+
+    function maybeRunAutoSetup(scope) {
+      if (!autoSetupPending || !canManage || !setupStatus.connected) return;
+      autoSetupPending = false;
+      startGoogleSetup(scope, load);
+    }
     var head = el('div', 'page-head');
     head.innerHTML = '<div><h2>Analytics</h2><p class="muted">' +
       (owner ? 'Traffic for this client, compared with the previous 7 days.'
@@ -7506,6 +7912,16 @@
       }
       var activeScope = clientOauth ? 'client' : ((owner && agencyOauth) ? 'agency' : '');
       var activeWrite = activeScope === 'client' ? clientWriteReady : agencyWriteReady;
+      var activeBigquery = activeScope === 'client'
+        ? clientBigqueryReady : agencyBigqueryReady;
+      var consent = setupStatus.consent || {};
+      var setupProperties = setupStatus.properties || properties;
+      var setupContainers = setupStatus.containers || containers;
+      var gaAccounts = setupStatus.ga_accounts;
+      var gtmAccounts = setupStatus.gtm_accounts;
+      var bigQueryLinked = setupProperties.some(function (p) {
+        return !!(p && p.bigquery_project);
+      });
       var parts = [];
       parts.push(clientOauth ? 'This client has its own Google connection.'
                              : 'This client has no Google connection of its own.');
@@ -7517,6 +7933,46 @@
         ? (activeWrite ? 'Setup and automation access are granted.'
                        : 'Read-only access is granted.')
         : 'Connect Google to choose a property.');
+      if (activeScope && activeWrite) {
+        parts.push(consent.accepted
+          ? 'Full setup automation is on for this workspace.'
+          : 'Full setup automation has not been granted yet.');
+        if (consent.accepted) {
+          parts.push(setupProperties.length + ' GA4 propert' +
+            (setupProperties.length === 1 ? 'y' : 'ies') + ', ' +
+            setupContainers.length + ' Tag Manager container' +
+            (setupContainers.length === 1 ? '' : 's') + '.');
+        }
+      }
+      if (activeScope) {
+        if (gaAccounts === null || gaAccounts === undefined) {
+          parts.push('Checking which Analytics accounts Google can see…');
+        } else if (!gaAccounts.length) {
+          parts.push('No Analytics account is visible to this Google connection.');
+        } else {
+          parts.push(gaAccounts.length + ' Analytics account' +
+                     (gaAccounts.length === 1 ? '' : 's') + ' available.');
+        }
+        if (gtmAccounts === null || gtmAccounts === undefined) {
+          parts.push('Checking Tag Manager accounts…');
+        } else if (!gtmAccounts.length) {
+          parts.push('No Tag Manager account is visible; Google requires you to ' +
+                     'create one there.');
+        } else {
+          parts.push(gtmAccounts.length + ' Tag Manager account' +
+                     (gtmAccounts.length === 1 ? '' : 's') + ' available.');
+        }
+        parts.push(activeBigquery
+          ? 'BigQuery read access is granted.'
+          : 'BigQuery read access is not granted.');
+        parts.push(bigQueryLinked
+          ? 'A BigQuery export is linked to the stored property.'
+          : 'BigQuery stays off until you link a Google Cloud project; creating that ' +
+            'project is yours to do.');
+      }
+      if (setupStatus.discovery_error) {
+        parts.push('Google account check: ' + setupStatus.discovery_error);
+      }
       if (activeScope && activeWrite && !liveReady) {
         parts.push('Live actions are off; an operator must enable ' +
                    'ALLOW_LIVE_ACTIONS before setup can write.');
@@ -7525,8 +7981,12 @@
       card.appendChild(status);
       var actions = el('div', 'row-actions');
       if (!clientOauth) {
-        var clientButton = el('button', 'btn btn-primary btn-sm',
-          "Connect this client's Google");
+        var autoClient = el('button', 'btn btn-primary btn-sm',
+          'Connect Google & set up');
+        autoClient.onclick = function () { startGoogleSetup('client', load); };
+        actions.appendChild(autoClient);
+        var clientButton = el('button', 'btn btn-ghost btn-sm',
+          "Connect read-only");
         clientButton.onclick = function () { startGoogleAnalytics('client'); };
         actions.appendChild(clientButton);
       }
@@ -7548,23 +8008,54 @@
         chooseAgency.onclick = function () { chooseGoogleProperty('agency', load); };
         actions.appendChild(chooseAgency);
       }
+      if (activeScope && gaAccounts && !gaAccounts.length) {
+        var newAccount = el('button', 'btn btn-ghost btn-sm',
+          'Create Analytics account');
+        newAccount.onclick = function () { openGoogleAccountHelp(activeScope, load, true); };
+        actions.appendChild(newAccount);
+      }
+      if (activeScope && gtmAccounts && !gtmAccounts.length) {
+        var tagManager = el('button', 'btn btn-ghost btn-sm',
+          'Open Tag Manager');
+        tagManager.onclick = function () { openGoogleTagManagerHelp(load); };
+        actions.appendChild(tagManager);
+      }
       if (activeScope && !activeWrite) {
         var upgrade = el('button', 'btn btn-primary btn-sm',
-          'Enable setup & automation');
+          'Grant Google setup access');
         upgrade.onclick = function () {
-          if (!confirm('Google will ask for write access to Analytics and Tag ' +
-                       'Manager. Setup actions you start here can then create and ' +
-                       'publish tags.')) return;
-          startGoogleAnalytics(activeScope, true);
+          if (!confirm('Google will ask for write access to Analytics, Tag Manager ' +
+                       'and BigQuery. Setup actions you start here can then create ' +
+                       'and publish tags.')) return;
+          startGoogleAnalytics(activeScope, true, true, true);
         };
         actions.appendChild(upgrade);
       }
-      if (activeScope && activeWrite) {
-        var create = el('button', 'btn btn-primary btn-sm', 'Create GA4 property');
+      if (activeScope && activeWrite && !consent.accepted) {
+        var grant = el('button', 'btn btn-primary btn-sm',
+          'Grant full setup automation');
+        grant.onclick = function () {
+          openGoogleSetupConsent(activeScope, function () {
+            startGoogleSetup(activeScope, load);
+          });
+        };
+        actions.appendChild(grant);
+      }
+      if (activeScope && activeWrite && consent.accepted) {
+        var setup = el('button', 'btn btn-primary btn-sm', 'Set up everything');
+        setup.disabled = !liveReady;
+        setup.title = liveReady ? '' : 'Live actions are off';
+        setup.onclick = function () { startGoogleSetup(activeScope, load); };
+        actions.appendChild(setup);
+        var create = el('button', 'btn btn-ghost btn-sm',
+          'Create property manually');
         create.disabled = !liveReady;
         create.title = liveReady ? '' : 'Live actions are off';
         create.onclick = function () { createGoogleSetup(activeScope, load); };
         actions.appendChild(create);
+        var stop = el('button', 'btn btn-ghost btn-sm', 'Stop automation');
+        stop.onclick = function () { revokeGoogleSetup(activeScope, load); };
+        actions.appendChild(stop);
       }
       if (containers.length) {
         var install = el('button', 'btn btn-ghost btn-sm', 'Install GTM snippet');
@@ -8003,7 +8494,32 @@
         alerts = (results[5] || {}).alerts || [];
         alertRules = (results[6] || {}).rules || [];
         canManage = canManage || !!sourceData.can_manage;
-        render(data);
+        var activeScope = clientOauth ? 'client'
+          : ((owner && agencyOauth) ? 'agency' : 'client');
+        if (!canManage) {
+          setupStatus = {};
+          render(data);
+          return;
+        }
+        analyticsSetupStatus(activeScope).then(function (status) {
+          setupStatus = status || {};
+          render(data);
+          maybeRunAutoSetup(activeScope);
+          if (setupStatus.connected) {
+            // Account discovery is a second, opt-in call: Google being slow must not
+            // stop the traffic page from loading.
+            analyticsSetupStatus(activeScope, true).then(function (full) {
+              setupStatus = full || setupStatus;
+              render(data);
+              maybeRunAutoSetup(activeScope);
+            }).catch(function () { /* keep the first status */ });
+          }
+        }).catch(function () {
+          // An older server may not have the setup endpoint yet; the connection card
+          // still works, it just cannot show consent/one-click state.
+          setupStatus = {};
+          render(data);
+        });
       }).catch(function (e) {
         body.innerHTML = '';
         body.appendChild(emptyPanel('Analytics is unavailable.',
@@ -8015,6 +8531,13 @@
       api('GET', '/api/analytics/oauth/notice').then(function (d) {
         var note = d.notice || {};
         if (note.message) toast(note.message, note.kind === 'ok');
+        if (note.auto_setup) {
+          autoSetupPending = true;
+          var scope = clientOauth ? 'client'
+            : ((owner && agencyOauth) ? 'agency' : 'client');
+          if (setupStatus.connected) maybeRunAutoSetup(scope);
+          else load();
+        }
       }).catch(function () {
         toast(notice === 'oauth-ok' ? 'Google Analytics connected.'
                                     : 'Google Analytics was not connected.', false);
@@ -8126,8 +8649,13 @@
 
     var createBuild = el('button', 'btn btn-primary', 'Create something');
     createBuild.type = 'button';
+    createBuild.setAttribute('data-tour', 'studio-create');
     createBuild.onclick = function () { openBuildPicker(); };
     head.appendChild(createBuild);
+    var studioHelp = el('button', 'btn btn-ghost', 'How Studio works');
+    studioHelp.type = 'button';
+    studioHelp.onclick = function () { startStudioTour(true, null, false); };
+    head.appendChild(studioHelp);
 
     var layout = el('div', 'studio-layout');
     layout.setAttribute('data-pane', 'chat');
@@ -8137,6 +8665,7 @@
     // A new chat is created on its first message, so a blank row never sits there
     // pretending to be work.
     var rail = el('aside', 'asst-rail studio-rail');
+    rail.setAttribute('data-tour', 'studio-chats');
     var railHead = el('div', 'asst-rail-head');
     railHead.appendChild(el('h3', 'asst-rail-title', 'Chats'));
     var newChat = el('button', 'btn btn-primary btn-sm', '+ New');
@@ -8153,6 +8682,7 @@
     var chatHead = el('div', 'studio-chat-head');
     var chip = el('button', 'studio-chip empty', 'Working on: nothing yet');
     chip.type = 'button';
+    chip.setAttribute('data-tour', 'studio-working-on');
     chip.title = 'Choose the draft this conversation edits';
     chatHead.appendChild(chip);
     var pick = el('button', 'btn btn-ghost btn-sm', 'Choose…');
@@ -8167,6 +8697,7 @@
     box.placeholder = 'Make the headline shorter…';
     var send = el('button', 'btn btn-primary', 'Send');
     var composer = el('div', 'asst-composer');
+    composer.setAttribute('data-tour', 'studio-composer');
     composer.appendChild(box);
     composer.appendChild(send);
     chat.appendChild(composer);
@@ -8207,6 +8738,8 @@
     var previewTab = el('button', 'studio-tab', 'Preview');
     liveTab.type = 'button';
     previewTab.type = 'button';
+    liveTab.setAttribute('data-tour', 'studio-live');
+    previewTab.setAttribute('data-tour', 'studio-preview');
     tabs.appendChild(liveTab);
     tabs.appendChild(previewTab);
     canvasHead.appendChild(tabs);
@@ -12415,10 +12948,40 @@
     syncOrbVisibility();
   }
 
-  // ---------- A first-timer's five stops ----------
-  // Shown once per browser, skip always visible, and every stop names the thing rather than
-  // describing the interface. Remembered in localStorage, which is per device: a
-  // users.tour_done column is the upgrade, and this is the honest version until then.
+  // ---------- Onboarding tours ----------
+  // The Studio walkthrough is deliberately only four stops. It names the four things a
+  // newcomer must recognise (where to ask, what the canvas is targeting, where the work
+  // appears, where the result is reviewed) and then gets out of the way.
+  var STUDIO_TOUR_VERSION = '2026-11-studio';
+
+  function studioTourSteps() {
+    return [
+      { hash: '#/app/studio', target: '[data-tour="studio-composer"]',
+        title: 'Start with a plain request',
+        text: 'Tell the team what you want in plain English: build a page, rewrite a ' +
+              'headline, add a form. Type here, or press Talk and say it. Both go into ' +
+              'the same conversation.' },
+      { hash: '#/app/studio', target: '[data-tour="studio-working-on"]',
+        title: 'Name the page',
+        text: 'Working on shows the draft the team is editing. Create something starts ' +
+              'a new page; Choose opens an existing draft. The page stays on the canvas ' +
+              'while you talk about it.' },
+      { hash: '#/app/studio', target: '[data-tour="studio-live"]',
+        title: 'Watch the team work',
+        text: 'Live job shows each step, any question the team needs answered, and the ' +
+              'approvals that keep sensitive actions in your hands. Answer in the chat, ' +
+              'or by voice.' },
+      { hash: '#/app/studio', target: '[data-tour="studio-preview"]',
+        title: 'Review the result',
+        text: 'Preview updates when the team saves. Use Mobile to check the phone ' +
+              'layout and Open full to see the page properly. Chats on the left keep ' +
+              'each job separate; New starts a blank canvas.' }
+    ];
+  }
+
+  // A first-timer's five stops. Shown once per browser; the Studio walkthrough has its
+  // own versioned, per-account completion so a new device and a new guide behave
+  // predictably.
   function tourSteps() {
     if (isOwner(state.user)) {
       return [
@@ -12451,37 +13014,112 @@
         text: 'Blog posts, landing pages and emails live here, ready to review and publish.' },
       { hash: '#/app/forms', title: 'Forms and leads',
         text: 'Build a form, share its link, and new answers appear under Leads.' },
-      { hash: '#/app/settings', title: 'Email settings',
-        text: 'If you want email to come from your own domain, add your mailbox here. ' +
-              'Leave it blank to use the agency default.' }
+      { hash: '#/app/settings', title: 'Workspace settings',
+        text: 'Add a mailbox if you want email to come from your own domain, and choose ' +
+              'how much Analytics automation you want. Leave email blank to use the ' +
+              'agency default.' }
     ];
   }
 
-  function startTour(force) {
-    var key = 'tour:' + ((state.user && state.user.id) || 0);
-    try {
-      if (!force && localStorage.getItem(key)) return;
-    } catch (e) {
-      return;                     // private mode: no tour rather than a tour every load
+  function runTour(tour, options) {
+    options = options || {};
+    if (!tour || !tour.length) {
+      if (options.onDone) options.onDone();
+      return;
     }
-    var tour = tourSteps();
     var index = 0;
+    var completed = false;
+    var activeTarget = null;
     var veil = el('div', 'tour-veil');
     var card = el('div', 'tour-card');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('tabindex', '-1');
     veil.appendChild(card);
     document.body.appendChild(veil);
 
-    function close() {
-      try { localStorage.setItem(key, '1'); } catch (e) { /* private mode */ }
+    function onKey(event) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      markSeen();
+      close(true);
+    }
+    document.addEventListener('keydown', onKey);
+
+    function clearTarget() {
+      if (!activeTarget) return;
+      try { activeTarget.classList.remove('tour-focus'); } catch (e) { /* detached */ }
+      activeTarget = null;
+    }
+
+    function close(skipped) {
+      if (completed) return;
+      completed = true;
+      clearTarget();
+      document.removeEventListener('keydown', onKey);
       if (window.AscendVoice && window.AscendVoice.running()) window.AscendVoice.stop();
       if (veil.parentNode) veil.parentNode.removeChild(veil);
+      var callback = skipped ? options.onSkip : options.onFinish;
+      if (callback) callback();
+      else if (options.onDone) options.onDone();
+    }
+
+    function markSeen() {
+      if (!options.storeKey) return;
+      try { localStorage.setItem(options.storeKey, '1'); } catch (e) { /* private mode */ }
+    }
+
+    function centreCard() {
+      card.className = 'tour-card';
+      card.style.left = '';
+      card.style.top = '';
+      card.style.right = '';
+      card.style.bottom = '';
+    }
+
+    function placeCard(step) {
+      clearTarget();
+      if (!step.target) { centreCard(); return; }
+      var target = document.querySelector(step.target);
+      if (!target) { centreCard(); return; }
+      activeTarget = target;
+      try { target.classList.add('tour-focus'); } catch (e) { /* detached */ }
+      try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      catch (e) { /* older browser */ }
+      card.className = 'tour-card tour-card-anchored';
+      // Measure after the card has painted, then choose above or below the target.
+      requestAnimationFrame(function () {
+        var rect = target.getBoundingClientRect();
+        var width = card.offsetWidth || 440;
+        var height = card.offsetHeight || 220;
+        var gap = 16;
+        var left = Math.min(Math.max(gap, rect.left), window.innerWidth - width - gap);
+        var top = rect.bottom + gap;
+        if (top + height > window.innerHeight - gap) {
+          top = Math.max(gap, rect.top - height - gap);
+        }
+        card.style.left = left + 'px';
+        card.style.top = top + 'px';
+        card.style.right = 'auto';
+        card.style.bottom = 'auto';
+      });
+    }
+
+    function waitForTarget(step, attempt) {
+      if (!step.target || document.querySelector(step.target) || attempt >= 25) {
+        placeCard(step);
+        return;
+      }
+      setTimeout(function () { waitForTarget(step, attempt + 1); }, 80);
     }
 
     function show() {
       var step = tour[index];
       if (step.hash) location.hash = step.hash;
+      clearTarget();
       card.innerHTML = '';
-      card.appendChild(el('p', 'fine-print', 'Step ' + (index + 1) + ' of ' + tour.length));
+      card.appendChild(el('p', 'fine-print',
+        'Step ' + (index + 1) + ' of ' + tour.length));
       card.appendChild(el('h3', 'card-title', step.title));
       card.appendChild(el('p', 'muted', step.text));
       var row = el('div', 'chip-input');
@@ -12500,19 +13138,126 @@
           onClose: function () { talk.textContent = 'Talk about this'; }
         });
       };
-      var skip = el('button', 'btn btn-ghost', index === tour.length - 1 ? 'Done' : 'Skip');
-      skip.onclick = close;
+      var back = el('button', 'btn btn-ghost', 'Back');
+      back.disabled = index === 0;
+      back.onclick = function () {
+        if (!index) return;
+        index -= 1;
+        show();
+      };
+      var skip = el('button', 'btn btn-ghost', 'Skip');
+      skip.onclick = function () { markSeen(); close(true); };
       var next = el('button', 'btn btn-primary',
                     index === tour.length - 1 ? 'Finish' : 'Next');
       next.onclick = function () {
-        if (index === tour.length - 1) { close(); return; }
+        if (index === tour.length - 1) { markSeen(); close(false); return; }
         index += 1;
         show();
       };
-      [talk, skip, next].forEach(function (button) { row.appendChild(button); });
+      [talk, back, skip, next].forEach(function (button) { row.appendChild(button); });
       card.appendChild(row);
+      try { card.focus(); } catch (e) { /* not focusable */ }
+      waitForTarget(step, 0);
     }
     show();
+  }
+
+  function startTour(force, options) {
+    options = options || {};
+    var key = 'tour:' + ((state.user && state.user.id) || 0);
+    try {
+      if (!force && localStorage.getItem(key)) {
+        if (options.onDone) options.onDone();
+        return;
+      }
+    } catch (e) {
+      if (options.onDone) options.onDone();
+      return;                     // private mode: no tour rather than a tour every load
+    }
+    var tour = tourSteps();
+    if (options.skipStudio) {
+      tour = tour.filter(function (step) {
+        return step.hash !== '#/app/studio';
+      });
+    }
+    if (!tour.length) {
+      if (options.onDone) options.onDone();
+      return;
+    }
+    runTour(tour, {
+      storeKey: key,
+      onFinish: function () {
+        if (options.onDone) options.onDone();
+      },
+      onSkip: function () {
+        if (options.onDone) options.onDone();
+      }
+    });
+  }
+
+  function studioTourCurrent() {
+    return !!(state.user && (state.user.studio_tour_at || '').trim() &&
+              (state.user.studio_tour_version || '') === STUDIO_TOUR_VERSION);
+  }
+
+  function markStudioTour() {
+    if (!state.user) return;
+    // Optimistic locally; the server timestamp is the cross-device truth.
+    state.user.studio_tour_at = state.user.studio_tour_at || new Date().toISOString();
+    state.user.studio_tour_version = STUDIO_TOUR_VERSION;
+    api('POST', '/api/auth/studio-tour', {}).then(function (saved) {
+      if (!saved) return;
+      state.user.studio_tour_at = saved.studio_tour_at || state.user.studio_tour_at;
+      state.user.studio_tour_version =
+        saved.studio_tour_version || STUDIO_TOUR_VERSION;
+    }).catch(function () { /* next login retries */ });
+  }
+
+  function showStudioTourComplete() {
+    var veil = el('div', 'tour-veil');
+    var card = el('div', 'tour-card');
+    veil.appendChild(card);
+    document.body.appendChild(veil);
+    card.appendChild(el('p', 'fine-print', 'Studio walkthrough'));
+    card.appendChild(el('h3', 'card-title', 'You\'re ready to use the Studio'));
+    card.appendChild(el('p', 'muted',
+      'Start with a plain request. The team works in the chat, keeps the page on the ' +
+      'canvas and asks before anything sensitive happens.'));
+    var row = el('div', 'chip-input');
+    var start = el('button', 'btn btn-primary', 'Start in Studio');
+    start.onclick = function () {
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+      try { location.hash = '#/app/studio'; } catch (e) { /* blocked */ }
+    };
+    var rest = el('button', 'btn btn-ghost', 'Show me the rest');
+    rest.onclick = function () {
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+      startTour(true, { skipStudio: true });
+    };
+    var skip = el('button', 'btn btn-ghost', 'Skip for now');
+    skip.onclick = function () { if (veil.parentNode) veil.parentNode.removeChild(veil); };
+    row.appendChild(start);
+    row.appendChild(rest);
+    row.appendChild(skip);
+    card.appendChild(row);
+  }
+
+  function startStudioTour(force, onDone, showComplete) {
+    if (!force && studioTourCurrent()) {
+      if (onDone) onDone();
+      return;
+    }
+    runTour(studioTourSteps(), {
+      onFinish: function () {
+        markStudioTour();
+        if (showComplete) showStudioTourComplete();
+        else if (onDone) onDone();
+      },
+      onSkip: function () {
+        markStudioTour();
+        if (onDone) onDone();
+      }
+    });
   }
 
   // ---------- The first login: a short spoken welcome ----------
@@ -12542,9 +13287,12 @@
     card.appendChild(el('h3', 'card-title', 'A quick look at ' + BRAND));
     card.appendChild(el('p', 'muted', INTRO_TEXT));
     var row = el('div', 'chip-input');
-    var skip = el('button', 'btn btn-ghost', 'Skip');
-    skip.onclick = function () { if (veil.parentNode) veil.parentNode.removeChild(veil); };
-    var go = el('button', 'btn btn-primary', 'Show me around');
+    var skip = el('button', 'btn btn-ghost', 'Not now');
+    skip.onclick = function () {
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+      markStudioTour();
+    };
+    var go = el('button', 'btn btn-primary', 'Start the walkthrough');
     go.onclick = function () {
       if (veil.parentNode) veil.parentNode.removeChild(veil);
       after();
@@ -12556,9 +13304,16 @@
 
   function firstRun() {
     if (!state.user) return;
-    if (state.user.onboarded_at) { startTour(false); return; }
+    // An account that has never seen the welcome gets it first. An existing account that
+    // predates this walkthrough goes straight to the Studio guide without repeating the
+    // welcome. Completion is versioned and per account.
+    if (state.user.onboarded_at) {
+      if (!studioTourCurrent()) startStudioTour(false, null, true);
+      else startTour(false, { skipStudio: true });
+      return;
+    }
     markOnboarded();
-    var after = function () { startTour(false); };
+    var after = function () { startStudioTour(false, null, true); };
     api('GET', '/api/voice/status').then(function (s) {
       if (s && s.available && window.AscendVoice) {
         window.AscendVoice.open({

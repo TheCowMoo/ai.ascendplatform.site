@@ -76,7 +76,8 @@ def out(row):
 
 _USER_SELECT = (
     "SELECT u.id, u.email, u.name, u.role, u.org_id, u.status, u.last_login_at, "
-    "u.onboarded_at, u.created_at, u.updated_at, o.name AS org_name "
+    "u.onboarded_at, u.studio_tour_at, u.studio_tour_version, u.created_at, "
+    "u.updated_at, o.name AS org_name "
     "FROM users u LEFT JOIN orgs o ON o.id = u.org_id"
 )
 

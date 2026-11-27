@@ -253,7 +253,7 @@ def test_client_panel_is_smtp_and_autonomy():
     script = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "admin", "admin.js"), encoding="utf-8").read()
     assert "function viewClientSettings" in script, "the client Settings view is missing"
-    assert "Email sending" in script, "the client Settings page is not white-labelled"
+    assert "Workspace settings" in script, "the client Settings page is not white-labelled"
     print("client     -> SMTP and analytics autonomy; model and GHL groups are backend-only")
 
 

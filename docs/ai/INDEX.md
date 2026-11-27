@@ -27,6 +27,8 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/analytics/alerts/<int:alert_id>/<status>` | client_admin | `analytics_alert_status` | `app.py` |
 | POST | `/api/analytics/alerts/evaluate` | client_admin | `analytics_alerts_evaluate` | `app.py` |
 | POST | `/api/analytics/bigquery/sync` | client_admin | `sync_google_bigquery` | `app.py` |
+| POST | `/api/analytics/google/account-ticket` | client_admin | `create_google_analytics_account_ticket` | `app.py` |
+| GET | `/api/analytics/google/account-ticket/callback` | public | `google_analytics_account_ticket_callback` | `app.py` |
 | GET | `/api/analytics/google/accounts` | client_admin | `google_analytics_accounts` | `app.py` |
 | POST | `/api/analytics/google/bigquery-link` | client_admin | `link_google_bigquery` | `app.py` |
 | POST | `/api/analytics/google/connect` | client_admin | `connect_google_analytics_property` | `app.py` |
@@ -40,6 +42,10 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/analytics/oauth/google/start` | client_admin | `start_google_analytics_oauth` | `app.py` |
 | GET | `/api/analytics/oauth/notice` | client_admin | `google_analytics_oauth_notice` | `app.py` |
 | GET | `/api/analytics/reports` | login | `analytics_reports` | `app.py` |
+| POST | `/api/analytics/setup/bootstrap` | client_admin | `bootstrap_google_setup` | `app.py` |
+| POST | `/api/analytics/setup/consent` | client_admin | `google_setup_consent` | `app.py` |
+| POST | `/api/analytics/setup/revoke` | client_admin | `google_setup_revoke` | `app.py` |
+| GET | `/api/analytics/setup/status` | client_admin | `google_setup_status` | `app.py` |
 | GET | `/api/analytics/summary` | login | `analytics_summary` | `app.py` |
 | GET | `/api/approvals` | login | `list_approvals` | `app.py` |
 | POST | `/api/approvals/<int:approval_id>/<decision>` | login | `decide_approval` | `app.py` |
@@ -57,6 +63,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/auth/password` | login | `change_password` | `app.py` |
 | POST | `/api/auth/reset` | public | `reset_password` | `app.py` |
 | GET | `/api/auth/reset/<token>` | public | `preview_password_reset` | `app.py` |
+| POST | `/api/auth/studio-tour` | login | `mark_studio_tour` | `app.py` |
 | GET | `/api/automations` | client_admin | `list_automations` | `app.py` |
 | POST | `/api/automations` | client_admin | `create_automation` | `app.py` |
 | DELETE | `/api/automations/<int:automation_id>` | client_admin | `delete_automation` | `app.py` |
@@ -277,6 +284,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | `GA4_OAUTH_CLIENT_ID` | Google OAuth client ID | platform | no | Analytics |
 | `GA4_OAUTH_CLIENT_SECRET` | Google OAuth client secret | platform | yes | Analytics |
 | `GA4_OAUTH_REDIRECT_URI` | Google OAuth redirect URI | platform | no | Analytics |
+| `GA4_ACCOUNT_TICKET_REDIRECT_URI` | Google account setup redirect URI | platform | no | Analytics |
 | `GA4_SERVICE_ACCOUNT_KEY_PATH` | GA4 service-account key path | platform | no | Analytics |
 | `GA4_SERVICE_ACCOUNT_EMAIL` | GA4 service-account email | platform | no | Analytics |
 | `ANALYTICS_AUTONOMY` | Let the AI change GA4 and Tag Manager | client | no | Analytics automation |
@@ -313,6 +321,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `analytics_actions`
 - `analytics_alert_rules`
 - `analytics_alerts`
+- `analytics_consents`
 - `analytics_facts`
 - `analytics_properties`
 - `assistant_messages`
@@ -393,6 +402,8 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_analytics_sources`
 - `test_ga4_oauth`
 - `test_google_setup`
+- `test_analytics_consent`
+- `test_provider_probe`
 - `test_bigquery`
 - `test_alerts`
 - `test_ai_reference`
@@ -439,12 +450,14 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `publish_state.mjs`
 - `studio_draft.mjs`
 - `studio_session.mjs`
+- `studio_tour.mjs`
 - `voice_ui.mjs`
 
 ## Python test files
 
 - `test_ai_reference`
 - `test_alerts`
+- `test_analytics_consent`
 - `test_analytics_sources`
 - `test_artifact_paths`
 - `test_auto_provision`
@@ -481,6 +494,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_opportunity_sync`
 - `test_password_reset`
 - `test_policy`
+- `test_provider_probe`
 - `test_provision_approval`
 - `test_publish_home`
 - `test_publish_live`

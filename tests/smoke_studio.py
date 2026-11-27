@@ -21,10 +21,16 @@ import asyncio
 import os
 import re
 import sys
+import tempfile
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Keep the Studio suite off a developer's real data/app.db. Without a throwaway
+# database, a schema change such as users.studio_tour_at would make an old local file
+# fail with "no such column" while a fresh install passed.
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(
+    tempfile.mkdtemp(prefix="studio-smoke-"), "test.db").replace("\\", "/")
 os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 
 from autogen_core import CancellationToken  # noqa: E402

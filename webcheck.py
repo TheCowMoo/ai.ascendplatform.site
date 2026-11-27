@@ -22,6 +22,7 @@ USER_AGENT = "AscendPlatform-QA/1.0 (+read-only page check)"
 TIMEOUT = 15
 MAX_BYTES = 1_500_000
 MAX_CHECKS = 24
+MAX_HTML_CHARS = 120_000
 
 
 class WebCheckError(Exception):
@@ -225,6 +226,45 @@ def _check_target(url, method="HEAD", allow_private=False):
     except WebCheckError as exc:
         return {"url": url, "status": 0, "ok": False, "content_type": "",
                 "error": str(exc)}
+
+
+def fetch_html(url, org_id, allow_private=False, max_chars=MAX_HTML_CHARS):
+    """Return one allowed page's raw HTML, capped and with an honest truncation flag.
+
+    This exists for work that must inspect or diff markup - a header splice cannot be
+    done from ``inspect``'s link/image manifest. The same URL and redirect checks apply,
+    so it is not a general-purpose fetcher. A non-HTML response is refused instead of
+    being handed to a model as if it were page source.
+    """
+    try:
+        limit = int(max_chars or MAX_HTML_CHARS)
+    except (TypeError, ValueError):
+        limit = MAX_HTML_CHARS
+    limit = max(1, min(MAX_HTML_CHARS, limit))
+
+    value = _validate_url(url, org_id, allow_private=allow_private)
+    allowed = None if allow_private else _site_domains(org_id)
+    final, status, headers, body = _open(value, allowed, allow_private=allow_private)
+    content_type = _header(headers, "content-type")
+    lowered = content_type.lower()
+    if lowered and "html" not in lowered and "text/plain" not in lowered:
+        raise WebCheckError(
+            "That URL returned %s, not an HTML page." % content_type)
+    text = body.decode("utf-8", "replace")
+    # _open() reads one byte past MAX_BYTES to tell us whether the source itself was
+    # clipped. Without this, a 1.5 MB page would look complete after the character cap.
+    source_truncated = len(body) >= MAX_BYTES
+    clipped = text[:limit]
+    return {
+        "url": final,
+        "status": status,
+        "content_type": content_type,
+        "bytes": len(body),
+        "characters": len(text),
+        "returned_characters": len(clipped),
+        "truncated": source_truncated or len(text) > limit,
+        "html": clipped,
+    }
 
 
 def inspect(url, org_id, allow_private=False, check_links=True):

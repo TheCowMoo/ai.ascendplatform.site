@@ -104,18 +104,19 @@ SYSTEM = (
 
 GRANTED = ("list_sites", "list_deliverables", "get_metrics", "get_insights", "start_job",
            "list_google_accounts", "setup_analytics",
-           "save_deliverable", "list_media", "search_photos", "import_photo_to_media",
-           "propose_automation", "describe_capabilities", "propose_tool", "ask_user",
-           "create_template", "list_templates", "create_contact", "create_site",
-           "create_form", "list_forms", "list_automations", "remember_preference",
-           "propose_business_fact", "publish_page", "add_form_link", "apply_automation",
-           "fetch_page", "start_build")
+           "save_deliverable", "read_deliverable", "list_media", "search_photos",
+           "import_photo_to_media", "propose_automation", "describe_capabilities",
+           "propose_tool", "ask_user", "create_template", "list_templates",
+           "create_contact", "create_site", "create_form", "list_forms",
+           "list_automations", "remember_preference", "propose_business_fact",
+           "publish_page", "add_form_link", "apply_automation",
+           "fetch_page", "fetch_page_html", "start_build")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "
     "anything. You have only read tools. Do not claim a write happened. Use fetch_page "
-    "for a live page and answer with what you actually verified. If you delegate, "
-    "start_job will keep the child read-only.\n\n"
+    "for a structured page check, fetch_page_html for exact markup, and read_deliverable "
+    "for a draft's source. If you delegate, start_job will keep the child read-only.\n\n"
 )
 
 

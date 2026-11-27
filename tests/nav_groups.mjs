@@ -79,4 +79,18 @@ assert.equal(AREAS.platform.nav.filter((item) => item.id === 'bugs').length, 1,
 assert.equal(AREAS.platform.nav.filter((item) => item.id === 'domains').length, 1,
              'the owner-wide Domains page is one click away');
 
-console.log('NAV GROUPS OK - seven rows, twenty destinations, no broken hashes');
+// The client workspace gets a Studio-first menu and one More disclosure. The operator
+// keeps the grouped nav, so these checks are presentation contracts, not data changes.
+assert.ok(source.includes('function simpleClientNav'), 'the client nav renderer exists');
+assert.ok(source.includes("area === 'app' && !isOwner(state.user)"),
+          'only non-owners get the simple workspace menu');
+assert.ok(source.includes("data-simple-nav"), 'the simple nav is marked for styling');
+assert.ok(source.includes("side-primary"), 'Studio is the primary client link');
+assert.ok(source.includes("side-more"), 'the client menu has one disclosure');
+assert.ok(source.includes("aria-expanded"), 'the disclosure is accessible');
+assert.ok(source.includes("side-more-panel"), 'the disclosure has a panel');
+assert.ok(source.includes("More · '"), 'the disclosure names the active page');
+assert.ok(source.includes('visibleChildren(item)'), 'client links use the existing role filter');
+assert.ok(source.includes('function sidebar(parts)'), 'the sidebar shell still exists');
+
+console.log('NAV GROUPS OK - seven data rows, twenty destinations, Studio-first client menu');

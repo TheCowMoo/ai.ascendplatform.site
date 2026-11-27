@@ -25,6 +25,7 @@ READ_ONLY_TOOLS = frozenset({
     "current_time",
     "describe_capabilities",
     "fetch_page",
+    "fetch_page_html",
     "get_metrics",
     "get_insights",
     "list_deliverables",
@@ -34,6 +35,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_media",
     "list_sites",
     "list_templates",
+    "read_deliverable",
     "search_photos",
     "start_job",
 })

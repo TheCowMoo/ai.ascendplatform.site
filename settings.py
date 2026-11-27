@@ -264,6 +264,10 @@ SPEC = [
             _f("GA4_OAUTH_REDIRECT_URI", "Google OAuth redirect URI",
                help="Must exactly match Google Cloud. Leave blank to use PLATFORM_URL "
                     "plus /api/analytics/oauth/google/callback."),
+            _f("GA4_ACCOUNT_TICKET_REDIRECT_URI", "Google account setup redirect URI",
+               help="Add this exact URI to the same Google OAuth client. Leave blank "
+                    "to use PLATFORM_URL plus "
+                    "/api/analytics/google/account-ticket/callback."),
             _f("GA4_SERVICE_ACCOUNT_KEY_PATH", "GA4 service-account key path",
                help="Fallback for sources not connected with Google OAuth. Path to the "
                     "mounted service-account JSON inside the app container."),
@@ -826,7 +830,14 @@ def _test_llm(org_id=None):
     ready = sorted(llm.configured_providers())
     if not ready:
         return {"ok": False, "output": "No provider has a key yet."}
-    return {"ok": True, "output": "Ready: %s." % ", ".join(ready)}
+    probes = [(provider, llm.probe_provider(provider)) for provider in ready]
+    failed = [provider for provider, result in probes if not result.get("ok")]
+    lines = ["%s: %s" % (provider, result.get("output") or "no detail")
+             for provider, result in probes]
+    return {
+        "ok": not failed,
+        "output": " | ".join(lines),
+    }
 
 
 def _test_voice(org_id=None):

@@ -129,6 +129,24 @@ def redirect_uri():
     return (base + "/api/analytics/oauth/google/callback") if base else ""
 
 
+def account_ticket_redirect_uri():
+    """The registered callback for Google's account-provisioning form.
+
+    This is a second redirect URI, not the OAuth callback: Google sends the browser here
+    after the person accepts its Analytics terms. It must be listed verbatim in the same
+    Google Cloud OAuth client.
+    """
+    explicit = (settings.get("GA4_ACCOUNT_TICKET_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    base = (settings.get("PLATFORM_URL") or "").strip().rstrip("/")
+    if not base:
+        domain = (os.environ.get("ADMIN_DOMAIN") or "").strip()
+        if domain and domain.lower() not in ("localhost", "127.0.0.1", "::1"):
+            base = "https://" + domain
+    return (base + "/api/analytics/google/account-ticket/callback") if base else ""
+
+
 def configured():
     return bool(
         (settings.get("GA4_OAUTH_CLIENT_ID") or "").strip()

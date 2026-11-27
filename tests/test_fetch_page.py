@@ -107,6 +107,33 @@ def test_a_real_page_is_checked():
     check("and the report says so", "not rendered" in report["note"], True)
 
 
+def test_raw_html_is_returned_and_capped():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = "http://127.0.0.1:%d/" % server.server_address[1]
+        raw = webcheck.fetch_html(url, None, allow_private=True)
+        clipped = webcheck.fetch_html(url, None, allow_private=True, max_chars=40)
+        try:
+            webcheck.fetch_html(url + "pic.png", None, allow_private=True)
+        except webcheck.WebCheckError as exc:
+            image_refused = "not an HTML page" in str(exc)
+        else:
+            image_refused = False
+    finally:
+        server.shutdown()
+        server.server_close()
+    check("the raw HTML is exact", raw["html"], HTML)
+    check("the raw status is read", raw["status"], 200)
+    check("the raw byte count is honest", raw["bytes"], len(HTML.encode("utf-8")))
+    check("a complete page is not marked truncated", raw["truncated"], False)
+    check("the caller can cap the body", len(clipped["html"]), 40)
+    check("a capped body says so", clipped["truncated"], True)
+    check("a non-HTML response is refused", image_refused, True)
+
+
 def test_a_foreign_or_private_host_is_refused():
     try:
         webcheck.inspect("https://example.com/", None)
@@ -126,18 +153,22 @@ def test_a_foreign_or_private_host_is_refused():
 
 def test_the_read_tools_are_wired():
     check("fetch_page is registered", tools.unknown(["fetch_page"]), [])
+    check("fetch_page_html is registered", tools.unknown(["fetch_page_html"]), [])
     check("the Manager can fetch", "fetch_page" in manager.GRANTED, True)
-    check("a read-only Manager keeps it",
-          "fetch_page" in manager.granted_for({"read_only": 1}), True)
+    check("the Manager can fetch raw HTML", "fetch_page_html" in manager.GRANTED, True)
+    check("a read-only Manager keeps raw HTML",
+          "fetch_page_html" in manager.granted_for({"read_only": 1}), True)
     operator = next(row for row in agents.DEFAULT_ROSTER if row["name"] == "Operator")
     check("the Operator can fetch", "fetch_page" in operator["tools"], True)
+    check("the Operator can fetch raw HTML", "fetch_page_html" in operator["tools"], True)
     check("and it is in the read-only allowlist",
-          "fetch_page" in tools.READ_ONLY_TOOLS, True)
+          "fetch_page_html" in tools.READ_ONLY_TOOLS, True)
 
 
 if __name__ == "__main__":
     try:
         test_a_real_page_is_checked()
+        test_raw_html_is_returned_and_capped()
         test_a_foreign_or_private_host_is_refused()
         test_the_read_tools_are_wired()
     finally:

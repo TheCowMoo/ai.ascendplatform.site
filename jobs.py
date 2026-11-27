@@ -263,6 +263,57 @@ def _report_usage(job_id):
               % (job_id, type(exc).__name__, exc))
 
 
+def _provider_label(text):
+    """A secret-free provider name for a job transcript, when the error names one."""
+    low = (text or "").lower()
+    if "anthropic" in low or "x-api-key" in low:
+        return "Anthropic"
+    if "deepseek" in low:
+        return "DeepSeek"
+    if "gemini" in low or "generativelanguage" in low:
+        return "Google Gemini"
+    if "openrouter" in low:
+        return "OpenRouter"
+    if "litellm" in low or "gateway" in low:
+        return "The LiteLLM gateway"
+    return "The model provider"
+
+
+def _friendly_job_error(exc):
+    """Turn a provider failure into an operator action.
+
+    A raw ``AuthenticationError ... invalid x-api-key`` or ``APIStatusError ... 402``
+    traceback names no fix. The common causes are a revoked key or an account with no
+    credit. The job still fails, but the transcript says what to do instead of making
+    the operator read a stack trace.
+    """
+    text = str(exc or "")
+    low = text.lower()
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    auth = (name in ("AuthenticationError", "PermissionDeniedError")
+            or "invalid x-api-key" in low
+            or "authentication_error" in low
+            or (("401" in text or status == 401) and "api key" in low))
+    if auth:
+        provider = _provider_label(text)
+        return ("%s rejected the API key (401). Update Settings -> AI providers, or "
+                "switch this agent to another provider, then retry. No work was done."
+                % provider)
+    credit = (status == 402
+              or "error code: 402" in low
+              or "insufficient balance" in low
+              or "insufficient_quota" in low
+              or "insufficient credit" in low
+              or "payment required" in low)
+    if credit:
+        provider = _provider_label(text)
+        return ("%s has no remaining credit or billing is blocked (402). Top up that "
+                "provider or switch this agent to a funded provider in Settings -> "
+                "Agents, then retry. No work was done." % provider)
+    return ""
+
+
 async def run_job(job_id):
     """Execute one job by id. Safe to call from any asyncio loop."""
     job = get_job(job_id)
@@ -300,12 +351,17 @@ async def run_job(job_id):
         _report_usage(job_id)
         return output
     except Exception as exc:
-        # Full traceback goes into the transcript (useful in the UI); stdout gets
-        # a single line so expected failures don't look like crashes in the logs.
-        detail = traceback.format_exc()
+        friendly = _friendly_job_error(exc)
         print("[job %s] failed: %s: %s" % (job_id, type(exc).__name__, exc))
-        add_event(job_id, "system", "error", detail)
-        _mark_finished(job_id, "failed", error=str(exc))
+        if friendly:
+            add_event(job_id, "system", "error", friendly)
+            _mark_finished(job_id, "failed", error=friendly)
+        else:
+            # Full traceback goes into the transcript (useful in the UI); stdout gets
+            # a single line so expected failures don't look like crashes in the logs.
+            detail = traceback.format_exc()
+            add_event(job_id, "system", "error", detail)
+            _mark_finished(job_id, "failed", error=str(exc))
         _report_usage(job_id)          # a failed run still spent what it spent
         return None
 

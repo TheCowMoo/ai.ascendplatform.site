@@ -117,8 +117,8 @@ DEFAULT_ROSTER = [
         ),
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
                   "search_photos", "import_photo_to_media", "fetch_photo", "generate_image",
-                  "send_email", "save_deliverable", "list_media", "save_note", "current_time",
-                  "fetch_page"],
+                  "send_email", "save_deliverable", "read_deliverable", "list_media",
+                  "save_note", "current_time", "fetch_page", "fetch_page_html"],
         "turn_order": 7,
     },
 ]
@@ -385,9 +385,10 @@ CONTENT_RULE = (
 
 READ_ONLY_RULE = (
     "\n\nThis job is a READ-ONLY review. You cannot save, edit, publish, send, provision, "
-    "upload or change anything. Use only the read tools you were given, inspect the live "
-    "page with fetch_page when one is named, and report findings in chat. If a check "
-    "cannot be performed with those tools, say exactly what was not checked and why. "
+    "upload or change anything. Use only the read tools you were given: fetch_page for "
+    "the structured check, fetch_page_html for exact markup, read_deliverable for the "
+    "draft source. Report findings in chat. If a check cannot be performed with those "
+    "tools, say exactly what was not checked and why. "
     "Never present an unverified check as passed, and never write a QA report into a "
     "deliverable."
 )

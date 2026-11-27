@@ -77,7 +77,7 @@ responsibility:
 ### AI and jobs
 
 - `agents.py` — roster, team construction, execution.
-- `llm.py` — provider clients and usage capture.
+- `llm.py` — provider clients, live provider probes and usage capture.
 - `jobs.py` — job rows/events, task registry, local/redis submission.
 - `worker.py`, `scheduler.py` — background execution and scheduled work.
 - `automations.py` — validated step graphs, event/schedule/manual triggers, parked
@@ -87,7 +87,10 @@ responsibility:
   assistant sessions.
 - `tools/` — agent tools; every side-effecting tool must respect policy and approvals.
   `list_automations`, `propose_automation`, `apply_automation` let the manager build and
-  turn on an automation after one user approval.
+  turn on an automation after one user approval. `fetch_page` returns a structured page
+  check, `fetch_page_html` returns capped raw HTML from an allowed client domain, and
+  `read_deliverable` returns a draft's source only when the job's `org_id` owns it. The
+  last two are read-only and in the roster for markup inspection; neither can write.
 
 ### Content and website
 
@@ -97,10 +100,13 @@ responsibility:
   snapshots, DNS/vhost/provisioning.
 - `site_logs.py`, `analytics.py`, `ga4.py`, `analytics_oauth.py` — traffic sources.
   `analytics_oauth.py` is the unified Google grant (client or agency, encrypted tokens);
-  `ga4_admin.py` discovers properties and creates properties/streams/key events/audiences,
-  `gtm_admin.py` discovers containers and creates/publishes GA4 tags, `analytics_setup.py`
-  orchestrates the setup, and `tag_install.py` injects the GTM snippet at publish time and
-  into already-live pages. `bigquery.py` reads the GA4 export into daily aggregate
+  `ga4_admin.py` discovers properties/accounts and creates properties/streams/key
+  events/audiences, plus the Google account-provisioning ticket; `gtm_admin.py` discovers
+  containers and creates/publishes GA4 tags; `analytics_setup.py` orchestrates the
+  idempotent setup and reuses an existing property/container; `analytics_consent.py`
+  records the versioned, revocable one-click waiver. `tag_install.py` injects the GTM
+  snippet at publish time and into already-live pages. `bigquery.py` reads the GA4 export
+  into daily aggregate
   `bq_events`, `bq_pages` and `bq_acquisition` facts. `analytics_alerts.py` produces
   explainable period-over-period insights, per-client alert rules and the alert inbox; a
   scheduled `analytics_alerts` job evaluates it; the scheduler also runs the 180-day
@@ -123,7 +129,8 @@ responsibility:
 
 ## Data model groups
 
-- **Tenants:** `orgs`, `users`, `user_events`, `client_settings`.
+- **Tenants:** `orgs`, `users`, `user_events`, `client_settings`. `users` carries the
+  per-account onboarding and versioned Studio-tour completion flags.
 - **AI/runtime:** `agents`, `jobs`, `job_events`, `job_artifacts`, `assistant_sessions`,
   `assistant_messages`, `voice_sessions`, `agent_tools`, `automations`,
   `automation_runs`, `automation_proposals`.
@@ -133,8 +140,8 @@ responsibility:
 - **CRM/forms:** `contacts`, `contact_sync_state`, `ghl_object_links`, `forms`,
   `form_responses`.
 - **Analytics:** `data_sources`, `oauth_connections`, `analytics_properties`,
-  `tag_containers`, `analytics_facts`, `analytics_actions`, `analytics_alert_rules`,
-  `analytics_alerts`, `metrics_daily`, `sync_runs`.
+  `tag_containers`, `analytics_facts`, `analytics_actions`, `analytics_consents`,
+  `analytics_alert_rules`, `analytics_alerts`, `metrics_daily`, `sync_runs`.
 - **Billing:** `usage_events`, `credit_ledger`, `credit_balances`, `rate_card`,
   `usage_reconciliations`.
 - **Platform:** `settings`, `settings_events`, `mail_senders`, `invites`, `password_resets`,
@@ -152,7 +159,8 @@ from clients entirely.
 
 - Platform scope: model/provider keys, Pexels, safety/actions, platform email/GHL,
   OAuth client credentials, hosting, usage policy, infrastructure.
-- Client scope: the client-visible SMTP group (`Email (SMTP)`). `GHL_CLIENT_*` is a
+- Client scope: the client-visible SMTP group (`Email (SMTP)`) and
+  `ANALYTICS_AUTONOMY` / `ANALYTICS_ALERTS_ENABLED`. `GHL_CLIENT_*` is a
   backend-only per-client integration and must never appear in a client panel or write.
 - Structural, `.env` only: `DATABASE_URL`, `SECRET_KEY`, `JOB_BACKEND`, `REDIS_URL`,
   `SITE_ROOT`, `CADDYFILE`, `ARTIFACTS_DIR`, `HOST`/`PORT`, bootstrap admin values.
@@ -164,7 +172,9 @@ a secret, token or provider key into a URL, log line or client-facing error.
 
 `admin/admin.js` is a no-build SPA:
 
-- `AREAS.app` and `AREAS.platform` define nav groups and leaves.
+- `AREAS.app` and `AREAS.platform` define nav groups and leaves. Client admins and
+  members render a Studio-first workspace menu with one **More** disclosure; the platform
+  owner keeps the full grouped workspace nav for cross-client work.
 - Hash routes map to a `view*` function; preserve old hashes when relabeling.
 - Shared helpers: `el`, `api`, `formModal`, `toast`, `empty-state`, badges.
 - `admin/admin.css` holds the design tokens and component patterns.

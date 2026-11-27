@@ -48,6 +48,7 @@ import studio as studio_service
 import rates as rates_service
 import usage as usage_service
 import analytics as analytics_service
+import analytics_consent
 import analytics_oauth
 import invites as invites_service
 import password_resets
@@ -383,6 +384,11 @@ ROLES = (OWNER_ROLE, CLIENT_ADMIN_ROLE, MEMBER_ROLE)
 # password so a fresh install is reachable; see README.
 MIN_PASSWORD_LEN = 8
 
+# Bump this when the four Studio walkthrough steps change. The server stores the version
+# with the completion timestamp, so a new guide can re-arm without replaying it for every
+# login and a new device can tell whether this account has seen it.
+STUDIO_TOUR_VERSION = "2026-11-studio"
+
 # The pre-tenancy name for the platform operator. Migration 0005 renames these rows
 # to `owner`; the alias keeps a database that has not been migrated - and every
 # existing login - working until it is.
@@ -612,6 +618,8 @@ def login():
             "id": row["id"], "email": row["email"], "name": row["name"],
             "role": row["role"], "org_id": row["org_id"],
             "onboarded_at": row.get("onboarded_at"),
+            "studio_tour_at": row.get("studio_tour_at"),
+            "studio_tour_version": row.get("studio_tour_version") or "",
             "status": row.get("status") or "active",
             "last_login_at": row.get("last_login_at"),
             # Sent with the login too, so the nav is correct without a reload.
@@ -635,6 +643,41 @@ def mark_onboarded():
         )
         row = conn.execute("SELECT onboarded_at FROM users WHERE id = ?", (uid,)).fetchone()
     return jsonify({"onboarded_at": row["onboarded_at"] if row else None})
+
+
+@app.route("/api/auth/studio-tour", methods=["POST"])
+@login_required
+def mark_studio_tour():
+    """Record that this account has seen the current Studio walkthrough.
+
+    A version bump deliberately re-arms the walkthrough. The first completion timestamp
+    is preserved while the version remains current; skipping still counts as seen, because
+    the Studio header keeps a replay action.
+    """
+    uid = session.get("user_id")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT studio_tour_at, studio_tour_version FROM users WHERE id = ?",
+            (uid,),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "That account was not found."}), 404
+        if (not (row["studio_tour_at"] or "").strip()
+                or (row["studio_tour_version"] or "") != STUDIO_TOUR_VERSION):
+            conn.execute(
+                "UPDATE users SET studio_tour_at = ?, studio_tour_version = ?, "
+                "updated_at = ? WHERE id = ?",
+                (now_str(), STUDIO_TOUR_VERSION, now_str(), uid),
+            )
+        row = conn.execute(
+            "SELECT studio_tour_at, studio_tour_version FROM users WHERE id = ?",
+            (uid,),
+        ).fetchone()
+    return jsonify({
+        "studio_tour_at": row["studio_tour_at"],
+        "studio_tour_version": row["studio_tour_version"] or "",
+        "current_version": STUDIO_TOUR_VERSION,
+    })
 
 
 @app.route("/api/auth/logout", methods=["POST"])
@@ -5100,8 +5143,11 @@ def save_data_source():
     return jsonify({"source": source}), 200 if source_id else 201
 
 
-def _oauth_notice(kind, message):
-    session["ga4_oauth_notice"] = {"kind": kind, "message": str(message)[:500]}
+def _oauth_notice(kind, message, auto_setup=False):
+    session["ga4_oauth_notice"] = {
+        "kind": kind, "message": str(message)[:500],
+        "auto_setup": bool(auto_setup) and kind == "ok",
+    }
     return redirect("/admin/#/app/analytics/oauth-%s" % ("ok" if kind == "ok" else "error"))
 
 
@@ -5193,6 +5239,7 @@ def start_google_analytics_oauth():
         "source_id": source_id,
         "write": bool(data.get("write")),
         "bigquery": bool(data.get("bigquery")),
+        "auto_setup": bool(data.get("auto_setup")),
         "created_at": time.time(),
     }
     try:
@@ -5251,6 +5298,11 @@ def google_analytics_oauth_callback():
     except Exception:  # pragma: no cover - defensive
         app.logger.exception("Google OAuth callback crashed for org %s", org_id)
         return _oauth_notice("error", "Google could not be connected. Try again.")
+    auto_setup = bool(pending.get("auto_setup")) and not pending.get("external_id")
+    if auto_setup:
+        return _oauth_notice(
+            "ok", "Google connected. Starting Analytics setup automatically.",
+            auto_setup=True)
     if scope == "agency" or not pending.get("external_id"):
         return _oauth_notice("ok", "Google connected. Choose a GA4 property.")
     return _oauth_notice("ok", "Google Analytics connected.")
@@ -5319,6 +5371,118 @@ def _analytics_write_token(org, scope, need_gtm=False):
     """A write-capable Google token, or a clear sentence about the missing upgrade."""
     return analytics_oauth.write_token_for_org(
         org, scope=scope, need_gtm=need_gtm)
+
+
+def _analytics_consent_problem(org):
+    if analytics_consent.active(org):
+        return None
+    return jsonify({
+        "error": "Grant full setup automation first. The consent explains what is "
+                 "created, what stays your responsibility, and how to revoke it."
+    }), 403
+
+
+def _analytics_setup_status(org, scope):
+    """The setup card's server-owned truth. No Google call is made here."""
+    connection = analytics_oauth.get_connection(org, scope)
+    scopes = analytics_oauth.granted_scopes(connection)
+    write_ready = bool(connection) and all(
+        item in scopes for item in analytics_oauth.WRITE_SCOPES)
+    bigquery_ready = bool(connection) and analytics_oauth.SCOPE_BIGQUERY_READONLY in scopes
+    properties = analytics_service.properties(org)
+    containers = analytics_service.containers(org)
+    sites = sites_service.list_sites(org)
+    return {
+        "connection_scope": scope,
+        "oauth_ready": analytics_oauth.configured(),
+        "connected": bool(connection),
+        "account_email": (connection or {}).get("account_email") or "",
+        "write_ready": write_ready,
+        "bigquery_ready": bigquery_ready,
+        "live_actions": not actions.is_dry_run(),
+        "autonomy": settings.get_bool("ANALYTICS_AUTONOMY", False, org_id=org),
+        "consent": analytics_consent.status(org),
+        "properties": properties,
+        "containers": containers,
+        "sites": [{"id": row.get("id"), "domain": row.get("domain")} for row in sites],
+        "account_ticket_redirect_uri": analytics_oauth.account_ticket_redirect_uri(),
+    }
+
+
+@app.route("/api/analytics/setup/status", methods=["GET"])
+@client_admin_required
+def google_setup_status():
+    """What is connected, consented to, and already created for this workspace.
+
+    ``discover=1`` also asks Google which accounts the grant can reach, so the setup
+    card can say "no Analytics account yet" before the person clicks a button. It is
+    opt-in because the page must still load when Google is slow or unavailable.
+    """
+    import ga4_admin
+    import gtm_admin
+
+    org, scope, problem = _analytics_google_target(get=True)
+    if problem:
+        return problem
+    payload = _analytics_setup_status(org, scope)
+    if (request.args.get("discover") or "").strip() in ("1", "true", "yes"):
+        payload["ga_accounts"] = None
+        payload["gtm_accounts"] = None
+        connection = analytics_oauth.get_connection(org, scope)
+        if connection:
+            try:
+                token = analytics_oauth.access_token_for_org(org, scope=scope)
+                payload["ga_accounts"] = ga4_admin.list_accounts(token)
+                payload["gtm_accounts"] = gtm_admin.list_accounts(token)
+            except analytics_oauth.OAuthError as exc:
+                payload["discovery_error"] = str(exc)
+            except (ga4_admin.GoogleApiError, gtm_admin.GtmApiError) as exc:
+                payload["discovery_error"] = str(exc)
+    return jsonify(payload)
+
+
+@app.route("/api/analytics/setup/consent", methods=["POST"])
+@client_admin_required
+def google_setup_consent():
+    """Record the explicit, versioned waiver behind one-click setup."""
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    if data.get("accepted") is not True:
+        return jsonify({"error": "Tick the consent box before granting setup."}), 400
+    if str(data.get("version") or "").strip() != analytics_consent.VERSION:
+        return jsonify({
+            "error": "The setup terms changed. Reload Analytics and read the current "
+                     "consent before accepting it."
+        }), 409
+    actor = session.get("email") or session.get("name") or "operator"
+    try:
+        analytics_consent.grant(
+            org, session.get("user_id"), actor=actor,
+            scopes=list(analytics_oauth.WRITE_SCOPES + analytics_oauth.BIGQUERY_SCOPES),
+            metadata={"connection_scope": scope})
+    except analytics_consent.ConsentError as exc:
+        return jsonify({"error": str(exc)}), 400
+    analytics_service.record_action(
+        org, "analytics_consent_granted", target=scope,
+        payload={"version": analytics_consent.VERSION}, actor=actor)
+    return jsonify(_analytics_setup_status(org, scope)), 201
+
+
+@app.route("/api/analytics/setup/revoke", methods=["POST"])
+@client_admin_required
+def google_setup_revoke():
+    """Stop future autonomous setup without deleting anything already created."""
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    actor = session.get("email") or session.get("name") or "operator"
+    analytics_consent.revoke(org, actor=actor)
+    analytics_service.record_action(
+        org, "analytics_consent_revoked", target=scope, actor=actor)
+    return jsonify(_analytics_setup_status(org, scope))
 
 
 @app.route("/api/analytics/google/accounts", methods=["GET"])
@@ -5492,6 +5656,216 @@ def setup_google_analytics():
             (result.get("property") or {}).get("property_id") or "",
             (result.get("container") or {}).get("public_id") or "none"))
     return jsonify(result), 201
+
+
+@app.route("/api/analytics/setup/bootstrap", methods=["POST"])
+@client_admin_required
+def bootstrap_google_setup():
+    """One-click, idempotent GA4/GTM/site setup after explicit consent."""
+    import analytics_setup
+    import ga4_admin
+    import gtm_admin
+
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    consent_problem = _analytics_consent_problem(org)
+    if consent_problem:
+        return consent_problem
+    if actions.is_dry_run():
+        return jsonify({"error": "Live actions are disabled. An operator must enable "
+                                 "ALLOW_LIVE_ACTIONS before Google setup can write."}), 409
+    site = None
+    if data.get("site_id") not in (None, ""):
+        try:
+            site_id = int(data.get("site_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "site_id must be a number"}), 400
+        site = sites_service.get_site(site_id)
+        if not site or site.get("org_id") != org:
+            return jsonify({"error": "That website was not found for this client."}), 404
+    properties = analytics_service.properties(org)
+    if not properties and analytics_service.recent_action_count(
+            org, "ga4_create_property", minutes=60) >= 3:
+        return jsonify({"error": "This client has had three GA4 setup attempts in the "
+                                 "last hour. Wait before trying again."}), 429
+    make_container = bool(data.get("make_container", True))
+    try:
+        token, connection = _analytics_write_token(
+            org, scope, need_gtm=make_container)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if not properties and not str(data.get("account") or "").strip():
+        try:
+            accounts = ga4_admin.list_accounts(token)
+        except ga4_admin.GoogleApiError as exc:
+            return jsonify({"error": str(exc)}), 502
+        if not accounts:
+            return jsonify({
+                "ok": False, "needs": ["ga4_account"],
+                "error": "No Google Analytics account is available. Create one with "
+                         "Google's account form, then run setup again.",
+            })
+        data["account"] = accounts[0]["account"]
+        data["account_name"] = accounts[0].get("display_name") or ""
+
+    needs_gtm = False
+    if make_container and not str(data.get("gtm_account_id") or "").strip():
+        try:
+            gtm_accounts = gtm_admin.list_accounts(token)
+        except gtm_admin.GtmApiError as exc:
+            gtm_accounts = []
+            data["gtm_error"] = str(exc)
+        if gtm_accounts:
+            data["gtm_account_id"] = gtm_accounts[0]["account_id"]
+        else:
+            make_container = False
+            needs_gtm = True
+            data["make_container"] = False
+
+    if not str(data.get("property_name") or "").strip():
+        data["property_name"] = (site or {}).get("domain") or "Website"
+    if not str(data.get("default_uri") or "").strip() and site:
+        data["default_uri"] = "https://" + site["domain"]
+    actor = session.get("email") or session.get("name") or "operator"
+    approval_id = actions.request_approval(
+        "analytics_setup_bootstrap",
+        "Complete GA4/GTM setup for client %s" % org,
+        {"org_id": org, "site_id": (site or {}).get("id"),
+         "connection_scope": scope, "make_container": make_container},
+        None)
+    decided = actions.decide_approval(
+        approval_id, "approved", actor,
+        "Approved by the person who clicked Set up everything.")
+    if not decided or decided.get("status") != "approved":
+        return jsonify({"error": "This setup could not be recorded as approved."}), 500
+    try:
+        result = analytics_setup.ensure_setup(
+            org, scope, token, connection, actor, data, site)
+    except analytics_setup.SetupError as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        body = {"error": str(exc)}
+        body.update(exc.partial or {})
+        return jsonify(body), 502
+    except Exception as exc:
+        actions.set_result(approval_id, "failed: %s" % exc)
+        return jsonify({"error": "Google setup failed: %s" % exc}), 502
+    if needs_gtm:
+        result.setdefault("needs", [])
+        if "gtm_account" not in result["needs"]:
+            result["needs"].append("gtm_account")
+    actions.set_result(
+        approval_id, "property %s; container %s" % (
+            (result.get("property") or {}).get("property_id") or "",
+            (result.get("container") or {}).get("public_id") or "none"))
+    analytics_service.record_action(
+        org, "analytics_setup_bootstrap", target=(site or {}).get("domain") or "",
+        payload={"connection_scope": scope, "make_container": make_container},
+        status="ok" if result.get("ok") else "error",
+        result="%s; %s" % (result.get("mode") or "setup",
+                           ", ".join(result.get("created") or []) or "no new resources"),
+        actor=actor)
+    result["ok"] = bool(result.get("ok")) and not needs_gtm
+    return jsonify(result)
+
+
+@app.route("/api/analytics/google/account-ticket", methods=["POST"])
+@client_admin_required
+def create_google_analytics_account_ticket():
+    """Start Google's own Analytics account form when no account is visible."""
+    import ga4_admin
+
+    data = request.get_json(silent=True) or {}
+    org, scope, problem = _analytics_google_target(data=data)
+    if problem:
+        return problem
+    consent_problem = _analytics_consent_problem(org)
+    if consent_problem:
+        return consent_problem
+    if actions.is_dry_run():
+        return jsonify({"error": "Live actions are disabled. An operator must enable "
+                                 "ALLOW_LIVE_ACTIONS before starting Google account "
+                                 "creation."}), 409
+    if analytics_service.recent_action_count(
+            org, "ga4_account_ticket", minutes=60) >= 3:
+        return jsonify({"error": "This client has started account creation three times "
+                                 "in the last hour. Wait before trying again."}), 429
+    try:
+        token, connection = _analytics_write_token(org, scope, need_gtm=False)
+        accounts = ga4_admin.list_accounts(token)
+    except analytics_oauth.OAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ga4_admin.GoogleApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    if accounts:
+        return jsonify({
+            "error": "A Google Analytics account is already available. Refresh the "
+                     "page and choose it instead of creating another."
+        }), 409
+    redirect_uri = analytics_oauth.account_ticket_redirect_uri()
+    if not redirect_uri:
+        return jsonify({"error": "The Google account setup redirect URI is not "
+                                 "configured. Set PLATFORM_URL or "
+                                 "GA4_ACCOUNT_TICKET_REDIRECT_URI in Settings."}), 400
+    display_name = str(data.get("display_name") or "").strip()
+    if not display_name:
+        display_name = "AscendPlatform Analytics"
+    try:
+        ticket = ga4_admin.provision_account_ticket(
+            token, display_name, redirect_uri)
+    except ga4_admin.GoogleApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    actor = session.get("email") or session.get("name") or "operator"
+    session["ga4_account_ticket"] = {
+        "org_id": org, "scope": scope, "ticket": ticket["account_ticket_id"],
+        "auto_setup": bool(data.get("auto_setup")),
+        "user_id": session.get("user_id"), "created_at": time.time(),
+    }
+    analytics_service.record_action(
+        org, "ga4_account_ticket", target=ticket["account_ticket_id"],
+        payload={"connection_scope": scope, "redirect_uri": redirect_uri},
+        result=ticket["account_ticket_id"], actor=actor)
+    return jsonify({
+        "account_ticket_id": ticket["account_ticket_id"],
+        "redirect_uri": redirect_uri,
+        "tos_url": ga4_admin.account_ticket_url(
+            ticket["account_ticket_id"], connection.get("account_email") or ""),
+        "fallback_url": "https://analytics.google.com/analytics/web/",
+    }), 201
+
+
+@app.route("/api/analytics/google/account-ticket/callback", methods=["GET"])
+def google_analytics_account_ticket_callback():
+    """Google returns here after the person accepts its Analytics terms."""
+    _user, error = _session_account()
+    if error:
+        return redirect("/admin/#/login")
+    pending = session.pop("ga4_account_ticket", None)
+    if not pending:
+        return _oauth_notice("error", "No Google Analytics account setup request was "
+                                      "found. Start it again from Analytics.")
+    try:
+        created = float(pending.get("created_at") or 0)
+    except (TypeError, ValueError):
+        created = 0
+    if not created or time.time() - created > analytics_oauth.STATE_TTL:
+        return _oauth_notice("error", "The Google Analytics account setup request "
+                                      "expired. Start it again.")
+    if request.args.get("error"):
+        return _oauth_notice("error", "Google Analytics account setup was cancelled.")
+    org_id = pending.get("org_id")
+    if not can_access_org(org_id) or pending.get("user_id") != session.get("user_id"):
+        return _oauth_notice("error", "That Google Analytics account setup is not "
+                                      "available in this session.")
+    auto_setup = bool(pending.get("auto_setup"))
+    return _oauth_notice(
+        "ok", ("Google Analytics account setup finished. Resuming setup automatically."
+               if auto_setup else
+               "Google Analytics account setup finished. Refresh Analytics to select "
+               "the account, then click Set up everything."),
+        auto_setup=auto_setup)
 
 
 @app.route("/api/analytics/google/tag/install", methods=["POST"])
