@@ -75,7 +75,7 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 | POST | `/api/automations/proposals/<int:proposal_id>/apply` | client_admin | `apply_automation_proposal` | `app.py` |
 | POST | `/api/automations/proposals/<int:proposal_id>/discard` | client_admin | `discard_automation_proposal` | `app.py` |
 | GET | `/api/bots` | login | `list_bots` | `app.py` |
-| POST | `/api/bots` | login | `create_bot` | `app.py` |
+| POST | `/api/bots` | client_admin | `create_bot` | `app.py` |
 | DELETE | `/api/bots/<bot_id>` | client_admin | `delete_bot` | `app.py` |
 | GET | `/api/bots/<bot_id>` | login | `get_bot` | `app.py` |
 | PUT | `/api/bots/<bot_id>` | client_admin | `update_bot` | `app.py` |
@@ -440,6 +440,17 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `audit_ui`
 - `smoke_review`
 - `smoke_asgi`
+- `test_scheduler_idempotency`
+- `test_sse_auth`
+- `test_login_guard`
+- `test_public_limits`
+- `test_site_validation`
+- `test_jobs_safety`
+- `test_docs_gate`
+- `test_list_summary`
+- `test_marketing_tools`
+- `test_chat_tools`
+- `test_site_tool_scope`
 
 ## JS harnesses
 
@@ -472,12 +483,14 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_build_tool`
 - `test_caddy_reload`
 - `test_chat_thread`
+- `test_chat_tools`
 - `test_client_brief`
 - `test_client_detail`
 - `test_client_ghl`
 - `test_contact_sync`
 - `test_db_dialect`
 - `test_dns_records`
+- `test_docs_gate`
 - `test_domain_removal`
 - `test_fetch_page`
 - `test_form_hosting`
@@ -486,8 +499,12 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_google_setup`
 - `test_graph_canvas`
 - `test_job_enqueue`
+- `test_jobs_safety`
 - `test_launch_guards`
+- `test_list_summary`
+- `test_login_guard`
 - `test_manager_questions`
+- `test_marketing_tools`
 - `test_markup_calls`
 - `test_migrations`
 - `test_model_info`
@@ -496,11 +513,16 @@ This is the current inventory. The prose maps live in `REFERENCE.md` and `RECIPE
 - `test_policy`
 - `test_provider_probe`
 - `test_provision_approval`
+- `test_public_limits`
 - `test_publish_home`
 - `test_publish_live`
 - `test_publish_tool`
 - `test_read_only_jobs`
+- `test_scheduler_idempotency`
 - `test_site_extras`
+- `test_site_tool_scope`
+- `test_site_validation`
+- `test_sse_auth`
 - `test_usage`
 - `test_user_management`
 - `test_workspace_sync`

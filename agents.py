@@ -45,7 +45,9 @@ DEFAULT_ROSTER = [
             "needed for the task. Summarise findings as bullet points. Flag anything "
             "you are unsure about instead of guessing."
         ),
-        "tools": ["current_time"],
+        "tools": ["current_time", "fetch_page", "fetch_page_html", "get_metrics",
+                  "get_insights", "list_sites", "list_forms", "read_form",
+                  "list_contacts", "list_templates", "read_template"],
         "turn_order": 2,
     },
     {
@@ -58,7 +60,9 @@ DEFAULT_ROSTER = [
             "benefit-led voice. Use the Business Profile for brand voice and facts. "
             "Return ready-to-publish text, not descriptions of it."
         ),
-        "tools": ["save_deliverable", "search_photos", "import_photo_to_media", "list_media"],
+        "tools": ["save_deliverable", "search_photos", "import_photo_to_media",
+                  "list_media", "list_forms", "read_form", "list_templates",
+                  "read_template"],
         "turn_order": 3,
     },
     {
@@ -102,7 +106,9 @@ DEFAULT_ROSTER = [
             "fixes. When everything is satisfactory, reply with a short summary "
             "followed by the single word APPROVE on its own line."
         ),
-        "tools": ["current_time"],
+        "tools": ["current_time", "fetch_page", "fetch_page_html", "read_deliverable",
+                  "list_media", "list_forms", "read_form", "list_templates",
+                  "read_template", "list_chat_assistants", "read_chat_assistant"],
         "turn_order": 6,
     },
     {
@@ -118,7 +124,14 @@ DEFAULT_ROSTER = [
         "tools": ["provision_site", "check_site_dns", "write_site_content", "list_sites",
                   "search_photos", "import_photo_to_media", "fetch_photo", "generate_image",
                   "send_email", "save_deliverable", "read_deliverable", "list_media",
-                  "save_note", "current_time", "fetch_page", "fetch_page_html"],
+                  "save_note", "current_time", "fetch_page", "fetch_page_html",
+                  "create_form", "list_forms", "read_form", "update_form",
+                  "list_form_responses", "add_form_link",
+                  "list_chat_assistants", "read_chat_assistant",
+                  "create_chat_assistant", "update_chat_assistant",
+                  "attach_chat_assistant", "list_contacts", "tag_contact",
+                  "create_template", "list_templates", "read_template",
+                  "update_template"],
         "turn_order": 7,
     },
 ]
@@ -403,6 +416,16 @@ MEDIA_RULE = (
 )
 
 
+MARKETING_RULE = (
+    "\n\nFor forms, call read_form before update_form. When a form has answers, keep "
+    "every existing question id and change its label, help, options or order. For a "
+    "chat assistant, call list_chat_assistants first; create or update it, then call "
+    "attach_chat_assistant. That attachment queues the normal site provisioning "
+    "approval, so do not claim the assistant is live until the job runs. Never ask for "
+    "channel tokens, webhooks or API keys."
+)
+
+
 def read_only_grants(granted):
     """The subset of a roster row's tools a read-only job may actually hold."""
     return [name for name in (granted or []) if name in tool_registry.READ_ONLY_TOOLS]
@@ -426,6 +449,9 @@ def system_message_for(row, client_brief="", read_only=False):
         message += CONTENT_RULE
     if not read_only and "import_photo_to_media" in (row.get("tools") or []):
         message += MEDIA_RULE
+    if (not read_only and any(tool in (row.get("tools") or []) for tool in
+                              ("create_form", "update_form", "attach_chat_assistant"))):
+        message += MARKETING_RULE
     if client_brief:
         message += "\n\n" + client_brief
     return message

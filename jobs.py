@@ -24,10 +24,13 @@ import queue
 import threading
 import traceback
 
-from db import get_connection, now_str
+from db import advisory_xact_lock, get_connection, now_str
 
 DEFAULT_TASK = "echo"
 TERMINAL_STATUSES = ("done", "failed", "cancelled")
+# Job events are per-job rather than global; this namespace serialises appends for
+# one job so MAX(seq)+1 cannot hand two writers the same sequence number.
+JOB_EVENT_LOCK_BASE = 21000000
 REDIS_URL = (os.environ.get("REDIS_URL") or "").strip()
 JOB_BACKEND = (os.environ.get("JOB_BACKEND") or "local").strip().lower()
 
@@ -121,6 +124,10 @@ def add_event(job_id, source, type_, content):
     if isinstance(content, (dict, list)):
         content = json.dumps(content, indent=2, default=str)
     with get_connection() as conn:
+        # Serialise the MAX(seq) read and the insert for this job. On PostgreSQL two
+        # agents/worker processes could otherwise both write the same seq, and an SSE
+        # cursor would skip one of them.
+        advisory_xact_lock(conn, JOB_EVENT_LOCK_BASE + int(job_id))
         row = conn.execute(
             "SELECT COALESCE(MAX(seq), 0) AS m FROM job_events WHERE job_id = ?", (job_id,)
         ).fetchone()
@@ -166,16 +173,17 @@ def _mark_finished(job_id, status, result="", error=""):
 
 
 def cancel_job(job_id):
-    """Flag a job as cancelled. Running tasks should check this periodically."""
+    """Flag a queued/running job as cancelled. ``False`` means there was nothing to do."""
     with get_connection() as conn:
         row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             return False
-        if row["status"] in ("queued", "running"):
-            conn.execute(
-                "UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE id = ?",
-                (now_str(), job_id),
-            )
+        if row["status"] not in ("queued", "running"):
+            return False
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE id = ?",
+            (now_str(), job_id),
+        )
     return True
 
 

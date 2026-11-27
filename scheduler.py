@@ -1,19 +1,37 @@
-"""Recurring work: the daily sync that makes the analytics loop autonomous.
+"""Recurring work: the coordinator tick, the weekly review, and the log sync.
 
 A daemon thread rather than a cron entry, so the platform stays a single deployable
-image with no host-side crontab to forget. Two uvicorn workers each start one, which is
-harmless because the sync is idempotent (metrics have a unique point key) - but it does
-mean the work happens twice, so keep the interval sensible.
+image with no host-side crontab to forget. **Two uvicorn workers start one each**, so
+every sweep runs under a PostgreSQL advisory lock: the holder does the work and the
+other worker skips that tick. Without it, a deploy granted the monthly allowance
+twice and queued two copies of every scheduled run.
 
-Off by default: ``SITE_LOG_SYNC_HOURS=0`` means nothing is scheduled, and a deployment
-that has not configured Caddy does not log a failure every hour.
+``SITE_LOG_SYNC_HOURS`` (default 0) only controls the analytics/site-log sync; the
+coordination tick is independent. It re-checks pending DNS, starts due automations,
+wakes delayed runs, evaluates analytics alerts, queues weekly reviews and grants the
+monthly allowance. ``SITE_VERIFY_MINUTES`` (default 60) is its interval; setting it
+to 0 disables only the DNS check. ``SCHEDULER_ENABLED=0`` turns all background work
+off for a test or a maintenance window.
 """
 
 import os
 import threading
 import time
 
+import db
+
 _started = False
+
+# Stable lock namespaces. Never derive these from a row id: two unrelated sweeps
+# sharing a lock would silently stop one of them.
+TICK_LOCK_KEY = 20261127
+SYNC_LOCK_KEY = 20261128
+
+
+def scheduler_enabled():
+    """False only when the operator explicitly turns background work off."""
+    raw = (os.environ.get("SCHEDULER_ENABLED") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def sync_interval_hours():
@@ -87,21 +105,61 @@ def site_logs_sync():
 
 
 def _loop(hours):
+    """The opt-in analytics/site-log sync. Its own lock, its own interval."""
     while True:
         try:
-            for kind, result in sync_all():
-                if not result.get("ok"):
-                    print("[scheduler] %s sync: %s" % (kind, result.get("error", "unknown")))
-            queued = queue_reviews()
-            if queued:
-                print("[scheduler] queued %d weekly review(s)" % queued)
-            alert_jobs = queue_alerts()
-            if alert_jobs:
-                print("[scheduler] queued %d analytics alert run(s)" % alert_jobs)
-            housekeeping()
+            with db.advisory_lock(SYNC_LOCK_KEY) as owned:
+                if owned:
+                    for kind, result in sync_all():
+                        if not result.get("ok"):
+                            print("[scheduler] %s sync: %s"
+                                  % (kind, result.get("error", "unknown")))
         except Exception as exc:  # pragma: no cover - defensive
             print("[scheduler] sync cycle crashed: %s: %s" % (type(exc).__name__, exc))
         time.sleep(hours * 3600)
+
+
+def _run_tick_tasks(verify=True):
+    """One coordination pass. Every task is isolated: one bad sweep must not skip the
+    monthly grant or the next client's review."""
+    if verify:
+        try:
+            verify_pending()
+        except Exception:
+            pass
+    try:
+        import automations
+
+        automations.run_due()
+        automations.wake_due()
+    except Exception:
+        pass
+    try:
+        queued = queue_alerts()
+        if queued:
+            print("[scheduler] queued %d analytics alert run(s)" % queued)
+    except Exception:
+        pass
+    try:
+        queued = queue_reviews()
+        if queued:
+            print("[scheduler] queued %d weekly review(s)" % queued)
+    except Exception:
+        pass
+    try:
+        housekeeping()
+    except Exception:
+        pass
+    try:
+        import usage
+
+        # A voice session whose browser never came back is billed at its
+        # reservation; the monthly grant is skipped if the sweep raises, and the
+        # next tick tries again.
+        usage.sweep_voice_sessions()
+        usage.grant_monthly()
+    except Exception:
+        pass          # a grant failure must not stop the DNS sweep
 
 
 def queue_alerts(now=None):
@@ -206,25 +264,29 @@ def queue_reviews(now=None):
         org_id = site.get("org_id")
         if org_id is None:
             continue
-        with get_connection() as conn:
-            existing = conn.execute(
-                "SELECT id FROM jobs WHERE task = ? AND org_id = ? AND created_at >= ?",
-                ("site_review", org_id, since),
-            ).fetchone()
-        if existing:
+        try:
+            with get_connection() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM jobs WHERE task = ? AND org_id = ? AND created_at >= ?",
+                    ("site_review", org_id, since),
+                ).fetchone()
+            if existing:
+                continue
+            job_id = jobs.create_job(
+                "Weekly review: %s" % site["domain"],
+                "Weekly site review",
+                None,
+                "selector",
+                "site_review",
+                org_id=org_id,
+            )
+            # A created job that is never submitted stays queued forever - the same
+            # defect this endpoint was written to avoid.
+            jobs.submit(job_id)
+            queued += 1
+        except Exception:
+            # One broken client must not stop the queue for everyone else.
             continue
-        job_id = jobs.create_job(
-            "Weekly review: %s" % site["domain"],
-            "Weekly site review",
-            None,
-            "selector",
-            "site_review",
-            org_id=org_id,
-        )
-        # A created job that is never submitted stays queued forever - the same defect
-        # this endpoint was written to avoid.
-        jobs.submit(job_id)
-        queued += 1
     return queued
 
 
@@ -298,55 +360,38 @@ _verify_started = False
 
 
 def start_verifier():
-    """Hourly sweep in its own thread. Idempotent per process; 0 minutes disables it."""
+    """Start the coordination tick. Idempotent per process; the advisory lock makes it
+    idempotent *across* processes too."""
     global _verify_started
-    minutes = verify_interval_minutes()
-    if _verify_started or minutes <= 0:
+    if _verify_started or not scheduler_enabled():
         return False
     _verify_started = True
+    # 0 disables the DNS check, not the rest of the coordination. A deployment that
+    # does not use managed DNS still needs due automations, alerts, reviews and grants.
+    minutes = verify_interval_minutes()
+    interval = minutes if minutes > 0 else 60
 
     def _tick():
         while True:
             try:
-                verify_pending()
-            except Exception:
-                pass
-            try:
-                import automations
-
-                automations.run_due()
-                automations.wake_due()
-            except Exception:
-                pass
-            try:
-                queue_alerts()
-            except Exception:
-                pass
-            try:
-                housekeeping()
-            except Exception:
-                pass
-            try:
-                import usage
-
-                # A voice session whose browser never came back is billed at its
-                # reservation; the monthly grant is skipped if the sweep raises, and the
-                # next tick tries again.
-                usage.sweep_voice_sessions()
-                usage.grant_monthly()
-            except Exception:
-                pass          # a grant failure must not stop the DNS sweep
-            time.sleep(minutes * 60)
+                with db.advisory_lock(TICK_LOCK_KEY) as owned:
+                    if owned:
+                        _run_tick_tasks(verify=minutes > 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                print("[scheduler] tick crashed: %s: %s" % (type(exc).__name__, exc))
+            time.sleep(interval * 60)
 
     threading.Thread(target=_tick, name="site-verify", daemon=True).start()
     return True
 
 
 def start():
-    """Begin the recurring sync if one is configured. Idempotent per process."""
+    """Begin the recurring work. Idempotent per process."""
     global _started
-    # Independent of the sync: the DNS sweep is useful in a deployment that has no site
-    # logs configured at all, which is every fresh install.
+    if not scheduler_enabled():
+        return False
+    # Independent of the sync: the coordination tick is useful in a deployment that
+    # has no site logs configured at all, which is every fresh install.
     start_verifier()
     hours = sync_interval_hours()
     if _started or hours <= 0:

@@ -265,6 +265,7 @@ def test_the_agent_can_build_a_form():
     import db
     import jobs
     import tools
+    import user_service
     from autogen_core import CancellationToken
 
     db.init_db()
@@ -272,7 +273,16 @@ def test_the_agent_can_build_a_form():
     with db.get_connection() as conn:
         for table in ("form_responses", "forms"):
             conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))
-    job_id = jobs.create_job("form", "make a quiz", None, "selector", "chat", org_id=org)
+        admin = conn.execute("SELECT id FROM users WHERE email = ?",
+                             ("admin@example.com",)).fetchone()
+    if not admin:
+        created = user_service.create_user(
+            {"email": "form-agent@example.test", "name": "Form Agent",
+             "password": "form-agent-pass-123", "role": "owner"},
+            None, True, None)
+        admin = created
+    job_id = jobs.create_job("form", "make a quiz",
+                             admin["id"], "selector", "chat", org_id=org)
     create = tools.resolve(["create_form"], job_id=job_id)[0]
     said = asyncio.run(create.run_json({
         "name": "Trip quiz", "kind": "quiz",
@@ -296,7 +306,7 @@ def test_the_agent_can_build_a_form():
     check("without a client it refuses",
           asyncio.run(tools.resolve(["create_form"], job_id=None)[0].run_json(
               {"name": "x"}, CancellationToken())),
-          "Pick a client first - a form belongs to a client.")
+          "Pick a client in the workspace switcher first.")
     with db.get_connection() as conn:
         for table in ("form_responses", "forms"):
             conn.execute("DELETE FROM %s WHERE org_id = ?" % table, (org,))

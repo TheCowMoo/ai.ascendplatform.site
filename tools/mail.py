@@ -5,6 +5,7 @@ Uses the standard library's ``smtplib``, matching the ``urllib``-only HTTP alrea
 used in ``meta.py`` — no extra dependency. In dry-run nothing is sent.
 """
 
+import asyncio
 import html as html_mod
 import re
 import smtplib
@@ -109,7 +110,10 @@ def _build_send_email(emit, job_id=None):
         if not (body or "").strip():
             return "The email body is empty."
 
-        authorisation = actions.gate(
+        # The gate waits up to APPROVAL_TIMEOUT; on the job loop that would freeze
+        # every other run in this worker. A thread keeps the wait off the loop.
+        authorisation = await asyncio.to_thread(
+            actions.gate,
             "email",
             "send an email to %s" % ", ".join(recipients),
             {"to": recipients, "subject": subject},
@@ -125,40 +129,44 @@ def _build_send_email(emit, job_id=None):
         # identity would be the operator's mailbox, which is a worse bug than a failure.
         import platform_mail
 
-        looks_html = _looks_html(body)
-        if org is not None and platform_mail.is_configured(org):
-            body_html = body if looks_html else (
-                "<p>%s</p>" % html_mod.escape(body).replace("\n", "<br>"))
+        def deliver():
+            looks_html = _looks_html(body)
+            if org is not None and platform_mail.is_configured(org):
+                body_html = body if looks_html else (
+                    "<p>%s</p>" % html_mod.escape(body).replace("\n", "<br>"))
+                try:
+                    for address in recipients:
+                        platform_mail.send(address, subject or "(no subject)", body_html,
+                                           org_id=org)
+                except platform_mail.MailError as exc:
+                    return "Sending through GoHighLevel failed: %s" % exc
+                return "Sent via GoHighLevel to %s" % ", ".join(recipients)
+
+            if not host(org) or not sender(org):
+                return "SMTP_HOST and SMTP_FROM (or SMTP_USER) must be set to send email."
+
+            message = EmailMessage()
+            message["From"] = sender(org)
+            message["To"] = ", ".join(recipients)
+            message["Subject"] = subject or "(no subject)"
+            if looks_html:
+                message.set_content(_plain_text(body))
+                message.add_alternative(body, subtype="html")
+            else:
+                message.set_content(body)
             try:
-                for address in recipients:
-                    platform_mail.send(address, subject or "(no subject)", body_html,
-                                       org_id=org)
-            except platform_mail.MailError as exc:
-                return "Sending through GoHighLevel failed: %s" % exc
-            return "Sent via GoHighLevel to %s" % ", ".join(recipients)
+                with smtplib.SMTP(host(org), port(org), timeout=20) as server:
+                    if use_tls(org):
+                        server.starttls()
+                    if user(org):
+                        server.login(user(org), password(org))
+                    server.send_message(message)
+            except Exception as exc:
+                return "Sending failed (%s: %s)" % (type(exc).__name__, exc)
+            return "Sent to %s" % ", ".join(recipients)
 
-        if not host(org) or not sender(org):
-            return "SMTP_HOST and SMTP_FROM (or SMTP_USER) must be set to send email."
-
-        message = EmailMessage()
-        message["From"] = sender(org)
-        message["To"] = ", ".join(recipients)
-        message["Subject"] = subject or "(no subject)"
-        if looks_html:
-            message.set_content(_plain_text(body))
-            message.add_alternative(body, subtype="html")
-        else:
-            message.set_content(body)
-        try:
-            with smtplib.SMTP(host(org), port(org), timeout=20) as server:
-                if use_tls(org):
-                    server.starttls()
-                if user(org):
-                    server.login(user(org), password(org))
-                server.send_message(message)
-        except Exception as exc:
-            return "Sending failed (%s: %s)" % (type(exc).__name__, exc)
-        return "Sent to %s" % ", ".join(recipients)
+        # SMTP can take seconds; do not hold the shared job loop for it.
+        return await asyncio.to_thread(deliver)
 
     return send_email
 

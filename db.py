@@ -15,9 +15,11 @@ The schema is defined once with SQLAlchemy Core metadata, so ``create_all()``
 emits the right DDL for either dialect and Alembic can reuse the same metadata.
 """
 
+import contextlib
 import os
 import re
 import secrets
+import threading
 import datetime
 
 import sqlalchemy as sa
@@ -325,6 +327,8 @@ jobs = Table(
 )
 
 Index("idx_jobs_status", jobs.c.status)
+Index("idx_jobs_org_created", jobs.c.org_id, jobs.c.created_at)
+Index("idx_jobs_task_org_created", jobs.c.task, jobs.c.org_id, jobs.c.created_at)
 
 # Append-only transcript: agent messages, tool calls and command output.
 job_events = Table(
@@ -381,6 +385,7 @@ automation_runs = Table(
 )
 
 Index("idx_automation_runs_automation", automation_runs.c.automation_id)
+Index("idx_automation_runs_wake", automation_runs.c.status, automation_runs.c.wake_at)
 
 # A graph an agent *drafted*. Deliberately a separate table: a proposal must never be able
 # to change a saved automation, so the model writes here and a human applies it.
@@ -668,6 +673,8 @@ sites = Table(
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
 
+Index("idx_sites_org", sites.c.org_id)
+
 # Approval gate: write/exec actions requested by an agent while in live mode.
 action_approvals = Table(
     "action_approvals",
@@ -710,6 +717,9 @@ deliverables = Table(
     _created_at(),
     Column("updated_at", Text, nullable=False, server_default=_now_default()),
 )
+
+Index("idx_deliverables_org_updated", deliverables.c.org_id, deliverables.c.updated_at)
+Index("idx_deliverables_job", deliverables.c.job_id)
 
 # A guided build in progress: the questions the console is showing, the answers so far,
 # and what the build produced. Kept server-side so a reload (or another device) resumes
@@ -1445,6 +1455,58 @@ def seed_lock(conn):
     """
     if IS_POSTGRES:
         conn.execute("SELECT pg_advisory_xact_lock(?)", (SEED_LOCK_KEY,))
+
+
+# Cross-process single-owner work (the scheduler tick) and per-client serialisation
+# (a credit grant) use advisory locks. On PostgreSQL the lock is held by the session
+# or the transaction; on SQLite the tests and the dev server are one process, so a
+# threading lock has the same effect. Keys are stable integers, never values a caller
+# can supply: two unrelated jobs must not share a lock by accident.
+_LOCAL_LOCKS = {}
+_LOCAL_LOCKS_GUARD = threading.Lock()
+
+
+def _local_lock(key):
+    with _LOCAL_LOCKS_GUARD:
+        return _LOCAL_LOCKS.setdefault(int(key), threading.Lock())
+
+
+@contextlib.contextmanager
+def advisory_lock(key):
+    """``with advisory_lock(key) as owned:`` - non-blocking, cluster-wide.
+
+    The loser gets ``owned=False`` and must skip the work. The lock is released when
+    the block ends (or the process dies), so a crashed worker cannot wedge the next
+    tick. This is what makes the two uvicorn workers run one scheduler, not two.
+    """
+    if IS_POSTGRES:
+        with get_connection() as conn:
+            row = conn.execute("SELECT pg_try_advisory_lock(?)", (int(key),)).fetchone()
+            held = bool(row and row[0])
+            try:
+                yield held
+            finally:
+                if held:
+                    conn.execute("SELECT pg_advisory_unlock(?)", (int(key),))
+        return
+
+    lock = _local_lock(key)
+    held = lock.acquire(blocking=False)
+    try:
+        yield held
+    finally:
+        if held:
+            lock.release()
+
+
+def advisory_xact_lock(conn, key):
+    """Serialise one transaction for ``key``; released by the commit/rollback.
+
+    PostgreSQL only. SQLite has a single-writer model and the dev server is one
+    process, so callers can keep their check-then-insert code portable.
+    """
+    if IS_POSTGRES:
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (int(key),))
 
 
 def _sqlite_unique_on(table, column):

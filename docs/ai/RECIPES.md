@@ -81,11 +81,13 @@ Keep old hashes working when renaming a page. Preserve role gates (`adminOnly`,
 
 1. Create or extend a module under `tools/`.
 2. Register it through `tools/__init__.py` with an explicit schema and policy.
-3. Add the tool to the appropriate agent roster/defaults; do not rewrite existing seeded
-   prompts blindly.
-4. Put side effects behind `actions.gate()` and policy checks.
-5. Add tests for valid input, invalid input, tenant scope and dry-run/live behavior.
-6. Update `docs/ai/REFERENCE.md` if the capability is user-visible.
+3. Put read-only tools in `READ_ONLY_TOOLS`; put a write behind `actions.gate()`.
+4. Take the tenant from the job row and use `tools/access.py` for client-admin-only
+   writes; never accept an org or a foreign site/bot id from a tool argument.
+5. Add the tool to the appropriate agent roster/defaults; do not rewrite existing seeded
+   prompts blindly. `sync_default_tools` adds new defaults without removing anything.
+6. Add tests for valid input, invalid input, tenant scope and dry-run/live behavior.
+7. Update `docs/ai/REFERENCE.md` if the capability is user-visible.
 
 ## Recipe 8 — Add an external integration
 

@@ -64,6 +64,21 @@ SYSTEM = (
     "it - a contact form with a link on the page, a follow-up email template, and an "
     "automation that sends it - as one short question. Build them only when the user "
     "says yes, and never add them to an existing page unless asked.\n"
+    "Forms are editable. Before changing one, call read_form so you see the real "
+    "questions and ids; then call update_form with the complete revision. When a form "
+    "has answers, keep every existing question id and change labels, help, options or "
+    "order instead. A published form changes live immediately. For a designed enquiry "
+    "page in the site's look, save a website page, add_form_link, then publish_page; "
+    "the form's own page is platform-styled, so do not promise arbitrary CSS.\n"
+    "Chat assistants are yours to build. Use list_chat_assistants, then "
+    "create_chat_assistant with the welcome message and knowledge; call "
+    "attach_chat_assistant to put it on one of this client's sites. Attachment queues "
+    "the normal site-provisioning approval - do not claim it is live until that runs. "
+    "Never ask for channel tokens, webhooks or API keys, and never use propose_tool "
+    "for a chat assistant; propose_tool is only for an automation recipe.\n"
+    "You can see this client's contacts and email templates: call list_contacts, "
+    "read_template and update_template. You cannot send a bulk email or message "
+    "everyone; automations send per contact after their own approval.\n"
     "Before calling apply_automation, explain in plain language what starts it and "
     "what it does, then ask for confirmation with ask_user. Apply only after a yes. If it "
     "sends email or publishes, that outward step still asks for its own approval when the "
@@ -107,10 +122,14 @@ GRANTED = ("list_sites", "list_deliverables", "get_metrics", "get_insights", "st
            "save_deliverable", "read_deliverable", "list_media", "search_photos",
            "import_photo_to_media", "propose_automation", "describe_capabilities",
            "propose_tool", "ask_user", "create_template", "list_templates",
-           "create_contact", "create_site", "create_form", "list_forms",
+           "read_template", "update_template", "list_contacts",
+           "create_contact", "tag_contact", "create_site", "create_form", "list_forms",
+           "read_form", "update_form", "list_form_responses",
+           "list_chat_assistants", "read_chat_assistant", "create_chat_assistant",
+           "update_chat_assistant", "attach_chat_assistant",
            "list_automations", "remember_preference", "propose_business_fact",
            "publish_page", "add_form_link", "apply_automation",
-           "fetch_page", "fetch_page_html", "start_build")
+           "fetch_page", "fetch_page_html", "start_build", "check_site_dns")
 
 READ_ONLY_PREFIX = (
     "READ-ONLY TURN - the user asked you to inspect, review or report, not to change "

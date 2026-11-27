@@ -31,11 +31,25 @@ import llm
 
 flask_app = flask_module.app
 
+
+def docs_enabled():
+    """Whether the FastAPI schema and Swagger UI are published.
+
+    They describe every route and parameter, so they are an operator/development
+    surface, not something an anonymous caller should enumerate by default.
+    """
+    raw = (os.environ.get("API_DOCS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+DOCS_ENABLED = docs_enabled()
+
 app = FastAPI(
     title="AscendPlatform",
     version="0.4.0",
-    docs_url="/api/docs",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if DOCS_ENABLED else None,
+    openapi_url="/api/openapi.json" if DOCS_ENABLED else None,
+    redoc_url=None,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,17 +72,29 @@ def flask_session(request: Request):
 
 
 def require_session(request: Request):
-    """Dependency: 401 unless a valid logged-in session cookie is present."""
+    """Dependency: 401/403 unless the signed cookie still belongs to a live user.
+
+    The cookie is only a hint about *who* signed in. Every authenticated request
+    reloads the row, exactly like Flask's ``_session_account``: otherwise a
+    suspended or deleted account kept streaming job transcripts until the cookie
+    expired, and a role change was not seen at all. The tenant comes from that row,
+    never from the cookie's stale copy.
+    """
     data = flask_session(request)
     if not data.get("user_id"):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # The SSE stream is served by FastAPI, outside Flask's decorators. It has to apply
-    # the same suspension rule or a paused client could keep watching a live transcript.
-    if not flask_module.account_is_active(data.get("role"), data.get("org_id")):
+    user = flask_module.user_service.session_user(data["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if user.get("status") != "active":
         raise HTTPException(
             status_code=403,
             detail="This client account is paused. Contact your agency to restore access.")
-    return data
+    if not flask_module.account_is_active(user.get("role"), user.get("org_id")):
+        raise HTTPException(
+            status_code=403,
+            detail="This client account is paused. Contact your agency to restore access.")
+    return user
 
 
 def require_owner(request: Request):
@@ -76,10 +102,11 @@ def require_owner(request: Request):
 
     ``/api/providers`` reports which providers *the platform's* keys configure. The
     agents are site-wide and run on the operator's keys, so that is operator
-    information - and it used to answer with no session at all.
+    information - and it used to answer with no session at all. The legacy ``admin``
+    spelling is still an owner (``is_owner_role``), not a client role.
     """
     data = require_session(request)
-    if data.get("role") != "owner":
+    if not flask_module.user_service.is_owner_role(data.get("role")):
         raise HTTPException(status_code=403, detail="Forbidden")
     return data
 
@@ -105,18 +132,21 @@ async def job_stream(job_id: int, after: int = 0, session=Depends(require_sessio
     Fully async: database reads run in a thread via ``asyncio.to_thread`` so the
     event loop stays free and the connection does not pin a worker process.
     """
-    if not jobs.get_job(job_id):
-        raise HTTPException(status_code=404, detail="Not found")
-
-    # Scope the transcript to the caller's client. The session bridge gives us the
-    # same signed dict Flask sees, so the tenant check is identical - and it answers
-    # 404 rather than 403 so a client cannot probe which job ids exist.
+    # Scope the transcript to the caller's client. The dependency gives us the
+    # freshly reloaded user row, not the cookie's stale role. Answer 404 rather than
+    # 403 so a client cannot probe which job ids exist. A user with no org is confined
+    # to nothing: comparing None != None would otherwise admit the NULL-org rows that
+    # predate tenancy.
     job = jobs.get_job(job_id)
-    if session.get("role") != "owner" and job.get("org_id") != session.get("org_id"):
+    if not job:
         raise HTTPException(status_code=404, detail="Not found")
+    owner = flask_module.user_service.is_owner_role(session.get("role"))
+    if not owner:
+        org = session.get("org_id")
+        if org is None or job.get("org_id") != org:
+            raise HTTPException(status_code=404, detail="Not found")
 
     max_seconds = int(os.environ.get("SSE_MAX_SECONDS", "600"))
-    owner = session.get("role") == "owner"
 
     async def event_source():
         last_seq = after

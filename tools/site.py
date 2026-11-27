@@ -8,6 +8,7 @@ reports the URL. Every write/exec passes through ``tools.policy`` and
 and in dry-run nothing happens at all.
 """
 
+import asyncio
 import json
 
 import actions
@@ -16,7 +17,7 @@ import jobs
 import provisioner
 import sites as sites_service
 from db import get_connection
-from tools import register
+from tools import access, register
 
 
 def _requester(job_id):
@@ -35,11 +36,11 @@ def _read_only(job_id):
     return bool(job and job.get("read_only"))
 
 
-def _profile_for(owner_id):
+def _profile_for(org_id):
     try:
         import profile as profile_mod
 
-        return profile_mod.get_profile(owner_id) if owner_id else None
+        return profile_mod.get_profile(org_id) if org_id is not None else None
     except Exception:
         return None
 
@@ -62,15 +63,26 @@ def _summarise(result):
 def _build_provision_site(emit, job_id=None):
     async def provision_site(domain: str) -> str:
         """Create or update the website for a domain and return its URL."""
-        if _read_only(job_id):
-            return "This job is read-only; provisioning a site is disabled."
-        owner_id = _requester(job_id)
-        site = sites_service.upsert_for_agent(domain, owner_id)
+        ctx, error = access.manage_context(job_id, "provision a site", allow_system=True)
+        if error:
+            return error
+        org_id = ctx["org_id"]
+        owner_id = ctx["requester_id"]
+        try:
+            site = sites_service.upsert_for_agent(domain, owner_id, org_id=org_id)
+        except sites_service.SiteError as exc:
+            return "Provisioning refused: %s" % exc
         if not site:
             return "Could not create a site record for %r." % domain
-        profile = _profile_for(owner_id or site.get("owner_id"))
+        if site.get("org_id") != org_id:
+            return "Provisioning refused: that domain belongs to another client."
+        profile = _profile_for(site.get("org_id"))
         try:
-            result = provisioner.provision(site, profile=profile, job_id=job_id, emit=emit)
+            # Provisioning probes TLS with retries and may wait for an approval; both
+            # block. Run it on a worker thread so the job loop keeps serving the other
+            # runs in this process.
+            result = await asyncio.to_thread(
+                provisioner.provision, site, profile=profile, job_id=job_id, emit=emit)
         except provisioner.ProvisionError as exc:
             sites_service.update_site(site["id"], {"status": "error", "last_error": str(exc)})
             return "Provisioning refused: %s" % exc
@@ -83,6 +95,12 @@ def _build_provision_site(emit, job_id=None):
 def _build_check_site_dns(emit, job_id=None):
     async def check_site_dns(domain: str) -> str:
         """Check whether a domain's DNS already points at this server."""
+        org_id = access.context(job_id)["org_id"]
+        if org_id is None:
+            return "Pick a client first - DNS checks belong to one of the client's sites."
+        site = sites_service.get_site_by_domain(domain, org_id)
+        if not site:
+            return "No site record for %r. Create it first with create_site." % domain
         info = provisioner.check_dns(domain)
         return json.dumps(
             {
@@ -102,17 +120,27 @@ def _build_check_site_dns(emit, job_id=None):
 def _build_write_site_content(emit, job_id=None):
     async def write_site_content(domain: str, html: str) -> str:
         """Replace a site's index.html with the given HTML (goes through the approval gate)."""
-        if _read_only(job_id):
-            return "This job is read-only; writing site content is disabled."
-        site = sites_service.get_site_by_domain(domain)
-        if not site:
-            return "No site record for %r. Create it first with provision_site." % domain
+        ctx, error = access.manage_context(job_id, "write a site page", allow_system=True)
+        if error:
+            return error
+        org_id = ctx["org_id"]
+        site = sites_service.get_site_by_domain(domain, org_id)
+        if not site or site.get("org_id") != org_id:
+            return "No site record for %r. Create it first with create_site." % domain
+        content = html
+        try:
+            import widget_embed
+
+            content = widget_embed.inject_for_site(html, site)
+        except Exception:
+            content = html
         target, docroot = provisioner.target_docroot(site)
         path = provisioner.join_path(docroot, "index.html")
-        result = target.write_file(path, html, job_id, emit,
-                                   summary="update index.html for %s" % domain)
+        result = await asyncio.to_thread(
+            target.write_file, path, content, job_id, emit,
+            summary="update index.html for %s" % domain)
         if result.get("ok") and not result.get("dry_run"):
-            sites_service.update_site(site["id"], {"content_html": html})
+            sites_service.update_site(site["id"], {"content_html": content})
         return "ok=%s %s" % (result.get("ok"), result.get("output"))
 
     return write_site_content
@@ -120,13 +148,17 @@ def _build_write_site_content(emit, job_id=None):
 
 def _build_list_sites(emit, job_id=None):
     async def list_sites() -> str:
-        """List the websites this platform manages, with their URL and status."""
-        rows = sites_service.list_sites()
+        """List this client's websites with their URL and status."""
+        org_id = access.context(job_id)["org_id"]
+        if org_id is None:
+            return "Pick a client first - a site belongs to a client."
+        rows = sites_service.list_sites(org_id, include_content=False)
         if not rows:
-            return "No sites yet."
+            return "No sites yet for this client."
         return json.dumps(
             [
                 {
+                    "id": row["id"],
                     "domain": row["domain"],
                     "status": row["status"],
                     "target": row["target"],
@@ -161,6 +193,9 @@ def _build_publish_page(emit, job_id=None):
         if job.get("read_only"):
             return ("This job is read-only; publishing is disabled. Report the findings "
                     "in chat instead of changing the live page.")
+        ctx, error = access.manage_context(job_id, "publish a page", allow_system=True)
+        if error:
+            return error
         org_id = job.get("org_id")
         if org_id is None:
             return ("This run is not attached to a client, so there is no site to publish "
@@ -216,10 +251,25 @@ def _build_publish_page(emit, job_id=None):
                 ).fetchone()
             if row:
                 actor = row["email"] or row["name"] or actor
+        # The tool is not a click. A live publish must wait for the same approval the
+        # Publish button records, otherwise the Manager could overwrite a live page on
+        # its own. The gate blocks, so keep it off the job loop.
+        approval = await asyncio.to_thread(
+            actions.gate, "publish_page",
+            "publish %r to %s" % (item.get("title") or "page", site["domain"]),
+            {"deliverable_id": item["id"], "site_id": site["id"],
+             "as_home": bool(as_home), "path": path}, job_id, emit)
+        if not approval["allowed"]:
+            return "Not published: %s" % approval["reason"]
         try:
-            result = deliverables_service.publish_deliverable(
+            # The actual write can be an SSH round trip; keep it off the job loop too.
+            result = await asyncio.to_thread(
+                deliverables_service.publish_deliverable,
                 item["id"], site_id=site["id"], actor=actor,
-                as_home=bool(as_home), relative=path, replace=bool(replace))
+                as_home=bool(as_home), relative=path, replace=bool(replace),
+                # The gate above already recorded the decision; a second one would
+                # ask the same question twice.
+                preapproved=not approval["dry_run"])
         except deliverables_service.DeliverableError as exc:
             return "Not published: %s" % exc
         if result.get("dry_run"):
@@ -275,8 +325,7 @@ register(
 # ---------------------------------------------------------------------------
 def _run_provision(site, job_id, emit, preapproved=False):
     """Shared by the agent tool and the job task."""
-    owner_id = site.get("owner_id")
-    profile = _profile_for(owner_id)
+    profile = _profile_for(site.get("org_id"))
     try:
         result = provisioner.provision(site, profile=profile, job_id=job_id, emit=emit,
                                        preapproved=preapproved)
@@ -298,9 +347,15 @@ async def site_provision_task(job, emit):
     domain = (job.get("prompt") or "").strip()
     if not domain:
         return "no domain supplied"
-    site = sites_service.upsert_for_agent(domain, job.get("requester_id"))
+    try:
+        site = sites_service.upsert_for_agent(
+            domain, job.get("requester_id"), org_id=job.get("org_id"))
+    except sites_service.SiteError as exc:
+        return "provisioning refused: %s" % exc
     if not site:
         return "could not create a site record for %r" % domain
+    if job.get("org_id") is not None and site.get("org_id") != job.get("org_id"):
+        return "provisioning refused: that domain belongs to another client."
     try:
         target = provisioner.get_target(site)
     except provisioner.ProvisionError as exc:
@@ -309,19 +364,20 @@ async def site_provision_task(job, emit):
 
     # One approval for one intent. This used to be three gates - index.html, the site
     # block, the reload - and a missed card left the site configured with no certificate,
-    # which is precisely the failure this job exists to fix.
-    approval = actions.gate(
-        "site_provision",
+    # which is precisely the failure this job exists to fix. The wait is blocking, so it
+    # runs on a worker thread rather than freezing every other job on this loop.
+    approval = await asyncio.to_thread(
+        actions.gate, "site_provision",
         "publish %s on %s: write the page, install the site block, reload the web server"
         % (domain, target.name),
-        {"domain": domain, "target": target.name}, job.get("id"), emit,
-    )
+        {"domain": domain, "target": target.name}, job.get("id"), emit)
     if not approval["allowed"]:
         sites_service.update_site(site["id"], {
             "status": "error",
             "last_error": "provisioning not approved: %s" % approval["reason"],
         })
         return "provisioning not approved: %s" % approval["reason"]
-    return _run_provision(site, job.get("id"), emit,
-                          preapproved=not approval["dry_run"])
+    return await asyncio.to_thread(
+        _run_provision, site, job.get("id"), emit,
+        preapproved=not approval["dry_run"])
 

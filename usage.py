@@ -23,11 +23,20 @@ import contextvars
 import json
 import os
 
-from db import IntegrityError, get_connection, now_str
+from db import advisory_xact_lock, get_connection, now_str
 
 import rates
 
 CURRENT = contextvars.ContextVar("usage_context", default=None)
+
+# A stable lock namespace for one client's money. The ledger is append-only, but the
+# check "has this month been granted?" and the grant that follows must be one step:
+# two uvicorn workers run the scheduler, and both used to see no grant and both insert.
+ORG_LOCK_BASE = 22000000
+
+
+def _org_lock_key(org_id):
+    return ORG_LOCK_BASE + int(org_id)
 
 
 class CreditExhausted(RuntimeError):
@@ -227,31 +236,37 @@ def record_image(org_id=None, user_id=None, count=1, provider="gemini",
 # ---------------------------------------------------------------------------
 # The ledger
 # ---------------------------------------------------------------------------
+def _apply_delta_in(conn, org_id, delta_milli, reason, usage_id=None, actor_id=None,
+                    note="", period=""):
+    """The ledger row and the cached balance move together, on one connection.
+
+    ``INSERT OR IGNORE`` is rewritten to ``ON CONFLICT DO NOTHING`` by ``db._prepare``
+    on PostgreSQL, so the balance row is created without a race and without the old
+    "catch IntegrityError and retry" path - on PostgreSQL that error aborts the whole
+    transaction, which made the retry fail instead of recovering.
+    """
+    delta_milli = int(delta_milli or 0)
+    conn.execute(
+        "INSERT INTO credit_ledger (org_id, delta_milli, reason, usage_id, "
+        "actor_id, note, period) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (org_id, delta_milli, reason, usage_id, actor_id, note or "", period or ""),
+    )
+    stamp = now_str()
+    conn.execute(
+        "INSERT OR IGNORE INTO credit_balances (org_id, balance_milli, updated_at) "
+        "VALUES (?, 0, ?)", (org_id, stamp))
+    conn.execute(
+        "UPDATE credit_balances SET balance_milli = balance_milli + ?, updated_at = ? "
+        "WHERE org_id = ?", (delta_milli, stamp, org_id))
+
+
 def _apply_delta(org_id, delta_milli, reason, usage_id=None, actor_id=None,
                  note="", period=""):
     """Append to the ledger and move the cached balance in the same transaction."""
-    delta_milli = int(delta_milli or 0)
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO credit_ledger (org_id, delta_milli, reason, usage_id, "
-            "actor_id, note, period) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (org_id, delta_milli, reason, usage_id, actor_id, note or "", period or ""),
-        )
-        moved = conn.execute(
-            "UPDATE credit_balances SET balance_milli = balance_milli + ?, updated_at = ? "
-            "WHERE org_id = ?", (delta_milli, now_str(), org_id))
-        if not getattr(moved, "rowcount", 0):
-            try:
-                conn.execute(
-                    "INSERT INTO credit_balances (org_id, balance_milli, updated_at) "
-                    "VALUES (?, ?, ?)", (org_id, delta_milli, now_str()))
-            except IntegrityError:
-                # Another worker created the row between the UPDATE and the INSERT.
-                conn.execute(
-                    "UPDATE credit_balances SET balance_milli = balance_milli + ?, "
-                    "updated_at = ? WHERE org_id = ?",
-                    (delta_milli, now_str(), org_id))
-    return delta_milli
+        _apply_delta_in(conn, org_id, delta_milli, reason, usage_id, actor_id,
+                        note, period)
+    return int(delta_milli or 0)
 
 
 def _charge(org_id, credits_milli, label=""):
@@ -451,13 +466,17 @@ def grant_monthly(period=None):
         if amount <= 0:
             continue
         with get_connection() as conn:
+            # The check and the grant are one transaction, serialised per client. Two
+            # workers cannot both see "no grant" and both add the allowance.
+            advisory_xact_lock(conn, _org_lock_key(org["id"]))
             already = conn.execute(
                 "SELECT id FROM credit_ledger WHERE org_id = ? AND reason = 'grant' "
                 "AND period = ?", (org["id"], period)).fetchone()
-        if already:
-            continue
-        _apply_delta(org["id"], int(round(amount * rates.MILLI_PER_CREDIT)), "grant",
-                     note="Monthly allowance (%s)" % period, period=period)
+            if already:
+                continue
+            _apply_delta_in(
+                conn, org["id"], int(round(amount * rates.MILLI_PER_CREDIT)), "grant",
+                note="Monthly allowance (%s)" % period, period=period)
         granted += 1
     return granted
 
@@ -653,7 +672,8 @@ def summary(org_id=None, days=30):
     """Spend by kind/provider/model/label for the last N days."""
     import datetime
 
-    since = (datetime.datetime.utcnow() - datetime.timedelta(days=max(1, int(days)))
+    since = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(days=max(1, int(days)))
              ).strftime("%Y-%m-%d %H:%M:%S")
     where = "WHERE created_at >= ?"
     params = [since]

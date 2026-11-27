@@ -28,14 +28,20 @@ READ_ONLY_TOOLS = frozenset({
     "fetch_page_html",
     "get_metrics",
     "get_insights",
+    "list_chat_assistants",
+    "list_contacts",
     "list_deliverables",
     "list_forms",
+    "list_form_responses",
     "list_google_accounts",
     "list_automations",
     "list_media",
     "list_sites",
     "list_templates",
+    "read_chat_assistant",
     "read_deliverable",
+    "read_form",
+    "read_template",
     "search_photos",
     "start_job",
 })
@@ -132,5 +138,7 @@ from . import pexels as _pexels_tools  # noqa: E402,F401
 from . import mail as _mail_tools  # noqa: E402,F401
 from . import deliverable as _deliverable_tools  # noqa: E402,F401
 from . import library as _library_tools  # noqa: E402,F401
+from . import forms as _form_tools  # noqa: E402,F401
 from . import manager as _manager_tools  # noqa: E402,F401
+from . import chat as _chat_tools  # noqa: E402,F401
 from . import web as _web_tools  # noqa: E402,F401

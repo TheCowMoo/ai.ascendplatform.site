@@ -16,7 +16,7 @@ import profile as profile_mod
 import sites as sites_service
 from db import get_connection
 
-from . import register
+from . import access, policy, register
 
 
 def _context(job_id):
@@ -53,15 +53,25 @@ def _form_link(form, site=None):
     return forms_service.public_url(form, site)
 
 
-def _insert_cta(content, href, label):
+def _brand_color(org_id):
+    """The client's profile colour, or the platform default when it is unset."""
+    try:
+        value = (profile_mod.get_profile(org_id) or {}).get("brand_color") or ""
+    except Exception:
+        value = ""
+    return value if re.match(r"^#[0-9a-fA-F]{6}$", value) else "#4f46e5"
+
+
+def _insert_cta(content, href, label, color="#4f46e5"):
     """Put one button into a page without disturbing its structure."""
     import html as html_mod
 
+    color = color if re.match(r"^#[0-9a-fA-F]{6}$", color or "") else "#4f46e5"
     button = (
         '<p style="text-align:center;margin:32px 0">'
         '<a href="%s" style="display:inline-block;padding:14px 22px;border-radius:999px;'
-        'background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:600">%s</a></p>'
-        % (html_mod.escape(href, quote=True), html_mod.escape(label))
+        'background:%s;color:#ffffff;text-decoration:none;font-weight:600">%s</a></p>'
+        % (html_mod.escape(href, quote=True), color, html_mod.escape(label))
     )
     lowered = content.lower()
     for marker in ("</main>", "</body>"):
@@ -134,11 +144,14 @@ def _build_list_sites(emit, job_id=None):
     async def list_sites() -> str:
         """List this client's websites with status and URL."""
         org_id, _ = _context(job_id)
-        rows = sites_service.list_sites(org_id)
+        if org_id is None:
+            return "Pick a client first - a site belongs to a client."
+        rows = sites_service.list_sites(org_id, include_content=False)
         if not rows:
             return "No sites yet for this client."
         return json.dumps(
-            [{"domain": r["domain"], "status": r["status"], "url": r["url"]} for r in rows],
+            [{"id": r["id"], "domain": r["domain"], "status": r["status"],
+              "url": r["url"]} for r in rows],
             indent=1,
         )
 
@@ -567,8 +580,9 @@ def _build_describe_capabilities(emit, job_id=None):
                 "template": "create_template(name, subject, body) - do this instead of "
                             "telling the user to make one",
                 "contact": "create_contact(name, email, phone, notes)",
-                "form": "create_form(name, kind, questions) - a form, survey or quiz at its "
-                        "own link, and it triggers form.submitted when answered",
+                "form": ("create_form(name, kind, questions, settings) - a form, survey or "
+                         "quiz at its own link; use read_form before changing one and "
+                         "update_form for the complete revision"),
                 "tag": "tag_contact(contact_id, tags) inside a graph",
                 "draft": "save_deliverable(kind, title, content)",
                 "automation": ("propose_automation(name, steps, when, form_id) - explain it "
@@ -580,10 +594,43 @@ def _build_describe_capabilities(emit, job_id=None):
                 "guide": "start_build(kind, goal) - the plain-language website/blog/form/"
                          "newsletter interview; use it instead of asking technical questions",
                 "publish": "publish_page() - live once the user has asked for it",
-                "never": ["SMTP settings", "API keys", "the domain a site lives on"],
+                "never": ["SMTP settings", "API keys", "channel tokens", "credits",
+                          "user accounts", "servers", "the domain a site lives on"],
+            },
+            "forms": {
+                "read": "read_form(form_id)",
+                "update": ("update_form(form_id, name, kind, questions, settings, status) - "
+                           "read first, keep ids when answers exist"),
+                "responses": "list_form_responses(form_id, limit) - read-only",
+                "styled_page": ("save_deliverable(kind='website') -> add_form_link -> "
+                                "publish_page gives a branded enquiry page; the form page "
+                                "itself uses settings.brand, description and submit_label"),
+            },
+            "chat_assistants": {
+                "list": "list_chat_assistants()",
+                "read": "read_chat_assistant(bot_id)",
+                "create": "create_chat_assistant(name, assistant_name, welcome_message, "
+                          "quick_replies, knowledge_base, system_prompt, brand_color, "
+                          "enquiry_form_id)",
+                "update": "update_chat_assistant(bot_id, ...)",
+                "attach": "attach_chat_assistant(site_id, bot_id) - queues the site update",
+                "ready": bool(settings_mod.get("DEEPSEEK_API_KEY")),
+                "note": ("The widget needs DEEPSEEK_API_KEY. Never ask for channel tokens, "
+                         "webhooks or API keys."),
+            },
+            "contacts": {
+                "list": "list_contacts(query, tag, status, limit)",
+                "create": "create_contact(name, email, phone, notes)",
+                "tag": "tag_contact(contact_id, tags)",
+                "note": "No bulk email or broadcast is available.",
             },
             "templates": [{"id": t["id"], "name": t["name"]}
                           for t in templates_service.list_templates(org_id)],
+            "template_tools": {
+                "create": "create_template(name, subject, body)",
+                "read": "read_template(template_id)",
+                "update": "update_template(template_id, name, subject, body)",
+            },
             "email_ready": bool(settings_mod.get("SMTP_HOST", org_id=org_id)),
             "email_note": ("Only mention email setup if the automation actually sends email. "
                            "An internal tag/contact automation does not need it."),
@@ -595,10 +642,12 @@ def _build_describe_capabilities(emit, job_id=None):
                          "is stored in this client's Media."),
             },
             "agent_tools": [tool["name"] for tool in _approved_tools(org_id)],
-            "note": ("Outward tools (send_email, publish_page, publish_site, provision_site) need a gate "
-                     "node before them or the graph is refused. If what you need is not "
-                     "listed, say so and call propose_tool - it is recorded for approval "
-                     "and does not run."),
+            "note": ("Outward tools (send_email, publish_page, publish_site, provision_site) "
+                     "need a gate node before them or the graph is refused. Approved "
+                     "agent-written recipes only run as automation tool steps, not in chat. "
+                     "propose_tool is only for an automation recipe; it cannot add a chat "
+                     "assistant or a first-class tool. If a built-in capability is missing, "
+                     "say so plainly instead of proposing a fake one."),
         }, indent=2)
 
     return describe_capabilities
@@ -642,10 +691,11 @@ def _build_tag_contact(emit, job_id=None):
 def _build_propose_tool(emit, job_id=None):
     async def propose_tool(name: str, description: str, kind: str = "recipe",
                            args_schema: str = "{}", body: str = "") -> str:
-        """Ask for a capability that does not exist yet.
+        """Ask for an automation recipe that does not exist yet.
 
         The tool is written to a proposals table and is NOT usable: a human approves it
-        first, and no executor exists yet either. Say what you need and why.
+        first, and no executor exists yet either. This is not a way to add a chat
+        assistant or a first-class Manager tool.
         """
         import agent_tools
 
@@ -796,6 +846,94 @@ def _build_list_templates(emit, job_id=None):
     return list_templates
 
 
+def _build_read_template(emit, job_id=None):
+    async def read_template(template_id: int) -> str:
+        """Read one email template's subject and body so it can be revised."""
+        import templates_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - templates belong to a client."
+        row = templates_service.get_template(int(template_id or 0), org_id)
+        if not row:
+            return "There is no template %s for this client." % template_id
+        return json.dumps({"id": row["id"], "name": row["name"],
+                           "subject": row["subject"], "body": row["body"]}, indent=1)
+
+    return read_template
+
+
+def _build_update_template(emit, job_id=None):
+    async def update_template(template_id: int, name: str = "", subject: str = "",
+                              body: str = "") -> str:
+        """Change an existing email template; omitted fields keep their current value."""
+        import templates_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - templates belong to a client."
+        name = str(name or "").strip()
+        subject = str(subject or "").strip()
+        body = str(body or "")
+        current = templates_service.get_template(int(template_id or 0), org_id)
+        if not current:
+            return "There is no template %s for this client." % template_id
+        if not (name or subject or body.strip()):
+            return "Nothing to change: give a name, subject or body."
+        try:
+            row = templates_service.save_template({
+                "name": name or current["name"],
+                "subject": subject or current["subject"],
+                "body": body if body.strip() else current["body"],
+            }, org_id, template_id=current["id"])
+        except templates_service.TemplateError as exc:
+            return "Not saved: %s" % exc
+        return "Updated template #%s “%s”." % (row["id"], row["name"])
+
+    return update_template
+
+
+def _build_list_contacts(emit, job_id=None):
+    async def list_contacts(query: str = "", tag: str = "", status: str = "",
+                            limit: int = 50) -> str:
+        """List this client's contacts, optionally filtered by text, tag or status."""
+        import contacts as contacts_service
+
+        org_id, _ = _context(job_id)
+        if org_id is None:
+            return "Pick a client first - contacts belong to a client."
+        status = str(status or "").strip()
+        try:
+            wanted = max(1, min(200, int(limit or 50)))
+        except (TypeError, ValueError):
+            wanted = 50
+        rows = contacts_service.list_contacts(org_id, status=status or None,
+                                              limit=wanted)
+        needle = (query or "").strip().lower()
+        wanted_tag = (tag or "").strip().lower()
+        picked = []
+        for row in rows:
+            if needle:
+                haystack = " ".join(str(row.get(key) or "") for key in
+                                    ("name", "email", "phone")).lower()
+                if needle not in haystack:
+                    continue
+            if wanted_tag and wanted_tag not in [str(item).lower()
+                                                  for item in (row.get("tags") or [])]:
+                continue
+            picked.append({
+                "id": row["id"], "name": row.get("name") or "",
+                "email": row.get("email") or "", "phone": row.get("phone") or "",
+                "status": row.get("status") or "", "source": row.get("source") or "",
+                "tags": row.get("tags") or [], "created_at": row.get("created_at"),
+            })
+        if not picked:
+            return "No contacts matched."
+        return json.dumps(picked, indent=1)
+
+    return list_contacts
+
+
 def _build_create_contact(emit, job_id=None):
     async def create_contact(name: str, email: str = "", phone: str = "",
                              notes: str = "") -> str:
@@ -830,16 +968,20 @@ def _build_create_site(emit, job_id=None):
         import provisioner
         import sites as sites_service
 
-        org_id, requester = _context(job_id)
-        if org_id is None:
-            return "Pick a client first - a site belongs to a client."
+        ctx, error = access.manage_context(job_id, "add a website")
+        if error:
+            return error
+        org_id = ctx["org_id"]
+        requester = ctx["requester_id"]
         name = (domain or "").strip().lower()
-        if "." not in name or " " in name:
+        if not policy.check_domain(name).allowed:
             return ("That is not a domain (%r). Ask the user for the exact one, then add it."
                     % domain)
         try:
             site = sites_service.create_site({"domain": name, "target": "local"},
                                             owner_id=requester, org_id=org_id)
+        except sites_service.SiteError as exc:
+            return "Not created: %s" % exc
         except Exception as exc:
             return "Not created: %s" % str(exc)[:200]
         ip = provisioner.server_ip() or "this server's IP"
@@ -855,7 +997,7 @@ register("create_site", "Add a website for this client; the domain must come fro
 
 def _build_create_form(emit, job_id=None):
     async def create_form(name: str, kind: str = "form", questions: list = None,
-                          publish: bool = True) -> str:
+                          publish: bool = True, settings: str = "") -> str:
         """Create a form, survey or quiz for this client and return its link.
 
         Each question is an object: {"id", "label", "type", "page", "required", "options",
@@ -864,12 +1006,15 @@ def _build_create_form(emit, job_id=None):
         textarea, number, date, select, radio, checkbox and rating. Give every choice a list
         of options; give a quiz question points and the correct answer, which must match an
         option. A rule is what makes a branch: after this answer, jump somewhere.
+        ``settings`` is optional JSON for the form page: description, success,
+        submit_label, brand, contact and outcomes.
         """
         import forms as forms_service
 
-        org_id, _ = _context(job_id)
-        if org_id is None:
-            return "Pick a client first - a form belongs to a client."
+        ctx, error = access.manage_context(job_id, "create forms")
+        if error:
+            return error
+        org_id = ctx["org_id"]
         rows = []
         for index, item in enumerate(questions or []):
             if not isinstance(item, dict):
@@ -879,9 +1024,19 @@ def _build_create_form(emit, job_id=None):
             row.setdefault("type", "text")
             row.setdefault("page", 0)
             rows.append(row)
+        form_settings = {}
+        if str(settings or "").strip():
+            try:
+                form_settings = (json.loads(settings) if isinstance(settings, str)
+                                 else settings)
+            except (TypeError, ValueError):
+                return "Not created: settings must be a JSON object."
+            if not isinstance(form_settings, dict):
+                return "Not created: settings must be a JSON object."
         try:
             form = forms_service.create_form(
-                {"name": name, "kind": (kind or "form").strip().lower(), "questions": rows},
+                {"name": name, "kind": (kind or "form").strip().lower(),
+                 "questions": rows, "settings": form_settings},
                 org_id)
         except forms_service.FormServiceError as exc:
             return "Not created: %s" % exc
@@ -909,9 +1064,10 @@ def _build_add_form_link(emit, job_id=None):
         """Put a button on a website page that opens one of this client's forms."""
         import forms as forms_service
 
-        org_id, _ = _context(job_id)
-        if org_id is None:
-            return "Pick a client first - a page and a form both belong to one."
+        ctx, error = access.manage_context(job_id, "change a form link")
+        if error:
+            return error
+        org_id = ctx["org_id"]
         item = deliverables_service.get_deliverable(int(deliverable_id or 0))
         if not item or item.get("org_id") != org_id:
             return "There is no draft %s for this client." % deliverable_id
@@ -945,7 +1101,9 @@ def _build_add_form_link(emit, job_id=None):
             return "The page already links to %s." % link
         text = label or form.get("name") or "Get in touch"
         deliverables_service.update_deliverable(item["id"],
-                                                {"content": _insert_cta(content, link, text)})
+                                                {"content": _insert_cta(
+                                                    content, link, text,
+                                                    color=_brand_color(org_id))})
         return ("Added a button labelled %r to %r (#%d), pointing at %s. Publish the page "
                 "to make it live." % (text, item.get("title"), item["id"], link))
 
@@ -1081,13 +1239,32 @@ register("list_templates", "List this client's email templates, so you reuse rat
          _build_list_templates)
 
 
+register("read_template",
+         "Read one email template's name, subject and body so you can revise it.",
+         _build_read_template)
+
+
+register("update_template",
+         "Change an existing email template's name, subject or body; omitted fields stay "
+         "as they are.",
+         _build_update_template)
+
+
+register("list_contacts",
+         "List this client's contacts with their tags, status and source. Optional query, "
+         "tag and status filters. Read-only.",
+         _build_list_contacts)
+
+
 register("ask_user",
          "Ask up to three questions when the brief is missing something that matters.",
          _build_ask_user)
 
 
 register("propose_tool",
-         "Propose a new tool for this client (recorded, not executed until approved).",
+         "Propose an automation recipe for approval. It is recorded, not executed, and "
+         "cannot add a chat assistant or a first-class tool. Use only when a genuine "
+         "automation recipe is missing.",
          _build_propose_tool)
 
 

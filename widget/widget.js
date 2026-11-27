@@ -71,6 +71,7 @@
     '.ascend-chat .ac-msg.ac-bot { background: #fff; border: 1px solid #e6e8ec; border-bottom-left-radius: 5px; color: #1f2937; }',
     '.ascend-chat .ac-msg.ac-user { background: var(--ac); color: var(--ac-ink); margin-left: auto; border-bottom-right-radius: 5px; }',
     '.ascend-chat .ac-msg.ac-error { background: #fef2f2; color: #b42318; border: 1px solid #f7d4d4; }',
+    '.ascend-chat .ac-msg a { color: inherit; text-decoration: underline; }',
     '.ascend-chat .ac-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px; background: #f8f9fb; }',
     '.ascend-chat .ac-quick button { background: var(--ac-soft); color: #0b1120; border: 1px solid var(--ac-line); border-radius: 999px; padding: 6px 11px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: border-color 140ms; }',
     '.ascend-chat .ac-quick button:hover { border-color: var(--ac); }',
@@ -126,8 +127,14 @@
 
     var header = el('div', 'ac-header');
     var av = el('div', 'ac-avatar');
-    if (config.logo_url) { av.innerHTML = '<img src="' + config.logo_url + '" alt="">'; }
-    else { av.textContent = initials(config.name); }
+    if (config.logo_url) {
+      var logo = document.createElement('img');
+      logo.src = config.logo_url;
+      logo.alt = '';
+      av.appendChild(logo);
+    } else {
+      av.textContent = initials(config.name);
+    }
     var titleWrap = el('div');
     titleWrap.appendChild(el('div', 'ac-title', config.assistant_name || 'Assistant'));
     titleWrap.appendChild(el('div', 'ac-sub', 'Online'));
@@ -162,7 +169,27 @@
 
   function appendMessage(messagesEl, role, text) {
     var cls = role === 'user' ? 'ac-msg ac-user' : (role === 'error' ? 'ac-msg ac-error' : 'ac-msg ac-bot');
-    messagesEl.appendChild(el('div', cls, text));
+    var node = el('div', cls);
+    var value = String(text == null ? '' : text);
+    if (role === 'bot') {
+      // A fallback answer often contains the enquiry-form URL. Keep it readable and
+      // clickable, but build the anchor with DOM APIs rather than innerHTML.
+      value.split(/(https?:\/\/[^\s]+)/g).forEach(function (part) {
+        if (!part) return;
+        if (/^https?:\/\//.test(part)) {
+          var link = el('a', null, part);
+          link.href = part;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          node.appendChild(link);
+        } else {
+          node.appendChild(document.createTextNode(part));
+        }
+      });
+    } else {
+      node.textContent = value;
+    }
+    messagesEl.appendChild(node);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 

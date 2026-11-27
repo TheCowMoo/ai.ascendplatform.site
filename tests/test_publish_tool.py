@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -48,13 +49,45 @@ def check(name, got, want):
 
 
 class live_actions:
+    """Live mode with an operator who answers the approval card."""
+
     def __enter__(self):
-        self.original = (actions.is_dry_run, actions.approval_timeout)
+        self.original = (actions.is_dry_run, actions.approval_timeout,
+                         actions.wait_for_approval)
         actions.is_dry_run = lambda: False
         actions.approval_timeout = lambda: 1
+        actions.wait_for_approval = approve
+        return self
 
     def __exit__(self, *exc):
-        actions.is_dry_run, actions.approval_timeout = self.original
+        (actions.is_dry_run, actions.approval_timeout,
+         actions.wait_for_approval) = self.original
+
+
+class denied_actions:
+    """Live mode with an operator who refuses the approval card."""
+
+    def __enter__(self):
+        self.original = (actions.is_dry_run, actions.approval_timeout,
+                         actions.wait_for_approval)
+        actions.is_dry_run = lambda: False
+        actions.approval_timeout = lambda: 1
+        actions.wait_for_approval = deny
+        return self
+
+    def __exit__(self, *exc):
+        (actions.is_dry_run, actions.approval_timeout,
+         actions.wait_for_approval) = self.original
+
+
+def approve(approval_id, timeout=None):
+    actions.decide_approval(approval_id, "approved", "admin@example.com")
+    return actions.get_approval(approval_id)
+
+
+def deny(approval_id, timeout=None):
+    actions.decide_approval(approval_id, "denied", "admin@example.com")
+    return actions.get_approval(approval_id)
 
 
 def user_id():
@@ -181,6 +214,45 @@ def test_voice_asks_when_there_are_several_sites():
           deliverables.get_deliverable(item["id"])["status"], "draft")
 
 
+def test_the_publish_gate_runs_off_the_job_loop():
+    target = make_site("tool-offloop.test")
+    item = make_page("Offloop", slug="home")
+    job = make_job(deliverable_id=item["id"])
+    seen = {}
+    original = actions.gate
+
+    def fake_gate(*args, **kwargs):
+        # The publish path has a second gate for the file write in dry-run; the one
+        # this test is about is the tool's first, approval-waiting call.
+        seen.setdefault("thread", threading.get_ident())
+        seen.setdefault("name", threading.current_thread().name)
+        return {"allowed": True, "dry_run": True, "reason": "test", "approval_id": None}
+
+    actions.gate = fake_gate
+    try:
+        message = publish_with_tool(job, site_id=target["id"])
+    finally:
+        actions.gate = original
+    check("the gate is not on the caller thread",
+          seen.get("thread") != threading.get_ident(), True)
+    check("dry-run still says what it would do", "[dry-run] would publish" in message, True)
+
+
+def test_a_denied_publish_writes_nothing():
+    target = make_site("tool-denied.test")
+    item = make_page("Denied", slug="home")
+    job = make_job(deliverable_id=item["id"])
+    with denied_actions():
+        message = publish_with_tool(job, site_id=target["id"])
+    check("a denied publish says so", "Not published" in message, True)
+    path = os.path.join(DOCROOT, "tool-denied.test", "public_html", "index.html")
+    check("and writes no file", os.path.exists(path), False)
+    check("the draft is still a draft",
+          deliverables.get_deliverable(item["id"])["status"], "draft")
+    check("and the decision is on the record",
+          actions.list_approvals(status="denied")[0]["decided_by"], "admin@example.com")
+
+
 if __name__ == "__main__":
     original_root = provisioner.SITES_ROOT
     provisioner.SITES_ROOT = DOCROOT
@@ -188,6 +260,8 @@ if __name__ == "__main__":
         test_the_tool_refuses_guesses()
         test_the_tool_publishes_and_signs_the_approval()
         test_the_tool_can_target_a_subpage_explicitly()
+        test_the_publish_gate_runs_off_the_job_loop()
+        test_a_denied_publish_writes_nothing()
         test_the_voice_can_publish_after_confirming()
         test_voice_asks_when_there_are_several_sites()
     finally:

@@ -12,6 +12,8 @@ unit-tested exhaustively and reasoned about in isolation.
 
 import os
 import re
+
+from domain_rules import DOMAIN_RE, normalize_domain, valid_domain
 import shlex
 from collections import namedtuple
 
@@ -172,15 +174,13 @@ def quote(value):
 
 
 # A hostname: dot-separated labels of letters/digits/hyphens.
-DOMAIN_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
-
-
+# The rule lives in domain_rules so sites.py can apply it without importing tools.
 def check_domain(domain):
     """Validate a domain name; also used to build file paths safely."""
-    value = (domain or "").strip().lower()
+    value = normalize_domain(domain)
     if not DOMAIN_RE.match(value):
         return Decision(False, "not a valid domain name", "deny")
-    if ".." in value or "/" in value or value.startswith("-"):
+    if not valid_domain(value):
         return Decision(False, "invalid characters in domain", "deny")
     return Decision(True, "ok", "domain")
 

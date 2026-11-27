@@ -1301,6 +1301,12 @@ def provision(site, profile=None, job_id=None, emit=None, server_ip=None, preapp
            "resolved=%s expected=%s %s" % (dns["resolved"], dns["expected"], dns["reason"]))
 
     content = (site.get("content_html") or "").strip() or index_from_profile(profile, site)
+    try:
+        import widget_embed
+
+        content = widget_embed.inject_for_site(content, site)
+    except Exception:
+        pass
     record("content", target.write_file(join_path(docroot, "index.html"), content, job_id, emit,
                                         summary="write index.html for %s" % domain,
                                         preapproved=preapproved))

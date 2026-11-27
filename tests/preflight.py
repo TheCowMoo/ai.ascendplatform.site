@@ -85,6 +85,17 @@ FAST_SUITES = (
     "audit_ui",
     "smoke_review",
     "smoke_asgi",
+    "test_scheduler_idempotency",
+    "test_sse_auth",
+    "test_login_guard",
+    "test_public_limits",
+    "test_site_validation",
+    "test_jobs_safety",
+    "test_docs_gate",
+    "test_list_summary",
+    "test_marketing_tools",
+    "test_chat_tools",
+    "test_site_tool_scope",
 )
 
 

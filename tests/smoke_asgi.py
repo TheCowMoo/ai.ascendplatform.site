@@ -12,6 +12,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# This smoke covers the opt-in docs surface; the default-off path is pinned by
+# tests/test_docs_gate.py.
+os.environ["API_DOCS"] = "1"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import asgi  # noqa: E402
@@ -33,13 +37,15 @@ def main():
     # --- Flask route, still served through the ASGI mount ----------------
     health = client.get("/api/health")
     assert health.status_code == 200, health.text
-    print("health via mount:", {k: health.json()[k] for k in ("status", "brand", "job_backend")})
+    print("health via mount:", {k: health.json()[k] for k in ("status", "brand")})
     assert health.json()["brand"] == "AscendPlatform"
-    assert health.json()["job_backend"] == "local"
-    # The health route answers anonymously: it must not advertise the model stack.
-    for hidden in ("model", "api_key_configured", "providers_configured"):
+    # The health route answers anonymously: it must not advertise the model stack or
+    # the deployment's size. The owner reads provider state in Platform -> Settings.
+    for hidden in ("model", "api_key_configured", "providers_configured",
+                   "bots", "users", "channels", "agents", "jobs", "job_backend",
+                   "database"):
         assert hidden not in health.json(), hidden
-    print("health hides the provider stack from anonymous callers")
+    print("health hides the provider stack and the deployment's size")
 
     # FastAPI's own OpenAPI surface is reachable and precedes the mount.
     docs = client.get("/api/openapi.json")

@@ -89,21 +89,39 @@ def slugify(value):
     return text.strip("-")[:80]
 
 
-def out(row):
+def out(row, include_content=True):
     item = _as_dict(row)
-    for key in ("summary", "content", "url", "slug"):
+    if include_content:
+        item["content"] = item.get("content") or ""
+    else:
+        # A list of 200 drafts should not carry 200 full documents. The editor and
+        # preview fetch the one row they need from /api/deliverables/<id>.
+        item.pop("content", None)
+    for key in ("summary", "url", "slug"):
         item[key] = item.get(key) or ""
     return item
 
 
-def list_deliverables(kind=None, org_id=None, limit=200, job_id=None):
+# The list projection: everything the cards use, without the document body.
+_LIST_COLUMNS = (
+    "id, org_id, site_id, kind, title, slug, status, summary, url, job_id, "
+    "created_by, created_at, updated_at"
+)
+
+
+def list_deliverables(kind=None, org_id=None, limit=200, job_id=None,
+                      include_content=True):
     """Deliverables for one client, newest first.
 
     ``org_id=None`` is the platform operator's view and returns every client's.
     ``kind=None`` returns all of them - which is the Library tab. ``job_id`` answers
     the Studio's question: which drafts did the run I am watching just write?
+    ``include_content=False`` returns list metadata only; a caller that needs the
+    document asks ``get_deliverable`` for it. The summary query also leaves the
+    content column in the database instead of reading it and dropping it.
     """
-    query = "SELECT * FROM deliverables WHERE 1 = 1"
+    columns = "*" if include_content else _LIST_COLUMNS
+    query = "SELECT %s FROM deliverables WHERE 1 = 1" % columns
     params = []
     if org_id is not None:
         query += " AND org_id = ?"
@@ -118,7 +136,7 @@ def list_deliverables(kind=None, org_id=None, limit=200, job_id=None):
     params.append(max(1, int(limit)))
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [out(row) for row in rows]
+    return [out(row, include_content=include_content) for row in rows]
 
 
 def get_deliverable(deliverable_id):
@@ -511,9 +529,16 @@ def publish_deliverable(deliverable_id, site_id=None, actor="", as_home=False,
         content = tag_install.inject(raw_content, (container or {}).get("public_id"))
     except Exception:
         content = raw_content
+    try:
+        import widget_embed
+
+        content = widget_embed.inject_for_site(content, site)
+        comparable_current = widget_embed.inject_for_site(current, site)
+    except Exception:
+        comparable_current = current
     if (current.strip()
             and not provisioner.is_starter_content(current)
-            and current.strip() != content.strip()
+            and comparable_current.strip() != content.strip()
             and not replace):
         raise DeliverableError(
             "The live page at %s already has content. Publishing this page will replace "

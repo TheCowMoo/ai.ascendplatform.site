@@ -9,17 +9,32 @@ frames: transcript events followed by a terminal ``end`` frame.
 import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Self-contained: a clean checkout has no client for the operator to act as, and the
+# job API correctly refuses to create unowned work. A temp database plus one org makes
+# this test independent of whatever is in data/app.db.
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(
+    tempfile.mkdtemp(prefix="sse-smoke-"), "test.db").replace("\\", "/")
+os.environ["SCHEDULER_ENABLED"] = "0"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 import asgi  # noqa: E402
+import db  # noqa: E402
+import orgs as orgs_service  # noqa: E402
 
 
 def main():
+    db.init_db()
     client = TestClient(asgi.app)
     resp = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin123"})
+    assert resp.status_code == 200, resp.text
+
+    org = orgs_service.create_org({"name": "SSE Smoke Client"})
+    resp = client.post("/api/session/org", json={"org_id": org["id"]})
     assert resp.status_code == 200, resp.text
 
     resp = client.post("/api/jobs", json={"prompt": "stream me", "task": "echo"})

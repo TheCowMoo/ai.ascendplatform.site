@@ -203,6 +203,41 @@ class AutomationError(ValueError):
     pass
 
 
+def _ungated_outward_problems(by_id, entry):
+    """Every path from the entry to an outward tool must pass a gate.
+
+    The old check asked only "is a gate somewhere upstream?". A condition with one
+    branch through a gate and one branch straight to ``send_email`` satisfied that,
+    and the walk then took the ungated branch - so the approval pause was skipped.
+    This follows both branches and flags a tool reachable without a gate on any path.
+    """
+    problems = []
+    flagged = set()
+    seen = set()
+    stack = [(entry, False)]
+    while stack:
+        node_id, gated = stack.pop()
+        if (node_id, gated) in seen:
+            continue
+        seen.add((node_id, gated))
+        step = by_id.get(node_id)
+        if not step:
+            continue
+        if step.get("type") == "gate":
+            gated = True
+        config = step.get("config") if isinstance(step.get("config"), dict) else {}
+        tool = config.get("tool")
+        if (step.get("type") == "tool" and tool in OUTWARD_TOOLS
+                and not gated and node_id not in flagged):
+            flagged.add(node_id)
+            problems.append(
+                "Step '%s' would '%s' without an approval gate before it."
+                % (node_id, tool))
+        for nxt in step.get("next") or []:
+            stack.append((nxt, gated))
+    return problems
+
+
 def validate_graph(steps, trigger_type="manual", trigger_config=None):
     """Everything wrong with a graph, as readable sentences. Empty list means valid."""
     problems = []
@@ -313,23 +348,8 @@ def validate_graph(steps, trigger_type="manual", trigger_config=None):
             if any("loop back" in p for p in problems):
                 break
 
-        # Outward actions require an approval gate upstream.
-        gates = set()
-        changed = True
-        while changed:
-            changed = False
-            for node_id, step in by_id.items():
-                if node_id in gates:
-                    continue
-                upstream = [n for n, s in by_id.items() if node_id in (s.get("next") or [])]
-                if step.get("type") == "gate" or any(u in gates for u in upstream):
-                    gates.add(node_id)
-                    changed = True
-        for node_id, step in by_id.items():
-            tool = (step.get("config") or {}).get("tool") if isinstance(step.get("config"), dict) else None
-            if step.get("type") == "tool" and tool in OUTWARD_TOOLS and node_id not in gates:
-                problems.append(
-                    "Step '%s' would '%s' without an approval gate before it." % (node_id, tool))
+        # Outward actions require an approval gate on every path to them.
+        problems.extend(_ungated_outward_problems(by_id, ids[0]))
 
     return problems
 
@@ -544,14 +564,28 @@ def resume(automation_id, org_id, requester_id=None):
         if not row:
             raise AutomationError("Nothing is waiting for approval.")
         run_id, gate = row["id"], row["resume_at"]
-        conn.execute("UPDATE automation_runs SET status = 'queued' WHERE id = ?", (run_id,))
-    job_id = jobs.create_job(
-        "Automation: %s (resumed)" % automation["name"],
-        json.dumps({"automation_id": automation_id, "run_id": run_id,
-                    "resume_after": gate}),
-        requester_id, "selector", "automation", org_id,
-    )
-    jobs.submit(job_id)
+        # Claim it. Two clicks must not start two jobs to walk the same run.
+        claimed = conn.execute(
+            "UPDATE automation_runs SET status = 'queued' "
+            "WHERE id = ? AND status = 'awaiting_approval'", (run_id,))
+        if not claimed.rowcount:
+            raise AutomationError("That run is already resuming.")
+    try:
+        job_id = jobs.create_job(
+            "Automation: %s (resumed)" % automation["name"],
+            json.dumps({"automation_id": automation_id, "run_id": run_id,
+                        "resume_after": gate}),
+            requester_id, "selector", "automation", org_id,
+        )
+        jobs.submit(job_id)
+    except Exception:
+        # Put it back so the approval can be retried; a queued run with no job is
+        # the silent failure this module exists to avoid.
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE automation_runs SET status = 'awaiting_approval' "
+                "WHERE id = ? AND status = 'queued'", (run_id,))
+        raise
     with get_connection() as conn:
         conn.execute("UPDATE automation_runs SET job_id = ? WHERE id = ?", (job_id, run_id))
     return {"run_id": run_id, "job_id": job_id}
@@ -680,7 +714,9 @@ async def _execute(step, automation, emit, job_id=None, context=None):
                         result = runner_protocol.parse_result(payload)
                         runner_protocol.record_result(match["id"], org_id, result)
                         return runner_protocol.summarize(result)
-                    time.sleep(0.5)
+                    # The job loop is shared by every run in this worker; a blocking
+                    # sleep here froze them all for the runner's whole timeout.
+                    await asyncio.sleep(0.5)
                 return ("Queued for the runner, but nothing came back within %ss."
                         % request["timeout"])
             return "Unknown tool '%s' - nothing ran." % name
@@ -768,6 +804,17 @@ async def run_task(job, emit):
     automation = get(automation_id, job.get("org_id"))
     if not automation:
         raise RuntimeError("Automation %r not found" % (automation_id,))
+
+    # A graph saved before the path-sensitive check could still carry a branch that
+    # reaches an outward tool without a gate. Refuse it at run time: the editor will
+    # ask for a save, which revalidates the whole graph.
+    gate_problems = [problem for problem in validate_graph(
+        automation["steps"], automation.get("trigger_type"),
+        automation.get("trigger_config")) if "approval gate" in problem]
+    if gate_problems:
+        raise RuntimeError(
+            "This automation would act without an approval gate on every path: %s "
+            "Edit and save it again." % " ".join(gate_problems))
 
     steps = {s["id"]: s for s in automation["steps"]}
     emit("message", "Automation", "Running “%s”." % automation["name"])
@@ -966,40 +1013,51 @@ def run_due(limit=20):
     from db import get_connection
 
     now = _dt.datetime.now(_dt.timezone.utc)
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    claimed = []
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id, org_id, trigger_config, next_run_at FROM automations "
-            "WHERE enabled = 1 AND trigger_type = 'schedule' LIMIT %d" % max(1, int(limit))
+            "WHERE enabled = 1 AND trigger_type = 'schedule' "
+            "AND (next_run_at IS NULL OR next_run_at = '' OR next_run_at <= ?) "
+            "ORDER BY next_run_at LIMIT %d" % max(1, int(limit)), (stamp,)
         ).fetchall()
+        for row in rows:
+            try:
+                config = json.loads(row["trigger_config"] or "{}")
+            except ValueError:
+                config = {}
+            try:
+                every = max(1, int(config.get("every_minutes") or 1440))
+            except (TypeError, ValueError):
+                every = 1440
+            next_at = (now + _dt.timedelta(minutes=every)).strftime("%Y-%m-%d %H:%M:%S")
+            due_at = row["next_run_at"]
+            # Claim the turn before starting it. Two workers used to both see the
+            # same due row and both start it, which doubled a scheduled email.
+            if due_at in (None, ""):
+                moved = conn.execute(
+                    "UPDATE automations SET next_run_at = ? WHERE id = ? "
+                    "AND (next_run_at IS NULL OR next_run_at = '')",
+                    (next_at, row["id"]))
+            else:
+                moved = conn.execute(
+                    "UPDATE automations SET next_run_at = ? WHERE id = ? "
+                    "AND next_run_at = ?", (next_at, row["id"], due_at))
+            if moved.rowcount:
+                claimed.append((row["id"], row["org_id"], next_at))
 
     started = 0
-    for row in rows:
-        due_at = row["next_run_at"]
-        if due_at:
-            try:
-                when = _dt.datetime.strptime(str(due_at)[:19], "%Y-%m-%d %H:%M:%S")
-                when = when.replace(tzinfo=_dt.timezone.utc)
-            except ValueError:
-                when = None
-            if when and when > now:
-                continue
+    for automation_id, org_id, next_at in claimed:
         try:
-            config = json.loads(row["trigger_config"] or "{}")
-        except ValueError:
-            config = {}
-        try:
-            every = max(1, int(config.get("every_minutes") or 1440))
-        except (TypeError, ValueError):
-            every = 1440
-        try:
-            start(row["id"], row["org_id"])
+            start(automation_id, org_id)
             started += 1
         except Exception:
-            continue          # one broken automation must not stop the others
-        with get_connection() as conn:
-            conn.execute("UPDATE automations SET next_run_at = ? WHERE id = ?",
-                         ((now + _dt.timedelta(minutes=every)).strftime("%Y-%m-%d %H:%M:%S"),
-                          row["id"]))
+            # Give the turn back rather than silently skipping a scheduled run.
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE automations SET next_run_at = ? WHERE id = ? "
+                    "AND next_run_at = ?", (stamp, automation_id, next_at))
     return started
 
 
@@ -1024,6 +1082,7 @@ def wake_due(limit=10):
     from db import get_connection
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    claimed = []
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT r.id, r.automation_id, r.resume_at, r.context, a.org_id "
@@ -1031,20 +1090,32 @@ def wake_due(limit=10):
             "WHERE r.status = 'waiting' AND r.wake_at IS NOT NULL AND r.wake_at <= ? "
             "ORDER BY r.wake_at LIMIT %d" % max(1, int(limit)), (now,)).fetchall()
         for row in rows:
-            conn.execute("UPDATE automation_runs SET status = 'queued', wake_at = NULL "
-                         "WHERE id = ? AND status = 'waiting'", (row["id"],))
+            # Only the sweep that actually moved the row may create its job. The
+            # status guard makes the loser's UPDATE affect zero rows.
+            moved = conn.execute(
+                "UPDATE automation_runs SET status = 'queued', wake_at = NULL "
+                "WHERE id = ? AND status = 'waiting' "
+                "AND wake_at IS NOT NULL AND wake_at <= ?", (row["id"], now))
+            if moved.rowcount:
+                claimed.append(row)
     woken = 0
-    for row in rows:
+    for row in claimed:
         try:
             context = json.loads(row["context"] or "{}")
         except ValueError:
             context = {}
-        job_id = jobs.create_job(
-            "Automation: resume after a wait",
-            json.dumps({"automation_id": row["automation_id"], "run_id": row["id"],
-                        "resume_after": row["resume_at"], "context": context}),
-            None, "selector", "automation", org_id=row["org_id"],
-        )
-        jobs.submit(job_id)
-        woken += 1
+        try:
+            job_id = jobs.create_job(
+                "Automation: resume after a wait",
+                json.dumps({"automation_id": row["automation_id"], "run_id": row["id"],
+                            "resume_after": row["resume_at"], "context": context}),
+                None, "selector", "automation", org_id=row["org_id"],
+            )
+            jobs.submit(job_id)
+            woken += 1
+        except Exception:
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE automation_runs SET status = 'waiting', wake_at = ? "
+                    "WHERE id = ? AND status = 'queued'", (now, row["id"]))
     return woken

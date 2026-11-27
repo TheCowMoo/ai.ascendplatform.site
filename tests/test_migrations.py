@@ -99,6 +99,24 @@ def _rows(sql):
         return conn.execute(sa.text(sql)).fetchall()
 
 
+def test_hot_indexes_exist():
+    """The list/scheduler indexes are in the migrated schema, not only in metadata."""
+    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    inspector = sa.inspect(engine)
+    expected = {
+        "jobs": ("idx_jobs_org_created", "idx_jobs_task_org_created"),
+        "deliverables": ("idx_deliverables_org_updated", "idx_deliverables_job"),
+        "sites": ("idx_sites_org",),
+        "automation_runs": ("idx_automation_runs_wake",),
+    }
+    for table, names in expected.items():
+        present = {index["name"] for index in inspector.get_indexes(table)}
+        missing = [name for name in names if name not in present]
+        assert not missing, "%s missing indexes: %s (have %s)" % (
+            table, missing, sorted(present))
+    print("hot-path indexes present")
+
+
 def test_upgrade_dedupes_a_raced_roster():
     """Upgrading a populated table must repair the double seed, not fail on it.
 
@@ -187,6 +205,7 @@ if __name__ == "__main__":
     test_revision_ids_fit_the_version_column()
     test_upgrade_head_on_an_empty_database()
     test_schema_matches_metadata()
+    test_hot_indexes_exist()
     test_upgrade_dedupes_a_raced_roster()
     test_downgrade_is_clean()
     test_an_upgrade_survives_tables_that_already_exist()

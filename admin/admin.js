@@ -1342,7 +1342,7 @@
 
     var extras = owner
       ? [Promise.resolve({}), Promise.resolve({})]
-      : [api('GET', '/api/sites'), api('GET', '/api/deliverables')];
+      : [api('GET', '/api/sites?summary=1'), api('GET', '/api/deliverables?summary=1')];
     Promise.all([api('GET', '/api/bots'), api('GET', '/api/jobs'),
                  api('GET', '/api/profile')].concat(extras))
       .then(function (results) {
@@ -1386,16 +1386,20 @@
   // ---------- Chatbots ----------
   function viewBots() {
     var container = el('div', 'container');
+    var manager = canAdmin(state.user);
     var head = el('div', 'page-head');
     var hwrap = el('div');
     hwrap.innerHTML = '<h2>Chatbots</h2><p>' +
       (isOwner(state.user)
         ? 'Create and manage chatbots for your clients.'
-        : 'Create and manage chatbots for your business.') + '</p>';
+        : (manager ? 'Create and manage chatbots for your business.'
+                   : "View your business's chatbots.")) + '</p>';
     head.appendChild(hwrap);
-    var newBtn = el('button', 'btn btn-primary', '+ New Chatbot');
-    newBtn.onclick = function () { location.hash = '#/bot/new'; };
-    head.appendChild(newBtn);
+    if (manager) {
+      var newBtn = el('button', 'btn btn-primary', '+ New Chatbot');
+      newBtn.onclick = function () { location.hash = '#/bot/new'; };
+      head.appendChild(newBtn);
+    }
     container.appendChild(head);
 
     var grid = el('div', 'grid');
@@ -1424,23 +1428,27 @@
         var actions = el('div', 'card-actions');
         var embed = el('button', 'btn btn-ghost btn-sm', 'Embed');
         embed.onclick = function () { showEmbed(bot); };
-        var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
-        edit.onclick = function () { location.hash = '#/bot/' + bot.id; };
+        actions.appendChild(embed);
+        if (manager) {
+          var edit = el('button', 'btn btn-ghost btn-sm', 'Edit');
+          edit.onclick = function () { location.hash = '#/bot/' + bot.id; };
+          actions.appendChild(edit);
+        }
         var stats = el('button', 'btn btn-ghost btn-sm', 'Stats');
         stats.onclick = function () { location.hash = '#/bot/' + bot.id + '/stats'; };
         var conv = el('button', 'btn btn-ghost btn-sm', 'Chats');
         conv.onclick = function () { location.hash = '#/bot/' + bot.id + '/conversations'; };
-        var del = el('button', 'btn btn-danger btn-sm', 'Delete');
-        del.onclick = function () {
-          if (confirm('Delete "' + bot.name + '" and all its messages?')) {
-            api('DELETE', '/api/bots/' + bot.id).then(function () { toast('Deleted', true); render(); }).catch(function (e) { toast(e.message, false); });
-          }
-        };
-        actions.appendChild(embed);
-        actions.appendChild(edit);
         actions.appendChild(stats);
         actions.appendChild(conv);
-        actions.appendChild(del);
+        if (manager) {
+          var del = el('button', 'btn btn-danger btn-sm', 'Delete');
+          del.onclick = function () {
+            if (confirm('Delete "' + bot.name + '" and all its messages?')) {
+              api('DELETE', '/api/bots/' + bot.id).then(function () { toast('Deleted', true); render(); }).catch(function (e) { toast(e.message, false); });
+            }
+          };
+          actions.appendChild(del);
+        }
         card.appendChild(actions);
         grid.appendChild(card);
       });
@@ -1625,6 +1633,14 @@
   // ---------- Editor ----------
   function viewEditor(botId) {
     var isNew = !botId;
+    if (!canAdmin(state.user)) {
+      var denied = el('div', 'container');
+      var card = el('div', 'panel-card empty-state');
+      card.innerHTML = '<strong>Chatbot settings are managed by an admin.</strong>' +
+        '<p>Ask your workspace admin to make changes.</p>';
+      denied.appendChild(card);
+      return denied;
+    }
     var container = el('div', 'container');
     var head = el('div', 'page-head');
     var hwrap = el('div');
@@ -3297,7 +3313,7 @@
     container.appendChild(grid);
 
     function refresh() {
-      api('GET', '/api/sites').then(function (d) {
+      api('GET', '/api/sites?summary=1').then(function (d) {
         SITE_TARGETS = d.targets || [];
         banner.innerHTML = owner
           ? '<h3>How this works</h3><div class="muted">' +
@@ -3462,9 +3478,17 @@
   }
 
   function siteEditor(site, onSaved) {
+    if (site && site.id && site.content_html === undefined) {
+      // The list is a summary now; load the full site before editing its HTML.
+      api('GET', '/api/sites/' + site.id).then(function (d) {
+        siteEditor(d.site || site, onSaved);
+      }).catch(function (e) { toast(e.message, false); });
+      return;
+    }
     site = site || {};
     var owner = isOwner(state.user);
     var isNew = !site.id;
+    var mayLinkBot = !isNew && !!site.org_id && (owner || canAdmin(state.user));
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal modal-wide');
     modal.innerHTML = owner
@@ -3504,9 +3528,32 @@
     content.value = site.content_html || '';
     content.placeholder = 'Leave blank to generate a landing page from your Business Profile.';
 
-    var linkedBot = el('input');
-    linkedBot.value = site.linked_bot_id || '';
-    linkedBot.placeholder = 'optional bot id to embed';
+    var linkedBot = el('select');
+    linkedBot.setAttribute('aria-label', 'Linked chatbot');
+    var noBot = el('option', null, 'No chat assistant');
+    noBot.value = '';
+    linkedBot.appendChild(noBot);
+    var currentBot = site.linked_bot_id || '';
+    if (currentBot) {
+      var currentOption = el('option', null, currentBot);
+      currentOption.value = currentBot;
+      linkedBot.appendChild(currentOption);
+    }
+    linkedBot.value = currentBot;
+    api('GET', '/api/bots').then(function (d) {
+      var seen = {};
+      if (currentBot) seen[currentBot] = true;
+      (d.bots || []).forEach(function (bot) {
+        if (!bot || !bot.id) return;
+        if (site.org_id && bot.org_id && bot.org_id !== site.org_id) return;
+        if (seen[bot.id]) return;
+        seen[bot.id] = true;
+        var option = el('option', null, bot.name || bot.id);
+        option.value = bot.id;
+        linkedBot.appendChild(option);
+      });
+      linkedBot.value = currentBot;
+    }).catch(function () { /* leave the current value visible */ });
 
     modal.appendChild(field('Domain', domain));
     if (owner) {
@@ -3514,6 +3561,8 @@
       modal.appendChild(field('Aliases', aliases));
       modal.appendChild(field('Docroot', docroot));
       modal.appendChild(field('Content HTML', content));
+    }
+    if (mayLinkBot) {
       modal.appendChild(field('Linked chatbot', linkedBot));
     }
 
@@ -3528,10 +3577,10 @@
             target: target.value,
             aliases: aliases.value.split(',').map(function (a) { return a.trim(); }).filter(Boolean),
             docroot: docroot.value,
-            content_html: content.value,
-            linked_bot_id: linkedBot.value
+            content_html: content.value
           }
         : { domain: domain.value.trim().toLowerCase(), target: 'local' };
+      if (mayLinkBot) payload.linked_bot_id = linkedBot.value;
       save.disabled = true;
       var request = isNew ? api('POST', '/api/sites', payload) : api('PUT', '/api/sites/' + site.id, payload);
       request
@@ -4929,6 +4978,13 @@
   }
 
   function previewDeliverable(item) {
+    if (item && item.id && item.content === undefined) {
+      // A summary list omits the document; load the one draft being previewed.
+      api('GET', '/api/deliverables/' + item.id).then(function (d) {
+        previewDeliverable(d.deliverable || item);
+      }).catch(function (e) { toast(e.message, false); });
+      return;
+    }
     var backdrop = el('div', 'modal-backdrop');
     var modal = el('div', 'modal modal-wide');
     modal.appendChild(el('h3', null, item.title || 'Preview'));
@@ -5084,7 +5140,7 @@
   }
 
   function publishDeliverable(item, onDone, button) {
-    api('GET', '/api/sites').then(function (d) {
+    api('GET', '/api/sites?summary=1').then(function (d) {
       var sites = d.sites || [];
       if (!sites.length) {
         if (button) button.disabled = false;
@@ -5095,7 +5151,9 @@
       var slugIsHome = !slug || slug === 'home' || slug === 'index';
       var defaultPath = slugIsHome ? 'about.html' : (slug + '.html');
       var first = sites[0];
-      var starter = /This site is ready/i.test(first.content_html || '');
+      var starter = first.starter !== undefined
+        ? !!first.starter
+        : /This site is ready/i.test(first.content_html || '');
       var defaultWhere = (slugIsHome || starter) ? 'home' : 'subpage';
       var fields = [];
       if (sites.length > 1) {
@@ -5150,7 +5208,7 @@
     card.appendChild(body);
 
     function load() {
-      api('GET', '/api/deliverables?kind=website').then(function (d) {
+      api('GET', '/api/deliverables?kind=website&summary=1').then(function (d) {
         var items = d.deliverables || [];
         // The endpoint returns at most 200. Say so, because a list that stops without
         // saying so is how someone concludes a draft was never saved.
@@ -5405,7 +5463,7 @@
     }).catch(function () { add.disabled = false; });
 
     function refresh() {
-      var url = '/api/deliverables' + (meta.kind ? '?kind=' + meta.kind : '');
+      var url = '/api/deliverables?summary=1' + (meta.kind ? '&kind=' + meta.kind : '');
       api('GET', url).then(function (d) {
         body.innerHTML = '';
         var items = d.deliverables || [];
@@ -5475,6 +5533,13 @@
   }
 
   function showDeliverableForm(kind, item, done) {
+    if (item && item.id && item.content === undefined) {
+      // The edit form must start from the full document, never from a summary row.
+      api('GET', '/api/deliverables/' + item.id).then(function (d) {
+        showDeliverableForm(kind, d.deliverable || item, done);
+      }).catch(function (e) { toast(e.message, false); });
+      return;
+    }
     var isNew = !item;
     var fields = [
       { name: 'title', label: 'Title', value: item ? item.title : '' },
@@ -7029,7 +7094,7 @@
       api('GET', '/api/analytics/google/accounts?connection_scope=' + scope),
       api('GET', '/api/analytics/google/gtm-accounts?connection_scope=' + scope)
         .catch(function () { return { accounts: [] }; }),
-      api('GET', '/api/sites').catch(function () { return { sites: [] }; })
+      api('GET', '/api/sites?summary=1').catch(function () { return { sites: [] }; })
     ]).then(function (results) {
       var accounts = (results[0] || {}).accounts || [];
       var gtmAccounts = (results[1] || {}).accounts || [];
@@ -7366,7 +7431,7 @@
         api('GET', '/api/analytics/google/accounts?connection_scope=' + scope),
         api('GET', '/api/analytics/google/gtm-accounts?connection_scope=' + scope)
           .catch(function () { return { accounts: [] }; }),
-        api('GET', '/api/sites').catch(function () { return { sites: [] }; })
+        api('GET', '/api/sites?summary=1').catch(function () { return { sites: [] }; })
       ]).then(function (results) {
         var accounts = (results[0] || {}).accounts || [];
         var gtmAccounts = (results[1] || {}).accounts || [];
@@ -7430,7 +7495,7 @@
 
   // Re-run tag installation for a client that already has a container selected.
   function installGoogleTag(onDone) {
-    api('GET', '/api/sites').then(function (d) {
+    api('GET', '/api/sites?summary=1').then(function (d) {
       var sites = d.sites || [];
       if (!sites.length) {
         toast('Add a domain in the Website tab first - the snippet needs a site.', false);
@@ -10467,7 +10532,7 @@
       // cannot know about the run that was started for it, and a failed run has to say
       // so here rather than only inside the transcript.
       var jobsPromise = api('GET', '/api/jobs').catch(function () { return { jobs: [] }; });
-      Promise.all([api('GET', '/api/sites'), jobsPromise]).then(function (results) {
+      Promise.all([api('GET', '/api/sites?summary=1'), jobsPromise]).then(function (results) {
         var d = results[0] || {};
         body.innerHTML = '';
         banner.innerHTML = owner
@@ -12247,6 +12312,19 @@
       description.placeholder = 'A line under the title';
       description.oninput = function () { draft.settings.description = description.value; };
       meta.appendChild(description);
+      var submit = el('input');
+      submit.value = draft.settings.submit_label || '';
+      submit.placeholder = 'Button label, e.g. Send enquiry';
+      submit.oninput = function () { draft.settings.submit_label = submit.value; };
+      meta.appendChild(submit);
+      var brandRow = el('label', 'opt');
+      brandRow.appendChild(el('span', null, 'Accent colour'));
+      var brand = el('input');
+      brand.type = 'color';
+      brand.value = draft.settings.brand || '#4f46e5';
+      brand.oninput = function () { draft.settings.brand = brand.value; };
+      brandRow.appendChild(brand);
+      meta.appendChild(brandRow);
       var success = el('input');
       success.value = draft.settings.success || '';
       success.placeholder = 'Thank-you message after submitting';

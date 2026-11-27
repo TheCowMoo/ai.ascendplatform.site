@@ -11,6 +11,7 @@ import secrets
 import actions
 import jobs
 from db import days_ago, get_connection, now_str
+from domain_rules import normalize_domain, valid_domain
 
 TEXT_FIELDS = (
     "domain", "docroot", "content_html", "linked_bot_id", "target",
@@ -20,22 +21,99 @@ TEXT_FIELDS = (
 STATUSES = ("pending_dns", "dns_ok", "live", "error")
 
 
+class SiteError(ValueError):
+    """A site field the caller can fix, phrased for the person who entered it."""
+
+
+def _clean_domain(domain):
+    value = normalize_domain(domain)
+    if not valid_domain(value):
+        raise SiteError("Enter a valid domain name, such as example.com.")
+    return value
+
+
+def _clean_aliases(raw):
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        raw = []
+    cleaned = []
+    for alias in raw:
+        value = normalize_domain(alias)
+        if not value:
+            continue
+        if not valid_domain(value):
+            raise SiteError("Alias %r is not a valid domain name." % (alias,))
+        if value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
 def _as_dict(row):
     return {k: row[k] for k in row.keys()}
 
 
-def site_out(row):
-    """Serialise a site row, parsing the aliases JSON."""
+def _validate_linked_bot(bot_id, org_id):
+    """A site may only embed an assistant that belongs to the same client.
+
+    This is the server-side half of the widget fix. Without it a client could put
+    another client's bot id in the site editor and expose that bot's knowledge base
+    from their own domain. An empty id means "no chat assistant".
+    """
+    value = str(bot_id or "").strip()
+    if not value:
+        return ""
+    if org_id is None:
+        raise SiteError("Pick a client before linking a chat assistant.")
+    try:
+        import bots as bots_service
+
+        if not bots_service.get_bot(value, org_id):
+            raise SiteError("That chat assistant belongs to another client.")
+    except SiteError:
+        raise
+    except Exception:
+        raise SiteError("That chat assistant could not be found for this client.")
+    return value
+
+
+def site_out(row, include_content=True):
+    """Serialise a site row, parsing the aliases JSON.
+
+    ``starter`` is separate from the document so a list can answer "is this still
+    the generated placeholder?" without shipping the whole page to the browser.
+    """
     out = _as_dict(row)
     try:
         out["aliases"] = json.loads(row["aliases"] or "[]")
     except Exception:
         out["aliases"] = []
     out["url"] = out["url"] or ""
+    if "content_html" in out:
+        out["starter"] = "this site is ready" in (out.get("content_html") or "").lower()
+    else:
+        # The summary query computes this flag so the content column never leaves
+        # the database.
+        out["starter"] = bool(out.get("starter"))
+    if not include_content:
+        out.pop("content_html", None)
     return out
 
 
-def list_sites(org_id=None, limit=100):
+# Everything the site cards and pickers use; the summary query also computes the
+# starter flag in SQL, so the page body is never read for a list request.
+_SITE_COLUMNS = (
+    "id, owner_id, org_id, domain, aliases, docroot, linked_bot_id, target, status, "
+    "ssl_status, dns_last_check, dns_last_ip, url, last_error, created_at, updated_at, "
+    "CASE WHEN LOWER(content_html) LIKE '%this site is ready%' THEN 1 ELSE 0 END "
+    "AS starter"
+)
+
+
+def list_sites(org_id=None, limit=100, include_content=True):
     """Sites for one client, or every site when ``org_id`` is omitted.
 
     ``org_id=None`` is the platform operator's view. A client must always pass its
@@ -44,9 +122,11 @@ def list_sites(org_id=None, limit=100):
     the "no access" marker and must filter, not fall through to "no filter".
 
     ``limit=None`` means every row; Platform -> Domains uses it so an old orphan is
-    never pushed off a fixed-size page.
+    never pushed off a fixed-size page. ``include_content=False`` keeps a site list
+    from carrying every page's HTML; the editor fetches the one site it opens.
     """
-    query = "SELECT * FROM sites"
+    columns = "*" if include_content else _SITE_COLUMNS
+    query = "SELECT %s FROM sites" % columns
     params = []
     if org_id is not None:
         query += " WHERE org_id = ?"
@@ -57,7 +137,7 @@ def list_sites(org_id=None, limit=100):
         params.append(limit)
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [site_out(r) for r in rows]
+    return [site_out(r, include_content=include_content) for r in rows]
 
 
 def get_site(site_id):
@@ -88,7 +168,12 @@ def get_site_by_domain(domain, org_id=None):
 
 def create_site(data, owner_id=None, org_id=None):
     """Create a site. ``owner_id`` is the creator, ``org_id`` is the tenant that owns it."""
-    domain = (data.get("domain") or "").strip().lower()
+    if not isinstance(data, dict):
+        raise SiteError("Send an object of site fields.")
+    domain = _clean_domain(data.get("domain"))
+    aliases = _clean_aliases(data.get("aliases"))
+    effective_org = org_id if org_id is not None else data.get("org_id")
+    linked_bot = _validate_linked_bot(data.get("linked_bot_id"), effective_org)
     with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO sites (owner_id, org_id, domain, aliases, docroot, content_html, linked_bot_id, target, status) "
@@ -97,10 +182,10 @@ def create_site(data, owner_id=None, org_id=None):
                 owner_id if owner_id is not None else data.get("owner_id"),
                 org_id if org_id is not None else data.get("org_id"),
                 domain,
-                json.dumps(data.get("aliases") or []),
+                json.dumps(aliases),
                 (data.get("docroot") or "").strip(),
                 data.get("content_html") or "",
-                (data.get("linked_bot_id") or "").strip(),
+                linked_bot,
                 (data.get("target") or "local").strip() or "local",
                 "pending_dns",
             ),
@@ -110,8 +195,15 @@ def create_site(data, owner_id=None, org_id=None):
 
 
 def update_site(site_id, data):
-    if not get_site(site_id):
+    current = get_site(site_id)
+    if not current:
         return None
+    data = dict(data or {})
+    if "domain" in data:
+        data["domain"] = _clean_domain(data.get("domain"))
+    if "linked_bot_id" in data:
+        data["linked_bot_id"] = _validate_linked_bot(
+            data.get("linked_bot_id"), current.get("org_id"))
     sets, values = [], []
     for field in TEXT_FIELDS:
         if field in data:
@@ -119,14 +211,8 @@ def update_site(site_id, data):
             sets.append("%s = ?" % field)
             values.append(value.strip() if isinstance(value, str) else (value or ""))
     if "aliases" in data:
-        raw = data.get("aliases")
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except Exception:
-                raw = []
         sets.append("aliases = ?")
-        values.append(json.dumps(raw or []))
+        values.append(json.dumps(_clean_aliases(data.get("aliases"))))
     if not sets:
         return get_site(site_id)
     sets.append("updated_at = ?")
@@ -235,7 +321,7 @@ def platform_domains(limit=None, org_id=None):
 
     orgs = {org["id"]: org for org in orgs_service.list_orgs(limit=None)}
     rows = []
-    for site in list_sites(org_id=org_id, limit=limit):
+    for site in list_sites(org_id=org_id, limit=limit, include_content=False):
         org = orgs.get(site.get("org_id"))
         item = dict(site)
         # The console shows the badge, but the API is also used by support scripts:
@@ -261,6 +347,8 @@ def upsert_for_agent(domain, owner_id=None, org_id=None):
     """Find the site for a domain, creating it if the agent asks for a new one."""
     existing = get_site_by_domain(domain)
     if existing:
+        if org_id is not None and existing.get("org_id") != org_id:
+            raise SiteError("That domain belongs to another client.")
         return existing
     return create_site(
         {"domain": domain, "target": "local", "aliases": []},

@@ -66,6 +66,39 @@ def test_outward_action_needs_a_gate():
     assert automations.validate_graph(gated) == []
 
 
+def test_a_branch_cannot_skip_the_gate():
+    """A gate on one branch must not cover the other branch.
+
+    The walk takes one edge from a condition. Validation used to ask only whether a
+    gate was somewhere upstream, so this graph passed and the false branch sent mail
+    with no approval pause.
+    """
+    steps = [
+        {"id": "start", "type": "condition", "title": "Enough drafts?",
+         "config": {"fact": "drafts", "op": ">", "value": 5},
+         "next": ["gate", "send"]},
+        {"id": "gate", "type": "gate", "title": "Approve the send", "next": ["send"]},
+        {"id": "send", "type": "tool", "title": "Send the email",
+         "config": {"tool": "send_email"}, "next": []},
+    ]
+    problems = automations.validate_graph(steps)
+    assert any("approval gate" in p and "'send'" in p for p in problems), problems
+
+
+def test_every_branch_through_a_gate_is_valid():
+    steps = [
+        {"id": "start", "type": "condition", "title": "Enough drafts?",
+         "config": {"fact": "drafts", "op": ">", "value": 5},
+         "next": ["gate", "gate2"]},
+        {"id": "gate", "type": "gate", "title": "Approve", "next": ["send"]},
+        {"id": "gate2", "type": "gate", "title": "Approve the other way",
+         "next": ["send"]},
+        {"id": "send", "type": "tool", "title": "Send the email",
+         "config": {"tool": "send_email"}, "next": []},
+    ]
+    assert automations.validate_graph(steps) == [], automations.validate_graph(steps)
+
+
 def test_empty_and_oversized_graphs_are_rejected():
     assert automations.validate_graph([]) != []
     assert automations.validate_graph(None) != []

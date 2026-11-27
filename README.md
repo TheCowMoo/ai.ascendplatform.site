@@ -38,6 +38,8 @@ Powered by the **DeepSeek** model (`deepseek-chat`) via its OpenAI-compatible AP
 - ⚙️ Runs as a **Docker Compose** stack (Caddy + app + PostgreSQL + Redis)
 - 🔔 **Lead notifications** — a form submission emails the client's admins
 - 🧾 **Operator controls** — credits, plans, suspension and approval history
+- 🧠 **Marketing assistant tools** — read/rewrite forms, read leads, create and attach a
+  chat assistant to a site, and revise email templates from the Manager chat
 
 ---
 
@@ -62,7 +64,8 @@ the app, and will serve hosted customer sites in stage S5.
 
 The app is served over **ASGI**: `asgi.py` runs FastAPI and mounts the Flask app
 beneath it, so route groups can move to async one at a time. Both halves share the
-same signed session cookie, and FastAPI publishes an OpenAPI schema at `/api/docs`.
+same signed session cookie. The OpenAPI schema at `/api/docs` is opt-in: set
+`API_DOCS=1` in development or for an operator.
 
 ---
 
@@ -110,7 +113,7 @@ venv\Scripts\activate              # Windows   (Linux/macOS: source venv/bin/act
 pip install -r requirements.txt
 
 # Run the full app (FastAPI + Flask). This is also the production entry point.
-uvicorn asgi:app --reload          # http://127.0.0.1:8000/admin/  (API docs: /api/docs)
+uvicorn asgi:app --reload          # http://127.0.0.1:8000/admin/  (API docs: set API_DOCS=1)
 ```
 
 No `.env` is needed. Everything except the first-run bootstrap below is set in the

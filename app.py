@@ -135,11 +135,18 @@ try:
     session_hours = max(1, int(os.environ.get("SESSION_HOURS", "12")))
 except (TypeError, ValueError):
     session_hours = 12
+try:
+    _max_request_bytes = int(os.environ.get("MAX_REQUEST_BYTES") or 64 * 1024 * 1024)
+except (TypeError, ValueError):
+    _max_request_bytes = 64 * 1024 * 1024
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=_env_flag("SESSION_COOKIE_SECURE", False),
     PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=session_hours),
+    # A global ceiling for media uploads; the public JSON routes have a much lower
+    # per-request cap in ``_limit_public_request_body`` below.
+    MAX_CONTENT_LENGTH=max(1024 * 1024, _max_request_bytes),
 )
 
 
@@ -158,6 +165,28 @@ def _security_headers(response):
     if request.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+
+# Public JSON bodies are tiny (a chat turn, a form answer, a sign-in). The media
+# routes are not in this list and use the global MAX_CONTENT_LENGTH. Without this,
+# an anonymous POST could make the process buffer hundreds of megabytes before a
+# single field is validated.
+PUBLIC_JSON_LIMIT = 256 * 1024
+
+
+@app.before_request
+def _limit_public_request_body():
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    if not (request.path == "/api/chat"
+            or request.path == "/api/invites/accept"
+            or request.path.startswith("/api/public/")
+            or request.path.startswith("/api/auth/")):
+        return None
+    length = request.content_length or 0
+    if length > PUBLIC_JSON_LIMIT:
+        return jsonify({"error": "That request is too large."}), 413
+    return None
 
 
 # The DeepSeek client is built on demand and then re-used, so rotating the key in
@@ -589,43 +618,107 @@ def seed_initial_data():
 
 
 # ---------------------------------------------------------------------------
+# Sign-in throttle
+#
+# The two uvicorn workers keep their own buckets; this is a first line against
+# credential stuffing, not a distributed rate limiter. A success clears the
+# (IP, email) pair so a person who mistyped twice is not locked out, while the
+# per-IP bucket keeps counting failures so one valid account cannot reset it.
+# ---------------------------------------------------------------------------
+LOGIN_FAILURE_LIMIT = 8
+LOGIN_IP_LIMIT = 30
+LOGIN_WINDOW = 300
+_LOGIN_FAILURES = {}
+_DUMMY_PASSWORD_HASH = None
+
+
+def _dummy_password_hash():
+    """A real hash to compare against when the email is unknown.
+
+    Without it a missing account answers immediately and an existing one pays the
+    scrypt cost, which turns response time into an account-enumeration oracle.
+    """
+    global _DUMMY_PASSWORD_HASH
+    if not _DUMMY_PASSWORD_HASH:
+        _DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_urlsafe(16))
+    return _DUMMY_PASSWORD_HASH
+
+
+def _login_blocked(ip, email):
+    now = time.time()
+    if len(_LOGIN_FAILURES) > 5000:
+        _LOGIN_FAILURES.clear()
+    for key, limit in ((("ip", ip), LOGIN_IP_LIMIT),
+                       (("pair", ip, email), LOGIN_FAILURE_LIMIT)):
+        hits = [stamp for stamp in _LOGIN_FAILURES.get(key, [])
+                if now - stamp < LOGIN_WINDOW]
+        if hits:
+            _LOGIN_FAILURES[key] = hits
+        else:
+            _LOGIN_FAILURES.pop(key, None)
+        if len(hits) >= limit:
+            return True
+    return False
+
+
+def _note_login_failure(ip, email):
+    now = time.time()
+    for key in (("ip", ip), ("pair", ip, email)):
+        _LOGIN_FAILURES.setdefault(key, []).append(now)
+
+
+def _clear_login_failures(ip, email):
+    _LOGIN_FAILURES.pop(("pair", ip, email), None)
+
+
+# ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 @app.route("/api/auth/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
+    ip = _client_ip()
+    if _login_blocked(ip, email):
+        return jsonify({
+            "error": "Too many sign-in attempts. Try again in a few minutes."
+        }), 429
     row = user_service.login_user(email)
-    if row and check_password_hash(row["password_hash"], password):
-        if row.get("status") != "active":
-            return jsonify({
-                "error": "This account has been paused. Contact your agency administrator."
-            }), 403
-        if not account_is_active(row["role"], row["org_id"]):
-            return _inactive_account()
-        with get_connection() as conn:
-            conn.execute(
-                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
-                (now_str(), now_str(), row["id"]),
-            )
-        session.permanent = True
-        _refresh_session(row)
-        # A fresh login starts at the all-clients overview: inheriting the previous
-        # session's client would mean the operator silently creating work for the wrong one.
-        session.pop("acting_org_id", None)
-        return jsonify({"user": {
-            "id": row["id"], "email": row["email"], "name": row["name"],
-            "role": row["role"], "org_id": row["org_id"],
-            "onboarded_at": row.get("onboarded_at"),
-            "studio_tour_at": row.get("studio_tour_at"),
-            "studio_tour_version": row.get("studio_tour_version") or "",
-            "status": row.get("status") or "active",
-            "last_login_at": row.get("last_login_at"),
-            # Sent with the login too, so the nav is correct without a reload.
-            "is_owner": user_service.is_owner_role(row["role"]),
-        }})
-    return jsonify({"error": "Invalid email or password"}), 401
+    stored_hash = row["password_hash"] if row else _dummy_password_hash()
+    password_ok = check_password_hash(stored_hash, password)
+    if not (row and password_ok):
+        _note_login_failure(ip, email)
+        return jsonify({"error": "Invalid email or password"}), 401
+    _clear_login_failures(ip, email)
+    if row.get("status") != "active":
+        return jsonify({
+            "error": "This account has been paused. Contact your agency administrator."
+        }), 403
+    if not account_is_active(row["role"], row["org_id"]):
+        return _inactive_account()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+            (now_str(), now_str(), row["id"]),
+        )
+    # A fresh identity must not inherit keys from whatever session came before.
+    session.clear()
+    session.permanent = True
+    _refresh_session(row)
+    return jsonify({"user": {
+        "id": row["id"], "email": row["email"], "name": row["name"],
+        "role": row["role"], "org_id": row["org_id"],
+        "onboarded_at": row.get("onboarded_at"),
+        "studio_tour_at": row.get("studio_tour_at"),
+        "studio_tour_version": row.get("studio_tour_version") or "",
+        "status": row.get("status") or "active",
+        "last_login_at": row.get("last_login_at"),
+        # Sent with the login too, so the nav is correct without a reload.
+        "is_owner": user_service.is_owner_role(row["role"]),
+    }})
 
 
 @app.route("/api/auth/onboarded", methods=["POST"])
@@ -719,6 +812,13 @@ def forgot_password():
     import platform_mail
 
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    ip = _client_ip()
+    if not _forgot_rate_ok(ip):
+        return jsonify({
+            "error": "Too many reset requests. Try again in a few minutes."
+        }), 429
     result = password_resets.request((data.get("email") or "").strip())
     if result:
         token, user = result
@@ -754,6 +854,8 @@ def preview_password_reset(token):
 @app.route("/api/auth/reset", methods=["POST"])
 def reset_password():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     password = data.get("password") or ""
     confirm = data.get("confirm_password")
     if confirm is not None and confirm != password:
@@ -1083,7 +1185,7 @@ def list_bots():
 
 
 @app.route("/api/bots", methods=["POST"])
-@login_required
+@client_admin_required
 def create_bot():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
@@ -1505,19 +1607,49 @@ def generate_reply(bot, user_message, history, conversation_id):
     return reply, conversation_id, webhook_payload
 
 
+MAX_CHAT_MESSAGE = 4000
+MAX_CHAT_HISTORY = 10
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    if get_client() is None:
-        # Public widget surface: say it is unavailable, not what the agency runs on.
-        return jsonify({"reply": "The assistant is not available right now."}), 500
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     bot_id = data.get("bot_id")
-    user_message = (data.get("message") or "").strip()
-    conversation_id = data.get("conversation_id") or secrets.token_urlsafe(8)
+    if not isinstance(bot_id, str) or not bot_id.strip():
+        return jsonify({"reply": "Chatbot not found."}), 404
+    bot_id = bot_id.strip()
+    user_message = str(data.get("message") or "").strip()
+    conversation_id = (str(data.get("conversation_id") or "").strip()[:128]
+                       or secrets.token_urlsafe(8))
     history = data.get("history") or []
 
     if not user_message:
         return jsonify({"reply": "Please send a message."}), 400
+    if len(user_message) > MAX_CHAT_MESSAGE:
+        return jsonify({
+            "reply": "That message is too long. Keep it under %d characters."
+                     % MAX_CHAT_MESSAGE,
+        }), 400
+    if not isinstance(history, list):
+        return jsonify({"reply": "That conversation history is not usable."}), 400
+    for item in history[-MAX_CHAT_HISTORY:]:
+        if (not isinstance(item, dict)
+                or item.get("role") not in ("user", "assistant")
+                or not isinstance(item.get("content"), str)
+                or len(item["content"]) > MAX_CHAT_MESSAGE):
+            return jsonify({
+                "reply": "That conversation history is not usable. Start a new chat.",
+            }), 400
+
+    # The widget is public and spends the agency's model credits; one bucket per
+    # caller keeps a single visitor from turning it into a free completion API.
+    if not _chat_rate_ok(_client_ip()):
+        return jsonify({"reply": "Too many messages - please wait a moment."}), 429
+    if get_client() is None:
+        # Public widget surface: say it is unavailable, not what the agency runs on.
+        return jsonify({"reply": "The assistant is not available right now."}), 500
 
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
@@ -1528,7 +1660,8 @@ def chat():
     if not orgs_service.is_active(bot.get("org_id")):
         return jsonify({"reply": "This assistant is unavailable right now."}), 503
     try:
-        reply, conversation_id, _payload = generate_reply(bot, user_message, history, conversation_id)
+        reply, conversation_id, _payload = generate_reply(
+            bot, user_message, history[-MAX_CHAT_HISTORY:], conversation_id)
     except Exception as exc:
         # This is a public widget surface. Log the provider detail; the visitor gets a
         # sentence they can act on, not the agency's model stack.
@@ -2045,7 +2178,8 @@ def list_deliverables():
     scope = list_scope()
     return jsonify({
         "deliverables": deliverables_service.list_deliverables(
-            kind, scope, job_id=job_filter),
+            kind, scope, job_id=job_filter,
+            include_content=not _wants_summary()),
         "counts": deliverables_service.counts(scope),
         "kinds": list(deliverables_service.KINDS),
         "statuses": list(deliverables_service.STATUSES),
@@ -2484,6 +2618,8 @@ def preview_invite(token):
 def accept_invite():
     """Set the password and start the session - the whole point of the link."""
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send a JSON object with the invitation token."}), 400
     password = data.get("password") or ""
     confirm = data.get("confirm_password")
     if confirm is not None and confirm != password:
@@ -2792,7 +2928,8 @@ def list_sites():
                     "label": "%s (%s@%s)" % (host["label"], host["username"], host["host"]),
                 })
     return jsonify({
-        "sites": sites_service.list_sites(list_scope()),
+        "sites": sites_service.list_sites(
+            list_scope(), include_content=not _wants_summary()),
         "targets": targets,
         "dry_run": actions.is_dry_run(),
         "server_ip": provisioner.SERVER_IP,
@@ -2824,6 +2961,8 @@ def platform_domains():
 @client_admin_required
 def create_site():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send a JSON object with a domain."}), 400
     domain = (data.get("domain") or "").strip().lower()
     if not tool_policy.check_domain(domain).allowed:
         return jsonify({"error": "That is not a valid domain name"}), 400
@@ -2837,11 +2976,12 @@ def create_site():
     org_id = current_org()
     if is_owner() and data.get("org_id"):
         org_id = data.get("org_id")
-    return jsonify({
-        "site": sites_service.create_site(
-            data, owner_id=session["user_id"], org_id=org_id
-        ),
-    }), 201
+    try:
+        site = sites_service.create_site(
+            data, owner_id=session["user_id"], org_id=org_id)
+    except sites_service.SiteError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"site": site}), 201
 
 
 @app.route("/api/sites/<int:site_id>", methods=["GET"])
@@ -2858,7 +2998,13 @@ def get_site(site_id):
 def update_site(site_id):
     if not _site_for_request(site_id):
         return jsonify({"error": "Not found"}), 404
-    updated = sites_service.update_site(site_id, request.get_json(silent=True) or {})
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send a JSON object of fields to change."}), 400
+    try:
+        updated = sites_service.update_site(site_id, data)
+    except sites_service.SiteError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not updated:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"site": updated})
@@ -3902,7 +4048,23 @@ def update_automation(automation_id):
 # URL carries an org token: derived from the app secret (nothing to store or rotate in a
 # column) and useless for anything except adding a contact.
 # ---------------------------------------------------------------------------
-_LEAD_HITS = {}
+_RATE_HITS = {}
+
+
+def _rate_ok(bucket, key, limit, window=60):
+    """A per-process token bucket shared by the public endpoints.
+
+    Bounded memory matters more than precision here: when a bucket grows past a few
+    thousand keys it is cleared, which temporarily grants a fresh window.
+    """
+    store = _RATE_HITS.setdefault(bucket, {})
+    if len(store) > 2000:
+        store.clear()
+    now = time.time()
+    hits = [stamp for stamp in store.get(key, []) if now - stamp < window]
+    hits.append(now)
+    store[key] = hits
+    return len(hits) <= limit
 
 
 def lead_token(org_id):
@@ -3925,15 +4087,17 @@ def _lead_org(token):
 
 def _lead_rate_ok(ip, limit=10, window=60):
     """Per-IP token bucket. A public endpoint that can stuff a CRM is worse than no form."""
-    import time
+    return _rate_ok("lead", ip, limit, window)
 
-    if len(_LEAD_HITS) > 2000:
-        _LEAD_HITS.clear()          # crude, but bounded memory matters more than elegance
-    now = time.time()
-    hits = [stamp for stamp in _LEAD_HITS.get(ip, []) if now - stamp < window]
-    hits.append(now)
-    _LEAD_HITS[ip] = hits
-    return len(hits) <= limit
+
+def _chat_rate_ok(ip, limit=30, window=60):
+    """The widget spends model credits, so one caller cannot loop it."""
+    return _rate_ok("chat", ip, limit, window)
+
+
+def _forgot_rate_ok(ip, limit=5, window=600):
+    """Password-reset mail is a spam vector; per-IP, on top of the per-user throttle."""
+    return _rate_ok("forgot", ip, limit, window)
 
 
 @app.route("/api/public/lead/<path:token>", methods=["POST"])
@@ -3942,11 +4106,12 @@ def public_lead(token):
     org = _lead_org(token)
     if org is None or not orgs_service.is_active(org):
         return jsonify({"error": "Unknown form"}), 404
-    ip = ((request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-          or request.remote_addr or "?")
+    ip = _client_ip()
     if not _lead_rate_ok(ip):
         return jsonify({"error": "Too many submissions - try again in a minute"}), 429
     data = request.get_json(silent=True) or request.form or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send the form as an object."}), 400
     try:
         item = contacts_service.create_contact(data, org,
                                                source=(data.get("source") or "form"))
@@ -4013,8 +4178,25 @@ def contacts_lead_token():
 # implementation and cannot be rewritten in devtools before submitting.
 
 def _client_ip():
-    return ((request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-            or request.remote_addr or "?")
+    """The caller's address for rate limits.
+
+    Caddy overwrites ``X-Real-IP`` with ``{remote_host}``; that header is trusted
+    first. A direct request has no proxy header, so the socket address wins over a
+    caller-supplied ``X-Forwarded-For``. As a last resort, use the *last* forwarded
+    hop - the one the nearest proxy appended - never the first value, which an
+    attacker controls.
+    """
+    real = (request.headers.get("X-Real-IP") or "").strip()
+    if real:
+        return real
+    remote = (request.remote_addr or "").strip()
+    if remote and not (remote.startswith("127.") or remote in ("::1", "localhost")):
+        return remote
+    hops = [part.strip() for part in
+            (request.headers.get("X-Forwarded-For") or "").split(",") if part.strip()]
+    if hops:
+        return hops[-1]
+    return remote or "?"
 
 
 def _ip_hash(ip):
@@ -4045,6 +4227,16 @@ def _form_for(slug, preview=False):
 
 def _wants_preview():
     return request.args.get("preview") in ("1", "true", "yes")
+
+
+def _wants_summary():
+    """A list request that does not need full documents.
+
+    The console asks for ``summary=1`` on dashboards and pickers, then fetches the
+    one draft or site it opens. It keeps the payload bounded without changing what an
+    editor sees.
+    """
+    return request.args.get("summary") in ("1", "true", "yes")
 
 
 @app.route("/f/<slug>", methods=["GET"])
@@ -4112,6 +4304,8 @@ def public_form_step(slug):
     if not form or not orgs_service.is_active(form.get("org_id")):
         return jsonify({"error": "Unknown form"}), 404
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
     payload = forms_page.payload_for(form, answers)
     payload["ok"] = True
@@ -4129,6 +4323,8 @@ def public_form_submit(slug):
     if not form or not orgs_service.is_active(form.get("org_id")):
         return jsonify({"error": "Unknown form"}), 404
     data = request.get_json(silent=True) or request.form or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send the form as an object."}), 400
     if str(data.get("company") or "").strip():
         # The honeypot. Answer as though it worked: a bot that learns this form rejects it
         # goes and tries another one, and there is nothing here for it to learn from.
@@ -6315,26 +6511,13 @@ def providers():
 # ---------------------------------------------------------------------------
 @app.route("/api/health", methods=["GET"])
 def health():
-    with get_connection() as conn:
-        bot_count = conn.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
-        agent_count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-        job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    return jsonify({
-        "status": "ok",
-        # No provider, model or key state here: this route answers anonymously, and the
-        # stack we run on is the agency business. The owner reads it in Platform ->
-        # Settings and /api/providers.
-        "brand": brand(),
-        "bots": bot_count,
-        "users": user_count,
-        "channels": channel_count,
-        "agents": agent_count,
-        "jobs": job_count,
-        "job_backend": jobs.JOB_BACKEND,
-        "database": "postgresql" if os.environ.get("DATABASE_URL", "").startswith("postgres") else "sqlite",
-    })
+    """Anonymous liveness probe.
+
+    Counts, the job backend and the database engine are operator information; the
+    Docker healthcheck only needs a 200. The console still reads ``brand`` to show the
+    configured product name.
+    """
+    return jsonify({"status": "ok", "brand": brand()})
 
 
 # ---------------------------------------------------------------------------

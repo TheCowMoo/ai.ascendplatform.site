@@ -61,9 +61,10 @@ They are large and contain stale snapshots.
 | AI roster and team execution | `agents.py`, `llm.py`, `manager.py` |
 | Background jobs | `jobs.py`, `worker.py`, `scheduler.py` |
 | Agent tools | `tools/` |
+| Chat assistants and widget | `bots.py`, `widget_embed.py`, `tools/chat.py` |
 | Sites, DNS and hosting | `sites.py`, `provisioner.py`, `servers.py`, `webcheck.py` |
 | Content / deliverables | `deliverables.py`, `builds.py`, `build_service.py`, `site_builder.py` |
-| CRM and forms | `contacts.py`, `forms.py`, `forms_engine.py`, `contact_sync.py` |
+| CRM and forms | `contacts.py`, `forms.py`, `forms_engine.py`, `tools/forms.py`, `contact_sync.py` |
 | Analytics and GA4 | `analytics.py`, `site_logs.py`, `ga4.py`, `analytics_oauth.py` |
 | Billing / credits | `usage.py`, `rates.py` |
 | Email and invitations | `mail`, `platform_mail.py`, `notifications.py`, `invites.py` |
@@ -109,6 +110,12 @@ Detailed recipes and pitfalls are in `docs/ai/RECIPES.md`.
    API responses, logs, or URLs. Redirect state is random, session-bound and one-use.
 10. **Use the existing service-error pattern.** Raise a named error with an actionable
     sentence; the route maps it to a 400/403/404.
+11. **A site may only embed a chat assistant from the same org.** `linked_bot_id` is
+    validated by `sites.create_site`/`update_site`; injection uses
+    `widget_embed.inject_for_site`, never a raw client-supplied id.
+12. **Agent marketing writes inherit the job's role.** Forms, site writes and chat
+    assistant attachments use `tools/access.py`; a member cannot bypass a
+    client-admin-only screen by asking the Manager.
 
 ## Frontend rules
 

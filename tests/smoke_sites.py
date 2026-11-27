@@ -17,6 +17,9 @@ os.environ.pop("ALLOW_LIVE_ACTIONS", None)
 os.environ["SERVER_IP"] = "203.0.113.10"
 
 import app as appmod  # noqa: E402
+import db  # noqa: E402
+import jobs  # noqa: E402
+import orgs as orgs_service  # noqa: E402
 import sites as sites_service  # noqa: E402
 import tools.site as site_tools  # noqa: E402
 
@@ -137,22 +140,33 @@ def test_agent_tools_dry_run():
     """The agent-facing hosting tools, driven directly, in dry-run."""
     events = []
     emit = lambda source, kind, text: events.append((source, kind, text))
+    org = orgs_service.get_org_by_slug("agent-site-tools")
+    if not org:
+        org = orgs_service.create_org({"name": "Agent Site Tools"})
+    org_id = org["id"]
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT id FROM users WHERE email = ?",
+                            ("admin@example.com",)).fetchone()
+    job_id = jobs.create_job("Agent site tools", "test the hosting tools",
+                             user["id"] if user else None, "selector", "chat",
+                             org_id=org_id)
 
-    provision = site_tools._build_provision_site(emit, None)
+    provision = site_tools._build_provision_site(emit, job_id)
     result = asyncio.run(provision("agent-demo.test"))
     print(result)
     assert "https://agent-demo.test" in result, result
     assert any("dry-run" in text for _, _, text in events), events
 
-    listing = asyncio.run(site_tools._build_list_sites(emit, None)())
+    listing = asyncio.run(site_tools._build_list_sites(emit, job_id)())
     assert "agent-demo.test" in listing, listing
     print("list_sites includes the new site")
 
-    dns = asyncio.run(site_tools._build_check_site_dns(emit, None)("agent-demo.test"))
+    dns = asyncio.run(site_tools._build_check_site_dns(emit, job_id)("agent-demo.test"))
     assert "records_to_create" in dns, dns
     print("check_site_dns OK")
 
-    missing = asyncio.run(site_tools._build_write_site_content(emit, None)("nope.test", "<p>x</p>"))
+    missing = asyncio.run(site_tools._build_write_site_content(emit, job_id)(
+        "nope.test", "<p>x</p>"))
     assert "No site record" in missing, missing
     print("AGENT TOOLS (dry-run) OK")
 
